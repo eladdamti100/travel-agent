@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 from typing import Optional
+
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -29,16 +30,17 @@ else:
         )
 
 from langchain_core.messages import AIMessage
+from rich.columns import Columns
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.text import Text
 from rich.theme import Theme
-from rich.prompt import Prompt
-from rich.columns import Columns
 
 from src.graph.workflow import graph
+from src.models.session import validate_session_id
 from src.utils.logger import get_logger
 
 logger = get_logger("main")
@@ -95,7 +97,9 @@ def _is_researcher(text: str) -> bool:
 
 def _print_banner() -> None:
     console.print()
+
     provider_label = os.getenv("LLM_PROVIDER", "gemini").upper()
+
     console.print(Panel(
         Text.assemble(
             ("  AI Travel Planner\n", "bold white"),
@@ -107,6 +111,7 @@ def _print_banner() -> None:
         border_style="green",
         padding=(0, 2),
     ))
+
     console.print(Text("  Type 'exit' to quit.", style="exit.hint"))
     console.print()
 
@@ -120,128 +125,138 @@ def _print_agent(text: str) -> None:
             border_style="yellow",
             padding=(1, 2),
         ))
-    elif _is_researcher(text):
+        return
+
+    if _is_researcher(text):
         console.print(Panel(
             Markdown(text),
             title="[blue]⚡ Quick Lookup[/blue]",
             border_style="blue",
             padding=(1, 2),
         ))
-    else:
-        console.print(Panel(
-            Markdown(text),
-            title="[green]✈  Marco[/green]",
-            border_style="green",
-            padding=(1, 2),
-        ))
+        return
+
+    console.print(Panel(
+        Markdown(text),
+        title="[green]✈  Marco[/green]",
+        border_style="green",
+        padding=(1, 2),
+    ))
 
 
 def _print_status(city: Optional[str], budget: Optional[float], tool_count: int) -> None:
     if not city and not budget:
         return
+
     parts = []
+
     if city:
         parts.append(Text.assemble(("Destination: ", "dim"), (city, "status.city")))
+
     if budget:
         parts.append(Text.assemble(("Budget: $", "dim"), (f"{budget:,.0f}", "status.budget")))
+
     if tool_count:
         parts.append(Text(f"Tools used: {tool_count}", style="dim"))
+
     console.print(Rule(style="dim"))
     console.print(Columns(parts, padding=(0, 4)))
     console.print()
 
 
-_SESSION_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_\-]{1,50}$')
-
-# Words that are never acceptable inside a session ID.
-# Checked by splitting on underscores and hyphens so "kill_01" is caught
-# but "nick_01" is not. The AI validator is intentionally NOT used here
-# because it is tuned for full natural-language sentences and over-blocks
-# legitimate short identifiers like "nick_01" or "studentADMIN00".
-_BANNED_SESSION_WORDS = frozenset({
-    # Violence / harm
-    "kill", "murder", "bomb", "attack", "shoot", "stab", "harm", "hurt",
-    # Hacking / illegal
-    "hack", "crack", "exploit", "inject", "exec", "eval",
-    # SQL / system abuse
-    "drop", "delete", "truncate", "insert", "select", "update",
-    # Injection keywords
-    "ignore", "override", "bypass", "jailbreak", "dan",
-    "forget", "disregard", "prompt", "system",
-})
-
-
-def _validate_session_id(session_id: str) -> tuple:
+def _ask_for_session_id() -> str:
     """
-    Validates the session ID before it is used as a thread_id.
+    Prompts the user for a safe session ID.
 
-    Two checks:
-      1. Format — alphanumeric + underscore/hyphen, 1-50 chars.
-         Rejects empty strings, spaces, and special characters that
-         could interfere with SQLite or the checkpoint system.
-
-      2. Content — splits on underscore/hyphen and checks each word
-         against a blacklist of harmful and injection keywords.
-         Uses word-level matching (not the AI validator) because session
-         IDs are identifiers, not natural language — the AI validator
-         over-interprets short identifiers like "nick_01" as threats.
-
-    Returns:
-        (True,  "")            — session ID is safe to use
-        (False, error_message) — session ID is invalid; reason in message
+    The session ID becomes LangGraph's thread_id, so it is validated before use.
     """
-    # ── 1. Format check ───────────────────────────────────────────────────────
-    if not session_id or not session_id.strip():
-        return False, "Session ID cannot be empty."
+    max_attempts = 3
 
-    if not _SESSION_ID_PATTERN.match(session_id):
-        return False, (
-            "Session ID may only contain letters, numbers, underscores (_) and hyphens (-)."
-            " Maximum 50 characters."
+    for _ in range(max_attempts):
+        raw = Prompt.ask(
+            "[bold cyan]Enter your session ID[/bold cyan] [dim](press Enter for default)[/dim]",
+            default="session_01",
         )
 
-    # ── 2. Word-level content check ───────────────────────────────────────────
-    words = set(re.split(r'[_\-]', session_id.lower()))
-    banned = words & _BANNED_SESSION_WORDS
-    if banned:
-        return False, f"Session ID contains a prohibited word: '{next(iter(banned))}'."
+        result = validate_session_id(raw)
 
-    return True, ""
+        if result.is_valid:
+            return raw
+
+        console.print(Panel(
+            f"[red]Invalid session ID:[/red] {result.error_message}\nPlease try again.",
+            border_style="red",
+            padding=(0, 2),
+        ))
+
+    console.print("[red]Too many invalid attempts. Using default session.[/red]")
+    return "session_01"
+
+
+def _update_status_for_node(node_name: str, node_data: dict, status) -> None:
+    """
+    Updates the terminal spinner text according to the current graph node.
+    """
+    if node_name == "extract_metadata":
+        status.update("[tool.call]Reading your message...[/tool.call]")
+
+    elif node_name == "validator":
+        status.update("[tool.call]Validating your request...[/tool.call]")
+
+    elif node_name == "master_orchestrator":
+        status.update("[tool.call]Routing your request...[/tool.call]")
+
+    elif node_name == "cache_check":
+        status.update("[tool.call]Checking cache...[/tool.call]")
+
+    elif node_name == "update_preferences":
+        status.update("[tool.call]Saving your preferences...[/tool.call]")
+
+    elif node_name == "recall":
+        status.update("[tool.call]Checking memory...[/tool.call]")
+
+    elif node_name == "researcher":
+        status.update("[tool.call]Searching database...[/tool.call]")
+
+    elif node_name == "agent":
+        msgs = node_data.get("messages", [])
+
+        if msgs and hasattr(msgs[-1], "tool_calls") and msgs[-1].tool_calls:
+            labels = [
+                _TOOL_LABELS.get(tc["name"], f"⚙  {tc['name']}")
+                for tc in msgs[-1].tool_calls
+            ]
+            status.update(f"[tool.call]{' · '.join(labels)}...[/tool.call]")
+        else:
+            status.update("[tool.call]Marco is thinking...[/tool.call]")
+
+    elif node_name == "tools":
+        status.update("[tool.call]Running tools...[/tool.call]")
+
+    elif node_name == "reviewer":
+        status.update("[tool.call]Reviewing your plan...[/tool.call]")
+
+    elif node_name == "summarizer":
+        status.update("[tool.call]Compressing conversation...[/tool.call]")
 
 
 def run() -> None:
     _print_banner()
 
-    # ── Session ID with validation loop ───────────────────────────────────────
-    max_attempts = 3
-    session_id = None
-
-    for attempt in range(max_attempts):
-        raw = Prompt.ask(
-            "[bold cyan]Enter your session ID[/bold cyan] [dim](press Enter for default)[/dim]",
-            default="session_01",
-        )
-        valid, error = _validate_session_id(raw)
-        if valid:
-            session_id = raw
-            break
-        console.print(Panel(
-            f"[red]Invalid session ID:[/red] {error}\nPlease try again.",
-            border_style="red",
-            padding=(0, 2),
-        ))
-    else:
-        console.print("[red]Too many invalid attempts. Using default session.[/red]")
-        session_id = "session_01"
-
+    session_id = _ask_for_session_id()
     config = {"configurable": {"thread_id": session_id}}
 
     is_admin = session_id.upper().endswith("ADMIN00")
 
     if is_admin:
-        console.print(f"[dim]  Session: {session_id}[/dim]  [bold yellow]⚙  ADMIN MODE — plan reviews enabled[/bold yellow]\n")
+        console.print(
+            f"[dim]  Session: {session_id}[/dim]  "
+            "[bold yellow]⚙  ADMIN MODE — plan reviews enabled[/bold yellow]\n"
+        )
     else:
-        console.print(f"[dim]  Session: {session_id} — memory will be saved and restored automatically.[/dim]\n")
+        console.print(
+            f"[dim]  Session: {session_id} — memory will be saved and restored automatically.[/dim]\n"
+        )
 
     while True:
         try:
@@ -259,9 +274,12 @@ def run() -> None:
 
         console.print()
 
-        seen_contents: set = set()
-        # Accumulated state fields for the bottom status bar
-        accumulated: dict = {"current_city": None, "total_budget": None, "tool_call_count": 0}
+        seen_contents: set[str] = set()
+        accumulated: dict = {
+            "current_city": None,
+            "total_budget": None,
+            "tool_call_count": 0,
+        }
 
         try:
             with console.status("[tool.call]Starting...[/tool.call]", spinner="dots") as status:
@@ -270,63 +288,29 @@ def run() -> None:
                     config,
                     stream_mode="updates",
                 ):
-                    # event = {node_name: {state_updates}}
                     node_name = next(iter(event))
                     node_data = event[node_name]
+
                     if node_data is None:
                         continue
 
-                    # Merge state fields we care about for status bar
                     for key in ("current_city", "total_budget", "tool_call_count"):
                         if key in node_data:
                             accumulated[key] = node_data[key]
 
-                    # ── Update spinner label based on which node is running ──
-                    if node_name == "extract_metadata":
-                        status.update("[tool.call]Reading your message...[/tool.call]")
+                    _update_status_for_node(node_name, node_data, status)
 
-                    elif node_name in ("validator",):
-                        status.update("[tool.call]Validating your request...[/tool.call]")
-
-                    elif node_name == "update_preferences":
-                        status.update("[tool.call]Saving your preferences...[/tool.call]")
-
-                    elif node_name == "recall":
-                        status.update("[tool.call]Checking memory...[/tool.call]")
-
-                    elif node_name == "researcher":
-                        status.update("[tool.call]Searching database...[/tool.call]")
-
-                    elif node_name == "agent":
-                        msgs = node_data.get("messages", [])
-                        if msgs and hasattr(msgs[-1], "tool_calls") and msgs[-1].tool_calls:
-                            labels = [
-                                _TOOL_LABELS.get(tc["name"], f"⚙  {tc['name']}")
-                                for tc in msgs[-1].tool_calls
-                            ]
-                            status.update(f"[tool.call]{' · '.join(labels)}...[/tool.call]")
-                        else:
-                            status.update("[tool.call]Marco is thinking...[/tool.call]")
-
-                    elif node_name == "tools":
-                        status.update("[tool.call]Running tools...[/tool.call]")
-
-                    elif node_name == "reviewer":
-                        status.update("[tool.call]Reviewing your plan...[/tool.call]")
-
-                    elif node_name == "summarizer":
-                        status.update("[tool.call]Compressing conversation...[/tool.call]")
-
-                    # ── Display any final AI messages ─────────────────────────
                     msgs = node_data.get("messages", [])
                     if msgs:
                         last_msg = msgs[-1]
+
                         if (
                             isinstance(last_msg, AIMessage)
                             and last_msg.content
                             and not getattr(last_msg, "tool_calls", None)
                         ):
                             text = _extract_text(last_msg.content)
+
                             if text and text not in seen_contents:
                                 seen_contents.add(text)
                                 status.stop()
@@ -348,23 +332,34 @@ def run() -> None:
                 or "quota" in err.lower()
                 or "rate limit" in err.lower()
             )
+
             if is_rate_limit:
                 wait = re.search(r"retry in (\d+)", err)
                 wait_msg = f"Retry in {wait.group(1)}s." if wait else "Try again in a moment."
+
                 provider = os.getenv("LLM_PROVIDER", "gemini").upper()
-                model = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile" if provider == "GROQ" else "gemini-2.5-flash")
+                model = os.getenv(
+                    "LLM_MODEL",
+                    "llama-3.3-70b-versatile" if provider == "GROQ" else "gemini-2.5-flash",
+                )
+
                 if provider == "GROQ":
-                    limits = "llama-3.3-70b-versatile: 500 req/day · llama-3.1-8b-instant: 14,400 req/day"
+                    limits = (
+                        "llama-3.3-70b-versatile: 500 req/day · "
+                        "llama-3.1-8b-instant: 14,400 req/day"
+                    )
                     tip = "Switch to a faster model: set LLM_MODEL=llama-3.1-8b-instant in .env"
                 else:
                     limits = "20 requests/day · 10 per minute"
                     tip = "Switch to Groq for higher limits: set LLM_PROVIDER=groq in .env"
+
                 console.print(Panel(
                     f"[yellow]Rate limit reached on {provider} ({model}).\n{wait_msg}[/yellow]\n\n"
                     f"[dim]{limits}\n{tip}[/dim]",
                     title="[red]Rate Limited[/red]",
                     border_style="red",
                 ))
+
             else:
                 console.print(Panel(
                     f"[red]Unexpected error:[/red] {err[:300]}",
@@ -386,6 +381,7 @@ if __name__ == "__main__":
     if not db_path.exists():
         console.print("[dim]First run — initializing database...[/dim]")
         from src.utils.db_init import create_travel_db
+
         create_travel_db()
 
     run()

@@ -1,10 +1,17 @@
 import re
 import time
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import ToolNode
 
-from src.graph.state import AgentState
+from src.agents.cache_checker import run_cache_check
+from src.agents.cache_store import run_cache_store
+from src.agents.master_orchestrator import run_master_orchestrator
 from src.agents.planner import PLANNER_SYSTEM_PROMPT
+from src.agents.preferences_memory_agent import run_preferences_memory
+from src.agents.researcher import run_researcher
+from src.graph.state import AgentState
+from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
 
 logger = get_logger("nodes")
@@ -16,7 +23,8 @@ _BASE_SYSTEM_MSG = SystemMessage(content=PLANNER_SYSTEM_PROMPT)
 
 _RETRY_PATTERN = re.compile(r"retry in (\d+(?:\.\d+)?)s", re.IGNORECASE)
 
-# City keyword → canonical city name (used by extract_metadata)
+# City keyword → canonical city name.
+# This is only lightweight metadata extraction, not routing.
 _CITY_MAP = {
     "paris": "Paris",
     "london": "London",
@@ -25,28 +33,25 @@ _CITY_MAP = {
     "berlin": "Berlin",
 }
 
-# Known airline names for preference detection
-_AIRLINE_NAMES = [
-    "el al", "emirates", "lufthansa", "british airways", "air france",
-    "united", "virgin atlantic", "ryanair", "turkish airlines", "klm",
-    "swiss", "tap", "wizz", "easyjet",
-]
-
-# Dietary preferences for preference detection
-_FOOD_PREFS = [
-    "kosher", "vegan", "vegetarian", "halal", "gluten-free", "gluten free",
-]
-
-# Lazy-initialised bound model (avoids circular imports at module load time)
+# Lazy-initialised bound model.
 _model = None
 
 
 def _get_model():
+    """
+    Returns the main tool-bound planning model.
+
+    This is still used by the legacy planner path and summarizer.
+    The new researcher, preferences-memory, and cache paths live in their own
+    agent files.
+    """
     global _model
+
     if _model is None:
         from src.agents.base import get_model
-        from src.tools import ALL_TOOLS
+
         _model = get_model(temperature=0, bind_tools=ALL_TOOLS)
+
     return _model
 
 
@@ -54,11 +59,13 @@ def _get_model():
 
 def extract_metadata(state: AgentState) -> dict:
     """
-    Pre-processing node that runs before every agent call.
+    Lightweight preprocessing node that runs before validation.
 
-    - Resets tool_call_count to 0 (prevents carry-over between turns)
-    - Detects the destination city from the latest user message
-    - Detects a budget figure (e.g. "$1500") from the latest user message
+    This node does not route intent.
+    It only:
+      - resets tool_call_count for the current turn
+      - detects supported destination city
+      - detects a USD budget if explicitly written as "$1500"
     """
     messages = state.get("messages", [])
     updates: dict = {"tool_call_count": 0}
@@ -71,188 +78,30 @@ def extract_metadata(state: AgentState) -> dict:
     for keyword, city in _CITY_MAP.items():
         if keyword in last_content:
             updates["current_city"] = city
-            logger.info(f"Detected city: {city}")
+            logger.info("Detected city: %s", city)
             break
 
     budget_match = re.search(r"\$(\d[\d,]*(?:\.\d+)?)", last_content)
     if budget_match:
         budget = float(budget_match.group(1).replace(",", ""))
         updates["total_budget"] = budget
-        logger.info(f"Detected budget: ${budget}")
+        logger.info("Detected budget: $%s", budget)
 
     return updates
 
 
-# ── Preference extraction helper ──────────────────────────────────────────────
-
-def _extract_preference_with_llm(message: str) -> str | None:
-    """
-    Uses Groq llama-3.1-8b-instant to extract any travel preference that is
-    not covered by the hardcoded airline / food / traveler detection.
-
-    Returns a short normalized phrase (e.g. "Prefers Airbus aircraft") or
-    None if no extractable preference is found or Groq is unavailable.
-    """
-    import os
-    if not os.getenv("GROQ_API_KEY", "").startswith("gsk_"):
-        return None
-    try:
-        from langchain_groq import ChatGroq
-        model = ChatGroq(model="llama-3.1-8b-instant", temperature=0, max_tokens=20, timeout=5)
-        response = model.invoke([
-            SystemMessage(content=(
-                "You extract specific travel preferences from user messages.\n"
-                "Return ONLY a short phrase (max 8 words) or exactly 'none'.\n"
-                "Skip airline names, food types, number of travelers — those are handled elsewhere.\n\n"
-                "Examples:\n"
-                "'I prefer Airbus planes for safety' → 'Prefers Airbus aircraft'\n"
-                "'I want window seats always' → 'Prefers window seats'\n"
-                "'I only take direct flights' → 'Direct flights only'\n"
-                "'I like morning departures' → 'Prefers morning departures'\n"
-                "'I need wheelchair accessibility' → 'Requires wheelchair access'\n"
-                "'I prefer business class' → 'Prefers business class'\n"
-                "'I prefer 5-star hotels' → 'Prefers 5-star hotels'\n"
-                "'I prefer El Al and kosher' → 'none'\n"
-                "'Plan a trip to Paris' → 'none'\n"
-                "'I travel with 2 people' → 'none'"
-            )),
-            HumanMessage(content=f"Message: \"{message}\"\nPreference:"),
-        ])
-        result = response.content.strip().strip('"\'').strip()
-        if not result or result.lower() == "none":
-            return None
-        return result
-    except Exception as e:
-        logger.warning("Preference LLM extraction failed: %s", e)
-        return None
-
-
-# ── Node 2: Update Preferences ───────────────────────────────────────────────
-
-def update_preferences(state: AgentState) -> dict:
-    """
-    Dedicated node for extracting and persisting user preferences.
-    Detects preferred airline, dietary needs, and number of travelers
-    from the latest message and saves them to State (checkpointed to disk).
-    """
-    last_content = getattr(state["messages"][-1], "content", "").lower()
-    updates: dict = {}
-
-    for airline in _AIRLINE_NAMES:
-        if airline in last_content:
-            updates["preferred_airline"] = airline.title()
-            logger.info(f"Preference detected — airline: {airline.title()}")
-            break
-
-    for food in _FOOD_PREFS:
-        if food in last_content:
-            updates["food_preference"] = food
-            logger.info(f"Preference detected — food: {food}")
-            break
-
-    traveler_match = re.search(
-        r"(\d+)\s*(people|person|traveler|travellers|passenger|of us|pax)",
-        last_content,
-    )
-    if traveler_match:
-        updates["num_travelers"] = int(traveler_match.group(1))
-        logger.info(f"Preference detected — travelers: {traveler_match.group(1)}")
-
-    # LLM-based extraction for any preference not covered above
-    raw_content = getattr(state["messages"][-1], "content", "")
-    extra = _extract_preference_with_llm(raw_content)
-    if extra:
-        existing = state.get("travel_preferences", "") or ""
-        if extra.lower() not in existing.lower():
-            updates["travel_preferences"] = (
-                f"{existing}\n- {extra}".strip() if existing else f"- {extra}"
-            )
-            logger.info(f"Preference detected (LLM) — {extra}")
-
-    # Build a confirmation message so the agent never runs for a pure
-    # preference statement — update_preferences routes directly to summarizer.
-    saved = []
-    if updates.get("preferred_airline"):
-        saved.append(f"Airline: **{updates['preferred_airline']}**")
-    if updates.get("food_preference"):
-        saved.append(f"Food: **{updates['food_preference']}**")
-    if updates.get("num_travelers"):
-        saved.append(f"Travelers: **{updates['num_travelers']}**")
-    if updates.get("travel_preferences"):
-        last_extra = updates["travel_preferences"].strip().lstrip("- ")
-        saved.append(f"Additional: **{last_extra.split(chr(10))[0]}**")
-
-    if saved:
-        ack = "Got it! I've saved your preferences:\n" + "\n".join(f"- {s}" for s in saved)
-    else:
-        ack = (
-            "I didn't detect a specific preference. "
-            "Try mentioning your airline, food type, or number of travelers."
-        )
-
-    updates["messages"] = [AIMessage(content=ack)]
-    logger.info("update_preferences: acknowledged %d saved items.", len(saved))
-    return updates
-
-
-# ── Node 3: Recall ────────────────────────────────────────────────────────────
-
-def recall_node(state: AgentState) -> dict:
-    """
-    Answers questions about saved preferences and history directly from State,
-    without calling the LLM. Runs when the user asks what the agent remembers.
-    """
-    parts = []
-
-    airline = state.get("preferred_airline")
-    food = state.get("food_preference")
-    travelers = state.get("num_travelers")
-    city = state.get("current_city")
-    budget = state.get("total_budget")
-    extra_prefs = state.get("travel_preferences")
-
-    if airline:
-        parts.append(f"- Preferred airline: **{airline}**")
-    if food:
-        parts.append(f"- Food preference: **{food}**")
-    if travelers:
-        parts.append(f"- Number of travelers: **{travelers}**")
-    if extra_prefs:
-        parts.append(f"- Other preferences:\n{extra_prefs}")
-    if city:
-        parts.append(f"- Last destination: **{city}**")
-    if budget:
-        parts.append(f"- Last budget: **${budget:,.0f}**")
-
-    if parts:
-        content = "Here's what I remember about you:\n" + "\n".join(parts)
-    else:
-        content = (
-            "I don't have any saved preferences yet. "
-            "Tell me your preferred airline, dietary needs, or how many people are traveling!"
-        )
-
-    logger.info("Recall node answered from saved state.")
-    return {"messages": [AIMessage(content=content)]}
-
-
-# ── Node 4: Validator ─────────────────────────────────────────────────────────
+# ── Node 2: Validator ────────────────────────────────────────────────────────
 
 def run_validator(state: AgentState) -> dict:
     """
-    Security guardrail node — runs before Marco on every user message.
+    Security guardrail node — validates every user message before orchestration.
 
-    Two-layer validation strategy:
-      Layer 1 (primary): AI validator via Groq llama-3.1-8b-instant.
-                         Understands intent and catches creative injection
-                         attempts that regex cannot detect.
-      Layer 2 (fallback): Hardcoded InputValidator regex patterns.
-                          Used automatically when Groq is unavailable
-                          or times out.
+    Validation order:
+      1. AI validator via Groq, if available.
+      2. Rule-based fallback validator.
 
-    Writes validation_status into State so the router can decide
-    whether to pass the message to Marco or terminate immediately.
-    If blocked, injects a rejection AIMessage so the user sees a clear reason.
+    If blocked, the rejection message is added to State and the graph ends.
+    If approved, validation_status is set to "approved".
     """
     from src.agents.ai_validator import ai_validate
     from src.agents.validator import validate_input
@@ -263,74 +112,122 @@ def run_validator(state: AgentState) -> dict:
 
     last_content = getattr(messages[-1], "content", "")
 
-    # Layer 1: AI validator (Groq) — understands intent, not just keywords
     result = ai_validate(last_content)
 
-    # Layer 2: Hardcoded fallback if Groq is unavailable
     if result is None:
-        logger.info("Validator: using hardcoded fallback (Groq unavailable).")
+        logger.info("Validator: using rule-based fallback.")
         result = validate_input(last_content)
 
     logger.info(
-        "Validator: verdict=%s reason=%s", result.verdict, result.reason
+        "Validator: verdict=%s reason=%s",
+        result.verdict,
+        result.reason,
     )
 
     if not result.approved:
-        rejection = AIMessage(content=result.rejection_message)
         return {
             "validation_status": result.verdict.lower(),
-            "messages": [rejection],
+            "messages": [AIMessage(content=result.rejection_message)],
         }
 
     return {"validation_status": "approved"}
 
 
-# ── Node 3: Agent (LLM call) ──────────────────────────────────────────────────
+# ── Node 3: Master Orchestrator ──────────────────────────────────────────────
+
+def master_orchestrator_node(state: AgentState) -> dict:
+    """
+    LangGraph node wrapper for the master orchestrator.
+    """
+    return run_master_orchestrator(state)
+
+
+# ── Node 4: Preferences Memory ───────────────────────────────────────────────
+
+def preferences_memory_node(state: AgentState) -> dict:
+    """
+    LangGraph node wrapper for the preferences memory agent.
+
+    The preferences memory agent internally decides whether to:
+      - recall saved user preferences
+      - update saved user preferences
+    """
+    return run_preferences_memory(state)
+
+
+# ── Node 5: Researcher ───────────────────────────────────────────────────────
+
+def researcher_node(state: AgentState) -> dict:
+    """
+    LangGraph node wrapper for the researcher agent.
+    """
+    return run_researcher(state)
+
+
+# ── Node 6: Cache Check ──────────────────────────────────────────────────────
+
+def cache_check_node(state: AgentState) -> dict:
+    """
+    LangGraph node wrapper for the semantic cache checker.
+    """
+    return run_cache_check(state)
+
+
+# ── Node 7: Legacy Planner Agent ─────────────────────────────────────────────
 
 def call_model(state: AgentState) -> dict:
     """
-    Core agent node — sends the conversation history to the LLM and returns
-    either a tool-call request or a final human-readable answer.
-    Increments tool_call_count whenever a tool is requested.
+    Legacy planner node.
 
-    Automatically retries on 429 rate-limit errors using the delay
-    reported by the API itself (free tier: 5 req/min on gemini-2.5-flash).
+    This is still used temporarily after cache_check miss until the dedicated
+    planner is implemented.
+
+    It sends the conversation history to the main tool-bound LLM and returns
+    either a tool-call request or a final human-readable answer.
     """
-    # ── Build dynamic additions to the system prompt ─────────────────────────
     profile_lines = []
+
     if state.get("preferred_airline"):
         profile_lines.append(f"- Preferred airline: {state['preferred_airline']}")
+
     if state.get("food_preference"):
         profile_lines.append(f"- Dietary preference: {state['food_preference']}")
+
     if state.get("num_travelers"):
         profile_lines.append(f"- Traveling with: {state['num_travelers']} people")
+
     if state.get("travel_preferences"):
         profile_lines.append(f"- Additional preferences:\n{state['travel_preferences']}")
 
     summary = state.get("conversation_summary", "")
 
-    # Prompt caching: reuse the cached _BASE_SYSTEM_MSG when nothing extra is needed.
-    # Only construct a new SystemMessage when profile or summary data exists.
     if profile_lines or summary:
         extra = ""
+
         if profile_lines:
             extra += (
                 "\n\n## User Profile (remembered from previous sessions)\n"
                 + "\n".join(profile_lines)
                 + "\nAlways apply these preferences when recommending flights, hotels, and activities."
             )
+
         if summary:
             extra += f"\n\n## Conversation Summary (past context)\n{summary}"
-        system_msg = SystemMessage(content=PLANNER_SYSTEM_PROMPT + extra)
-    else:
-        system_msg = _BASE_SYSTEM_MSG  # cached — no reconstruction needed
 
-    # ── Compact memory: limit messages sent to LLM when history is long ───────
+        system_msg = SystemMessage(content=PLANNER_SYSTEM_PROMPT + extra)
+
+    else:
+        system_msg = _BASE_SYSTEM_MSG
+
     all_messages = state["messages"]
+
     if summary and len(all_messages) > 10:
-        # Send only the 8 most recent messages; older context is in the summary
         messages_to_send = all_messages[-8:]
-        logger.info(f"Compact memory: sending {len(messages_to_send)}/{len(all_messages)} messages to LLM.")
+        logger.info(
+            "Compact memory: sending %d/%d messages to LLM.",
+            len(messages_to_send),
+            len(all_messages),
+        )
     else:
         messages_to_send = all_messages
 
@@ -342,158 +239,127 @@ def call_model(state: AgentState) -> dict:
         try:
             response = _get_model().invoke(messages)
             break
-        except Exception as e:
-            err = str(e)
-            if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < max_retries - 1:
+
+        except Exception as error:
+            err = str(error)
+
+            if (
+                ("429" in err or "RESOURCE_EXHAUSTED" in err)
+                and attempt < max_retries - 1
+            ):
                 match = _RETRY_PATTERN.search(err)
                 wait = int(float(match.group(1))) + 3 if match else 30
-                logger.warning(f"Rate limited — waiting {wait}s (attempt {attempt + 1}/{max_retries})")
+
+                logger.warning(
+                    "Rate limited — waiting %ss. attempt=%d/%d",
+                    wait,
+                    attempt + 1,
+                    max_retries,
+                )
+
                 time.sleep(wait)
+
             else:
                 raise
 
     count = state.get("tool_call_count", 0)
+
     if hasattr(response, "tool_calls") and response.tool_calls:
         count += len(response.tool_calls)
-        names = [tc["name"] for tc in response.tool_calls]
-        logger.info(f"Tool calls +{len(response.tool_calls)} (total {count}): {names}")
+        names = [tool_call["name"] for tool_call in response.tool_calls]
 
-    return {"messages": [response], "tool_call_count": count}
+        logger.info(
+            "Tool calls +%d total=%d names=%s",
+            len(response.tool_calls),
+            count,
+            names,
+        )
+
+    return {
+        "messages": [response],
+        "tool_call_count": count,
+    }
 
 
-# ── Node 4: Circuit Breaker ───────────────────────────────────────────────────
+# ── Node 8: Circuit Breaker ──────────────────────────────────────────────────
 
 def circuit_breaker(state: AgentState) -> dict:
     """
     Safety node — fires when the agent exceeds MAX_TOOL_CALLS or enters a
-    repetitive loop. Injects a graceful error message and terminates the run.
+    repetitive tool-call loop.
     """
     count = state.get("tool_call_count", 0)
-    logger.warning(f"Circuit breaker triggered after {count} tool calls.")
 
-    msg = AIMessage(
-        content=(
-            "I've reached my processing limit for this request. "
-            "This usually means the destination or route isn't in my database, "
-            "or the question is ambiguous. Please try rephrasing, or ask about "
-            "a supported city (Paris, London, Tokyo, New York, Berlin)."
-        )
-    )
-    return {"messages": [msg]}
+    logger.warning("Circuit breaker triggered after %d tool calls.", count)
 
-
-# ── Node 5: Researcher ────────────────────────────────────────────────────────
-
-def researcher_node(state: AgentState) -> dict:
-    """
-    Lightweight data-lookup node — handles simple factual queries
-    (e.g. "what hotels are in Tokyo?") by calling DB tools directly.
-    Routes here when route_after_validator detects a research-only question.
-    Bypasses the full planning workflow to avoid unnecessary LLM calls.
-    """
-    import json
-    from src.tools.db_tools import fetch_hotels, fetch_flights, fetch_activities
-
-    last_content = getattr(state["messages"][-1], "content", "").lower()
-    city = state.get("current_city", "")
-
-    if "hotel" in last_content and city:
-        raw = fetch_hotels.invoke({"city": city})
-        label = f"Hotels in {city}"
-        content = _format_hotels(label, raw)
-    elif "flight" in last_content and city:
-        raw = fetch_flights.invoke({"origin": "TLV", "destination": city})
-        label = f"Flights from TLV to {city}"
-        content = _format_flights(label, raw)
-    elif "activit" in last_content and city:
-        raw = fetch_activities.invoke({"city": city})
-        label = f"Activities in {city}"
-        content = _format_activities(label, raw)
-    else:
-        content = "Please specify hotels, flights, or activities along with a city name."
-
-    logger.info("Researcher node completed query for city=%s.", city or "unknown")
-    return {"messages": [AIMessage(content=content)]}
+    return {
+        "messages": [
+            AIMessage(
+                content=(
+                    "I've reached my processing limit for this request. "
+                    "This usually means the destination or route isn't in my database, "
+                    "or the question is ambiguous. Please try rephrasing, or ask about "
+                    "a supported city: Paris, London, Tokyo, New York, or Berlin."
+                )
+            )
+        ]
+    }
 
 
-def _format_hotels(label: str, raw: str) -> str:
-    import json
-    try:
-        items = json.loads(raw)
-    except (ValueError, TypeError):
-        return f"**{label}:**\n{raw}"
-    lines = [f"**{label}:**\n"]
-    for h in items:
-        stars = "★" * h.get("stars", 0)
-        lines.append(f"- **{h['name']}** {stars} — ${h['price_per_night']}/night")
-    return "\n".join(lines)
-
-
-def _format_flights(label: str, raw: str) -> str:
-    import json
-    try:
-        items = json.loads(raw)
-    except (ValueError, TypeError):
-        return f"**{label}:**\n{raw}"
-    if isinstance(items, dict):
-        items = [items]
-    lines = [f"**{label}:**\n"]
-    for f in items:
-        lines.append(f"- **{f['airline']}** ({f['flight_number']}) — ${f['price']}")
-    return "\n".join(lines)
-
-
-def _format_activities(label: str, raw: str) -> str:
-    import json
-    try:
-        items = json.loads(raw)
-    except (ValueError, TypeError):
-        return f"**{label}:**\n{raw}"
-    lines = [f"**{label}:**\n"]
-    for a in items:
-        price = f"${a['price']}" if a.get("price") else "Free"
-        lines.append(f"- **{a['name']}** ({a.get('category', '')}) — {price}")
-    return "\n".join(lines)
-
-
-# ── Node 6: Reviewer ──────────────────────────────────────────────────────────
+# ── Node 9: Reviewer ─────────────────────────────────────────────────────────
 
 def reviewer_node(state: AgentState) -> dict:
     """
     Quality-control node — automatically critiques Marco's final travel plan.
-    Only runs when the agent produced a full plan (city detected + 5+ tool calls).
-    Appends a structured review to the conversation as a follow-up AIMessage.
+
+    This remains a node-level wrapper until reviewer is moved to its own
+    run_reviewer(...) agent module.
     """
     from src.agents.reviewer import review_plan
+
     last_msg = state["messages"][-1]
     content = last_msg.content
+
     if isinstance(content, list):
         content = "\n".join(
             item.get("text", str(item)) if isinstance(item, dict) else str(item)
             for item in content
         )
+
     review = review_plan(str(content))
+
     logger.info("Reviewer node completed critique.")
-    return {"messages": [AIMessage(content=f"\n---\n**Plan Review (auto):**\n{review}")]}
+
+    return {
+        "messages": [
+            AIMessage(content=f"\n---\n**Plan Review (auto):**\n{review}")
+        ]
+    }
 
 
-# ── Node 10: Summarizer ───────────────────────────────────────────────────────
+# ── Node 10: Cache Store ─────────────────────────────────────────────────────
+
+def cache_store_node(state: AgentState) -> dict:
+    """
+    LangGraph node wrapper for storing successful answers in semantic cache.
+    """
+    return run_cache_store(state)
+
+
+# ── Node 11: Summarizer ──────────────────────────────────────────────────────
 
 def summarizer_node(state: AgentState) -> dict:
     """
-    Compact memory node — runs after every completed conversation turn.
+    Compact memory node.
 
-    When message history exceeds 10 messages it asks the LLM to produce a
-    concise bullet-point summary of the older messages, stores it in
-    conversation_summary, and limits future LLM calls to the last 8 messages.
-    For short sessions (≤10 messages) it is a no-op and returns immediately.
+    When message history exceeds 10 messages, it summarizes older messages into
+    conversation_summary and future LLM calls use only recent messages plus the summary.
     """
     messages = state.get("messages", [])
 
     if len(messages) <= 10:
         return {}
 
-    # Summarize all but the 4 most recent messages
     to_summarize = messages[:-4]
 
     transcript_lines = []
@@ -522,12 +388,19 @@ def summarizer_node(state: AgentState) -> dict:
         else str(summary_response.content)
     )
 
-    logger.info(f"Summarizer: compressed {len(to_summarize)} messages → summary ({len(summary)} chars).")
+    logger.info(
+        "Summarizer: compressed %d messages into %d chars.",
+        len(to_summarize),
+        len(summary),
+    )
+
     return {"conversation_summary": summary}
 
 
-# ── Tool Node (prebuilt) ──────────────────────────────────────────────────────
+# ── Tool Node ────────────────────────────────────────────────────────────────
 
 def build_tools_node():
-    from src.tools import ALL_TOOLS
+    """
+    Builds the generic LangGraph ToolNode for the legacy planner path.
+    """
     return ToolNode(ALL_TOOLS)
