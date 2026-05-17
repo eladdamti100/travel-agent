@@ -1,347 +1,809 @@
 # AI Travel Planner — Agentic Travel Planner
 
-An autonomous travel-planning system built with **LangGraph**, **Gemini 2.5 Flash** (or **Groq**), and **SQLite**.
-The agent plans full trips, remembers user preferences across sessions, validates every input with an AI-powered security layer, and critiques its own plans in admin mode.
+An autonomous travel-planning system built with **LangGraph**, **Gemini 2.5 Flash / Groq**, **SQLite**, and a local **semantic cache** powered by `sentence-transformers`.
+
+The system validates every user request, routes it through a Master Orchestrator, remembers user preferences across sessions, performs focused research, checks semantic cache for similar previous plans, and runs a Master Planner after cache miss.
 
 ---
 
-## Architecture
+## Architecture Overview
 
-```
-╔══════════════════════════════════════════════════════════════════╗
-║                        smart-travel-agent                        ║
-╠══════════════════════════════════════════════════════════════════╣
-║  src/agents/   "The Brains"    — LLM configs, prompts, security  ║
-║  src/tools/    "The Hands"     — SQL queries, cost calc, search  ║
-║  src/graph/    "The Nervous System" — LangGraph state & flow     ║
-║  src/utils/    Engineering     — DB init, logging, loop guards   ║
-╚══════════════════════════════════════════════════════════════════╝
+```text
+User Message
+   ↓
+extract_metadata
+   ↓
+validator
+   ↓
+if blocked → polite rejection → END
+if approved → master_orchestrator
+                    ↓
+        ┌───────────┼───────────┐
+        ↓           ↓           ↓
+preferences_memory  researcher  cache_check
+        ↓           ↓           ↓
+   summarizer      END     cache hit → END
+                         cache miss
+                              ↓
+                        master_planner
+                              ↓
+        ┌─────────────────────┴─────────────────────┐
+        ↓                                           ↓
+missing required info                         full plan ready
+HITL question → END                           cache_store → summarizer → END
 ```
 
-### Graph Flow
+---
 
+## Main System Layers
+
+```text
+src/agents/
+    The brains:
+    validators, orchestrator, preferences memory, researcher,
+    semantic cache checker/store, context enricher, master planner
+
+src/tools/
+    The hands:
+    SQL travel tools, cost calculation, optional web search
+
+src/graph/
+    The nervous system:
+    AgentState, LangGraph nodes, router, workflow
+
+src/models/
+    Typed schemas:
+    routing, cache, trip context, planner tasks, enrichment results, session validation
+
+src/services/
+    Infrastructure services:
+    semantic cache storage and embedding similarity
+
+src/utils/
+    Engineering helpers:
+    DB init, logging, graph guards
 ```
+
+---
+
+## Current Graph Flow
+
+```text
 START
   │
   ▼
-extract_metadata          ← resets counter, detects city & budget
+extract_metadata
   │
-  ▼  route_after_metadata (conditional edge)
-  ├─ recall query       ──► recall_node ──────────────────────────► END
-  ├─ preference stated  ──► update_preferences ──► validator
-  └─ everything else    ──► validator
-                               │
-                    route_after_validator
-                               │
-              ┌────────────────┼───────────────┐
-              ▼                ▼               ▼
-           blocked         researcher        agent  ◄────────┐
-            END               END              │             │
-                                    should_continue          │
-                                         │                   │
-                          ┌──────────────┼──────────────┐    │
-                          ▼              ▼              ▼    │
-                    circuit_breaker   tools ───────────────── ┘
-                         END         (loop)
-                                         │
-                              ┌──────────┴──────────┐
-                              ▼                     ▼
-                  is_admin + 5+ tools          simple answer
-                              │                     │
-                           reviewer                 │
-                              └──────────┬──────────┘
-                                         ▼
-                                     summarizer
-                                         │
-                                        END
-                                         │
-                               SqliteSaver auto-saves
-                               full State → checkpoints.db
+  ▼
+validator
+  │
+  ├─ blocked → END
+  │
+  ▼
+master_orchestrator
+  │
+  ├─ preferences_memory → summarizer → END
+  │
+  ├─ researcher         → END
+  │
+  └─ cache_check
+          │
+          ├─ cache_hit  → END
+          │
+          └─ cache_miss → master_planner
+                              │
+                              ├─ missing_required_info → END
+                              │
+                              └─ final_plan → cache_store → summarizer → END
 ```
 
-### Node Reference
+---
 
-| Node | File | Purpose |
-|---|---|---|
-| `extract_metadata` | `nodes.py` | Resets counter, detects city & budget from message |
-| `update_preferences` | `nodes.py` | Saves airline, food, traveler count + LLM-extracted free-form prefs |
-| `recall` | `nodes.py` | Answers memory questions directly from State — no LLM call |
-| `validator` | `nodes.py` + `ai_validator.py` | Two-layer security: AI (Groq) → hardcoded regex fallback |
-| `researcher` | `nodes.py` | Fast DB-only lookups for simple queries — no LLM call |
-| `agent` | `nodes.py` | Core LLM call — decides tools vs. final answer |
-| `tools` | `nodes.py` | Prebuilt `ToolNode` — executes all 9 bound tools |
-| `circuit_breaker` | `nodes.py` | Safety — fires on loop detection or tool count cap |
-| `reviewer` | `nodes.py` + `reviewer.py` | Scores and critiques plans — admin sessions only |
-| `summarizer` | `nodes.py` | Compact memory — compresses history > 10 messages |
+## Master Orchestrator Routes
+
+The Master Orchestrator returns one of three high-level routes:
+
+| Route | Purpose |
+|---|---|
+| `preferences_memory` | User asks about saved preferences, or states/updates stable travel preferences |
+| `research` | Focused factual lookup: flights, hotels, activities, visa, cheapest options |
+| `cache_check` | Full trip planning request that should first check semantic cache |
+
+The orchestrator does **not** route directly to `recall` or `update_preferences`. Those are internal behaviors of `preferences_memory`.
+
+---
+
+## Preferences Memory
+
+`preferences_memory` handles default memory conversations:
+
+```text
+preferences_memory
+   ├─ recall saved preferences
+   └─ update saved preferences
+```
+
+Examples:
+
+```text
+I prefer El Al
+I eat kosher
+We are 4 travelers
+What do you remember about me?
+What are my preferences?
+```
+
+Persisted fields include:
+
+| Field | Example |
+|---|---|
+| `preferred_airline` | `El Al` |
+| `food_preference` | `kosher` |
+| `num_travelers` | `4` |
+| `travel_preferences` | `Direct flights only`, `Prefers central hotels` |
+
+---
+
+## Researcher Agent
+
+The Researcher is a focused ReAct-style travel research agent.
+
+It is used for direct lookups, not full trip planning.
+
+Examples:
+
+```text
+Show hotels in Paris
+What flights are available to Tokyo?
+What activities are in London?
+Do I need a visa for Japan?
+What is the cheapest hotel in Berlin?
+```
+
+Available tools include:
+
+| Tool | Purpose |
+|---|---|
+| `fetch_flights` | Search flights between origin and destination |
+| `fetch_hotels` | Search hotels in a city |
+| `fetch_activities` | Search tourist activities |
+| `get_visa_requirement` | Check visa rules |
+| `get_cheapest_flight` | Find cheapest flight |
+| `get_cheapest_hotel` | Find cheapest hotel |
+| `list_destinations` | List available destinations |
+| `calculate_trip_cost` | Calculate flight + hotel cost |
+| `web_search` | Optional real-time search via Tavily |
+
+---
+
+## Semantic Cache
+
+Full trip-planning requests go through semantic cache before planning.
+
+```text
+cache_check
+   ├─ cache_hit  → return cached answer → END
+   └─ cache_miss → master_planner
+```
+
+### Cache implementation
+
+| Component | Value |
+|---|---|
+| Embedding library | `sentence-transformers` |
+| Model | `sentence-transformers/all-MiniLM-L6-v2` |
+| Storage | `data/semantic_cache.db` |
+| Similarity | cosine similarity |
+| Current threshold | `0.85` |
+
+The cache stores:
+
+```text
+query
+normalized_query
+answer
+route
+embedding_json
+created_at
+```
+
+The semantic cache is separate from both:
+
+```text
+data/travel_agency.db   # business travel data
+data/checkpoints.db     # LangGraph persistent memory
+```
+
+---
+
+## Master Planner
+
+The Master Planner runs after `cache_miss`.
+
+It performs:
+
+```text
+1. deterministic TripContext extraction
+2. async SLM context enrichment
+3. dependency checking
+4. async execution of ready tool tasks
+5. merge enriched context
+6. run newly unlocked tasks
+7. ask HITL question if required info is missing
+8. generate final plan
+9. cache successful final answer
+```
+
+### Required fields for full trip planning
+
+A full plan requires:
+
+```text
+origin_airport
+origin_country
+destination_city
+duration_days
+total_budget
+```
+
+If any of these are missing, the planner asks a HITL clarification question.
+
+Example:
+
+```text
+User:
+Plan me a trip to Paris
+
+Marco:
+I can plan this trip, but I need a few details first:
+- Which airport are you flying from?
+- What is your passport/origin country?
+- How many days should the trip be?
+- What total budget should I use?
+```
+
+### Current HITL behavior
+
+The system currently supports HITL question generation.
+
+Automatic resume from a partial follow-up answer is not fully implemented yet.
+
+For now, after a HITL question, the user should provide a complete clarified request, for example:
+
+```text
+I am from Israel, flying from TLV. Plan me a 5-day trip to Paris under $2000
+```
+
+Planned next improvement:
+
+```text
+pending_trip_context
+pending_missing_fields
+awaiting_user_clarification
+resume planning from user clarification
+```
+
+---
+
+## Databases
+
+The project uses three SQLite databases:
+
+| DB | Purpose |
+|---|---|
+| `data/travel_agency.db` | Travel business data: flights, hotels, activities, visa requirements |
+| `data/checkpoints.db` | LangGraph persistent State via `SqliteSaver` |
+| `data/semantic_cache.db` | Semantic cache for previous full-trip answers |
+
+These databases are intentionally separate.
 
 ---
 
 ## Project Structure
 
-```
-travel-agent/
-├── .github/
-│   └── workflows/ci.yml          # GitHub Actions — runs test_tools.py on every push
+```text
+travel_agent/
 ├── data/
-│   ├── travel_agency.db          # SQLite travel data (generated by db_init)
-│   ├── initial_data.json         # Original seed data
-│   └── checkpoints.db            # SqliteSaver — persistent session memory
+│   ├── travel_agency.db          # Business travel data
+│   ├── checkpoints.db            # LangGraph persistent memory
+│   ├── semantic_cache.db         # Semantic cache
+│   └── initial_data.json
+│
 ├── src/
 │   ├── agents/
-│   │   ├── base.py               # LLM factory — supports Gemini and Groq
-│   │   ├── planner.py            # Marco's system prompt and identity rules
-│   │   ├── researcher.py         # Lightweight data-only research agent
-│   │   ├── reviewer.py           # Plan reviewer — scores & critiques
-│   │   ├── validator.py          # Hardcoded regex validator (fallback layer)
-│   │   └── ai_validator.py       # AI validator via Groq (primary layer)
-│   ├── tools/
-│   │   ├── __init__.py           # ALL_TOOLS list — single import for graph binding
-│   │   ├── db_tools.py           # SQL tools: flights, hotels, activities, visa
-│   │   ├── calc_tools.py         # calculate_trip_cost
-│   │   └── search_tools.py       # web_search via Tavily (optional)
+│   │   ├── ai_validator.py
+│   │   ├── validator.py
+│   │   ├── base.py
+│   │   ├── master_orchestrator.py
+│   │   ├── preferences_memory_agent.py
+│   │   ├── researcher.py
+│   │   ├── cache_checker.py
+│   │   ├── cache_store.py
+│   │   ├── context_enricher.py
+│   │   ├── planner.py
+│   │   └── reviewer.py
+│   │
 │   ├── graph/
-│   │   ├── state.py              # AgentState TypedDict — all persisted fields
-│   │   ├── nodes.py              # All 10 node functions
-│   │   ├── router.py             # Conditional edge logic
-│   │   └── workflow.py           # StateGraph builder + SqliteSaver
+│   │   ├── state.py
+│   │   ├── nodes.py
+│   │   ├── router.py
+│   │   └── workflow.py
+│   │
+│   ├── models/
+│   │   ├── cache.py
+│   │   ├── context_enrichment.py
+│   │   ├── planner.py
+│   │   ├── preferences.py
+│   │   ├── routing.py
+│   │   ├── session.py
+│   │   └── trip_context.py
+│   │
+│   ├── services/
+│   │   └── semantic_cache.py
+│   │
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── db_tools.py
+│   │   ├── calc_tools.py
+│   │   └── search_tools.py
+│   │
 │   ├── utils/
-│   │   ├── db_init.py            # Create + populate travel_agency.db
-│   │   ├── logger.py             # Structured logger factory
-│   │   └── validators.py         # detect_repetition — loop guard
-│   └── main.py                   # Rich terminal UI — session ID, banner, streaming
-├── tests/
-│   ├── test_connection.py        # API connectivity check
-│   └── test_tools.py             # Integration tests against the real SQLite DB
-├── graph.png                     # Auto-generated graph diagram
-├── generate_graph.py             # Regenerates graph.png from current workflow
-├── run.py                        # Launcher: python run.py
-├── .env.example                  # Copy to .env and fill in your keys
-└── requirements.txt
+│   │   ├── db_init.py
+│   │   ├── graph_guards.py
+│   │   └── logger.py
+│   │
+│   └── main.py
+│
+├── run.py
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
 ## Setup
 
-### 1. Clone & configure environment
+### 1. Create and activate virtual environment
 
-```bash
-git clone <repo-url>
-cd travel-agent
-cp .env.example .env
-# Edit .env — add your API keys (see Environment Variables below)
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
 ```
 
-### 2. Create virtual environment & install dependencies
+### 2. Install dependencies
 
-```bash
-python -m venv taenv
-taenv\Scripts\activate      # Windows
-# source taenv/bin/activate  # Mac/Linux
-
+```powershell
 pip install -r requirements.txt
+pip install langgraph-checkpoint-sqlite
 ```
 
-### 3. Initialise the database (one-time)
+Important dependencies include:
 
-```bash
+```text
+langchain
+langchain-core
+langchain-google-genai
+langchain-groq
+langgraph
+langgraph-checkpoint-sqlite
+sentence-transformers
+numpy
+rich
+python-dotenv
+```
+
+### 3. Configure environment
+
+Create `.env` in project root:
+
+```env
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=your_google_key
+
+# Optional / recommended for validator and fast SLM calls
+GROQ_API_KEY=your_groq_key
+
+# Optional
+TAVILY_API_KEY=your_tavily_key
+```
+
+You can switch provider:
+
+```env
+LLM_PROVIDER=groq
+LLM_MODEL=llama-3.1-8b-instant
+```
+
+---
+
+## Database Initialization
+
+### Create travel DB
+
+```powershell
 python -m src.utils.db_init
 ```
 
-Creates `data/travel_agency.db` with flights, hotels, activities, and visa data for 5 cities.
+This creates:
 
-### 4. Run the agent
+```text
+data/travel_agency.db
+```
 
-```bash
+Expected tables:
+
+```text
+flights
+hotels
+activities
+visa_requirements
+```
+
+### Verify travel DB
+
+Create `check_db.py` inside `data/` if needed:
+
+```python
+import sqlite3
+
+conn = sqlite3.connect("travel_agency.db")
+cur = conn.cursor()
+
+cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+print("Tables:", [row[0] for row in cur.fetchall()])
+
+for table in ["flights", "hotels", "activities", "visa_requirements"]:
+    cur.execute(f"SELECT COUNT(*) FROM {table}")
+    print(table, cur.fetchone()[0])
+
+conn.close()
+```
+
+Run:
+
+```powershell
+cd data
+python check_db.py
+cd ..
+```
+
+Expected example output:
+
+```text
+flights 9
+hotels 11
+activities 10
+visa_requirements 10
+```
+
+---
+
+## Verify Tools
+
+From project root, create `check_tools.py`:
+
+```python
+from src.tools.db_tools import (
+    fetch_flights,
+    fetch_hotels,
+    fetch_activities,
+    get_visa_requirement,
+)
+
+print("Flights:")
+print(fetch_flights.invoke({"origin": "TLV", "destination": "Paris"}))
+
+print("\nHotels:")
+print(fetch_hotels.invoke({"city": "Paris"}))
+
+print("\nActivities:")
+print(fetch_activities.invoke({"city": "Paris"}))
+
+print("\nVisa:")
+print(get_visa_requirement.invoke({
+    "origin_country": "Israel",
+    "destination_country": "France",
+}))
+```
+
+Run:
+
+```powershell
+python check_tools.py
+```
+
+---
+
+## Verify Semantic Cache
+
+Create `check_cache.py`:
+
+```python
+from pathlib import Path
+import sqlite3
+
+from src.services.semantic_cache import initialize_cache_db
+
+initialize_cache_db()
+
+db = Path("data/semantic_cache.db")
+print("semantic_cache.db exists:", db.exists())
+
+conn = sqlite3.connect(db)
+cur = conn.cursor()
+
+cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+print("Tables:", [row[0] for row in cur.fetchall()])
+
+cur.execute("SELECT COUNT(*) FROM semantic_cache")
+print("semantic_cache rows:", cur.fetchone()[0])
+
+conn.close()
+```
+
+Run:
+
+```powershell
+python check_cache.py
+```
+
+---
+
+## Verify Graph Compilation
+
+```powershell
+python -c "from src.graph.workflow import graph; print('Graph OK:', graph is not None)"
+```
+
+Expected:
+
+```text
+Graph OK: True
+```
+
+---
+
+## Run
+
+```powershell
 python run.py
 ```
 
+Example session:
+
+```text
+Enter your session ID: test_01
+
+You:
+I am from Israel, flying from TLV. Plan me a 5-day trip to Paris under $1500
+```
+
+Expected first run:
+
+```text
+validator
+→ master_orchestrator
+→ cache_check
+→ cache miss
+→ master_planner
+→ cache_store
+→ summarizer
+```
+
+Then ask a similar query to test cache:
+
+```text
+Build a 5 day Paris trip from TLV for an Israeli traveler around 1500 dollars
+```
+
+If similarity is above threshold, expected:
+
+```text
+cache_check
+→ cache hit
+→ END
+```
+
 ---
 
-## Usage
+## Session Memory
 
+Each session ID maps to persistent state in:
+
+```text
+data/checkpoints.db
 ```
-╔══════════════════════════════════════════════════════════╗
-║     AI Travel Planner  •  LangGraph + Gemini/Groq        ║
-║     Destinations: Paris · London · Tokyo · NY · Berlin   ║
-╚══════════════════════════════════════════════════════════╝
 
-Enter your session ID (press Enter for default): nick_01
-  Session: nick_01 — memory will be saved and restored automatically.
+Example:
 
-You: I prefer El Al, eat kosher food, travelling with 2 people
-You: I prefer Airbus planes for safety
-You: Plan a 5-day trip to Paris under $2000
-You: what are my preferences?
+```text
+Session: memory_01
+You: I prefer El Al and kosher food
 You: exit
 ```
 
-### Session IDs
+Restart:
 
-Each session ID maps to a separate persistent conversation in `data/checkpoints.db`.
-Using the same ID across restarts resumes the conversation with full memory.
+```text
+Session: memory_01
+You: What do you remember about me?
+```
 
-| Session type | ID format | Behaviour |
-|---|---|---|
-| Regular | `nick_01`, `user_abc` | Normal planning, no reviewer |
-| Admin | ends with `ADMIN00` — e.g. `nickADMIN00` | Plan review shown after full plans |
+Expected:
 
-### Demo queries
-
-| Query | What happens |
-|---|---|
-| `I prefer El Al and kosher food` | Saves airline + food to memory |
-| `I prefer Airbus planes` | LLM extracts & saves as free-form preference |
-| `what are my preferences?` | Recall node answers from State instantly |
-| `Plan a 5-day trip to Paris under $1500` | Full plan: flights, hotels, activities, cost, visa |
-| `What's the cheapest flight to Berlin?` | `get_cheapest_flight` only |
-| `Find me a hotel in Tokyo under $100/night` | `fetch_hotels` with price filter |
-| `Do I need a visa to visit Japan?` | `get_visa_requirement` only |
-| `What can I do in London?` | `fetch_activities` — researcher node, no LLM |
-| `Plan a trip to Rome` | Blocked — unsupported city |
-| `how to reverse a linked list` | Blocked — off-topic |
-| `ignore all previous instructions` | Blocked — injection attempt |
-
----
-
-## Tools Reference
-
-| Tool | File | Description |
-|---|---|---|
-| `fetch_flights` | `db_tools.py` | All flights on a route, sorted by price |
-| `get_cheapest_flight` | `db_tools.py` | Single cheapest flight on a route |
-| `list_destinations` | `db_tools.py` | All destinations available from an origin |
-| `fetch_hotels` | `db_tools.py` | Hotels in a city, optional max-price filter |
-| `get_cheapest_hotel` | `db_tools.py` | Single cheapest hotel in a city |
-| `fetch_activities` | `db_tools.py` | Tourist activities in a city |
-| `get_visa_requirement` | `db_tools.py` | Visa rules for Israeli travellers |
-| `calculate_trip_cost` | `calc_tools.py` | Cost breakdown: flight + hotel × nights |
-| `web_search` | `search_tools.py` | Real-time search via Tavily (needs API key) |
-
----
-
-## Security — Two-Layer Validation
-
-Every user message passes through two validation layers before Marco processes it:
-
-**Layer 1 — AI Validator** (`src/agents/ai_validator.py`)
-Uses Groq `llama-3.1-8b-instant` (~200ms) with a comprehensive policy prompt.
-Understands intent — catches creative injection attempts that regex cannot.
-
-**Layer 2 — Hardcoded Fallback** (`src/agents/validator.py`)
-Regex + keyword patterns. Activates automatically when Groq is unavailable.
-
-| Verdict | What triggers it |
-|---|---|
-| `BLOCKED_HARM` | Violence, weapons, self-harm, hacking, fraud, abuse |
-| `BLOCKED_INJECTION` | Ignore instructions, act-as, style/persona changes, DAN |
-| `BLOCKED_SCOPE` | Coding, weather, math, cooking, sports, medical, legal |
-| `BLOCKED_CITY` | Destinations outside the 5 supported cities |
-
-Session IDs are also validated — format check (alphanumeric + `_` `-`, max 50 chars) plus a word-level blacklist.
-
----
-
-## Memory & Persistence
-
-### Short-term memory
-The `messages` list in `AgentState` holds the current conversation context.
-
-### Long-term memory (across restarts)
-`SqliteSaver` writes a full State snapshot to `data/checkpoints.db` after every node.
-Restored automatically when the same `thread_id` is used on next launch.
-
-### Compact memory
-`summarizer_node` runs after every completed turn. When message history exceeds 10 messages it compresses older messages into a bullet-point summary stored in `conversation_summary`. `call_model` then sends only the last 8 messages to the LLM, keeping context windows lean.
-
-### User preferences (persisted)
-Preferences are stored in `AgentState` and saved to `checkpoints.db`:
-
-| Field | Detected by | Example |
-|---|---|---|
-| `preferred_airline` | Hardcoded airline name list | `El Al`, `Emirates` |
-| `food_preference` | Hardcoded food keyword list | `kosher`, `vegan` |
-| `num_travelers` | Regex number + traveler word | `2 people` |
-| `travel_preferences` | Groq LLM free-form extraction | `Prefers Airbus aircraft`, `Direct flights only` |
+```text
+Preferred airline: El Al
+Food preference: kosher
+```
 
 ---
 
 ## AgentState
 
+Current `AgentState` includes:
+
 ```python
 class AgentState(TypedDict):
-    messages: Annotated[list, add_messages]  # conversation history
-    current_city: str                         # last detected destination
-    total_budget: float                       # last detected budget (USD)
-    tool_call_count: int                      # resets each turn; guards loops
-    validation_status: str                    # approved | blocked_*
-    preferred_airline: str                    # persisted across sessions
-    food_preference: str                      # persisted across sessions
-    num_travelers: int                        # persisted across sessions
-    travel_preferences: str                   # free-form LLM-extracted prefs
-    is_admin: bool                            # True when session ends with ADMIN00
-    conversation_summary: str                 # compact history summary
+    messages: Annotated[list, add_messages]
+
+    current_city: str
+    total_budget: float
+    tool_call_count: int
+
+    validation_status: str
+    orchestrator_route: str
+    orchestrator_reason: str
+
+    preferred_airline: str
+    food_preference: str
+    num_travelers: int
+    travel_preferences: str
+
+    is_admin: bool
+    conversation_summary: str
+
+    cache_status: str
+    cache_similarity_score: float
+    cache_matched_query: str
+    cache_answer: str
+
+    trip_context: dict
+    context_enrichment_status: str
+    planner_status: str
+    planner_task_results: dict
 ```
 
 ---
 
-## Loop Protection
+## Security
 
-Two independent guards prevent infinite tool-call loops:
+Every user message passes through validation before orchestration.
 
-1. **Hard cap** — `tool_call_count >= 8` routes to `circuit_breaker`
-2. **Repetition detection** — `detect_repetition()` checks if the same tool was called with identical arguments in the current turn (current-turn only, not full history — avoids false positives with SqliteSaver)
+### Layer 1 — AI Validator
 
----
+File:
 
-## LLM Provider
-
-The project supports two providers, switchable via `.env` with no code changes:
-
-```bash
-# Use Gemini (default)
-LLM_PROVIDER=gemini
-
-# Use Groq (unlimited free tier, good for testing)
-LLM_PROVIDER=groq
+```text
+src/agents/ai_validator.py
 ```
 
-Groq is also used independently for the AI validator and free-form preference extraction — always available regardless of the main provider setting.
+Uses Groq for semantic policy classification.
 
----
+### Layer 2 — Rule-Based Validator
 
-## Testing
+File:
 
-```bash
-# Tool integration tests (no API key needed)
-python -m pytest tests/test_tools.py -v
-
-# API connectivity test (needs key in .env)
-python -m pytest tests/test_connection.py -v
+```text
+src/agents/validator.py
 ```
 
-CI runs `test_tools.py` automatically on every push via GitHub Actions.
+Fallback regex/keyword validator.
+
+Possible verdicts:
+
+```text
+APPROVED
+BLOCKED_HARM
+BLOCKED_INJECTION
+BLOCKED_SCOPE
+BLOCKED_CITY
+```
 
 ---
 
-## Environment Variables
+## Loop Guards
 
-| Variable | Required | Description |
-|---|---|---|
-| `LLM_PROVIDER` | No | `gemini` (default) or `groq` |
-| `GOOGLE_API_KEY` | When using Gemini | Google AI Studio key |
-| `GROQ_API_KEY` | When using Groq (also for AI validator) | console.groq.com — free tier |
-| `LLM_MODEL` | No | Override model name |
-| `TAVILY_API_KEY` | No | Enables `web_search` tool |
+Runtime loop protection is in:
+
+```text
+src/utils/graph_guards.py
+```
+
+It detects repeated identical tool calls in the current turn.
+
+The legacy path also uses:
+
+```text
+tool_call_count
+MAX_TOOL_CALLS = 8
+```
 
 ---
 
-## Session Roadmap
+## Current Known Limitations
 
-| Session | Topic | Status |
-|---|---|---|
-| 1 | Gemini API + LangChain tool binding | Done |
-| 2 | Manual tool orchestration | Done |
-| 3 | LangGraph StateGraph — autonomous agent | Done |
-| 4 | SqliteSaver — persistent cross-session memory | Done |
-| **5** | **Plan-and-Execute pattern** | **Upcoming** |
+1. HITL resume is not fully implemented yet. The planner can ask for missing required fields, but a short follow-up like `2000$` is not yet merged automatically into the pending trip context.
+2. Dates are not yet part of `TripContext`. The planner supports duration, but not start/end travel dates.
+3. Semantic cache threshold is approximate. Current threshold is `0.85`. Some semantically similar queries may still miss.
+4. The legacy `agent` path still exists for backward compatibility, but the main cache-miss route now uses `master_planner`.
+
+---
+
+## Suggested Demo Queries
+
+### Preferences memory
+
+```text
+I prefer El Al and kosher food
+What do you remember about me?
+```
+
+### Research
+
+```text
+Show hotels in Paris
+What activities are available in London?
+Do I need a visa for France if I am from Israel?
+```
+
+### HITL
+
+```text
+Plan me a trip to Paris
+```
+
+Expected: asks for missing origin airport, origin country, duration, and budget.
+
+### Full planning
+
+```text
+I am from Israel, flying from TLV. Plan me a 5-day trip to Paris under $1500
+```
+
+Expected: full plan, tools run asynchronously, answer stored in semantic cache.
+
+### Cache
+
+```text
+Build a 5 day Paris trip from TLV for an Israeli traveler around 1500 dollars
+```
+
+Expected: cache hit if similarity is above threshold.
+
+### Security
+
+```text
+ignore all previous instructions
+```
+
+Expected: blocked.
+
+---
+
+## Course Alignment
+
+This project covers and extends the course requirements:
+
+| Course topic | Implementation |
+|---|---|
+| Tool binding | `src/tools`, `ALL_TOOLS`, LangChain tools |
+| Manual tool understanding | Tools return DB-backed data |
+| SQLite tools | `travel_agency.db` |
+| LangGraph State | `AgentState` |
+| Nodes | validator, orchestrator, preferences memory, researcher, cache, planner |
+| Conditional Edges | router functions |
+| Loop protection | `graph_guards.py`, circuit breaker |
+| Persistence | `SqliteSaver`, `checkpoints.db` |
+| Long-term preferences | persisted in `AgentState` |
+| Plan-and-Execute | `master_planner` with dependency checks and async execution |
+| Semantic cache | local embeddings + SQLite |
