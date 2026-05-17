@@ -12,6 +12,7 @@ from src.graph.nodes import (
     circuit_breaker,
     extract_metadata,
     master_orchestrator_node,
+    master_planner_node,
     preferences_memory_node,
     researcher_node,
     reviewer_node,
@@ -20,6 +21,7 @@ from src.graph.nodes import (
 )
 from src.graph.router import (
     route_after_cache_check,
+    route_after_master_planner,
     route_after_metadata,
     route_after_orchestrator,
     route_after_validator,
@@ -49,12 +51,15 @@ validator
                                                      │
                                                      ▼ route_after_cache_check
                                                      ├─ [cache_hit]  → END
-                                                     └─ [cache_miss] → agent ◄──────────┐
-                                                                         │              │
-                                                                         ├─ tools ──────┘
-                                                                         ├─ circuit_breaker → END
-                                                                         ├─ reviewer → summarizer → END
-                                                                         └─ cache_store → summarizer → END
+                                                     └─ [cache_miss] → master_planner
+                                                                          │
+                                                                          ▼ route_after_master_planner
+                                                                          ├─ [missing_required_info] → END
+                                                                          └─ [final_plan] → cache_store → summarizer → END
+
+Legacy path:
+  The legacy agent/tools loop is still registered for backward compatibility,
+  but cache_miss now routes to master_planner.
 
 Strict rule:
   Every user query must pass through validator before intent routing.
@@ -62,10 +67,8 @@ Strict rule:
 Current phase:
   preferences_memory and research are implemented as dedicated agent routes.
   cache_check is implemented with semantic embeddings.
-  cache_store saves successful cache-miss answers for future cache hits.
-
-Next phase:
-  cache_miss will route to the dedicated planner instead of the legacy agent.
+  cache_miss routes to master_planner.
+  cache_store saves successful planner answers for future cache hits.
 """
 
 # SQLite connection created once at module level — stays open for app lifetime.
@@ -92,11 +95,15 @@ def build_graph():
     builder.add_node("preferences_memory", preferences_memory_node)
     builder.add_node("researcher", researcher_node)
     builder.add_node("cache_check", cache_check_node)
+    builder.add_node("master_planner", master_planner_node)
     builder.add_node("cache_store", cache_store_node)
+
+    # Legacy nodes kept for backward compatibility and future fallbacks.
     builder.add_node("agent", call_model)
     builder.add_node("tools", build_tools_node())
     builder.add_node("circuit_breaker", circuit_breaker)
     builder.add_node("reviewer", reviewer_node)
+
     builder.add_node("summarizer", summarizer_node)
 
     # ── Edges ─────────────────────────────────────────────────────────────────
@@ -136,11 +143,22 @@ def build_graph():
         "cache_check",
         route_after_cache_check,
         {
-            "agent": "agent",
+            "master_planner": "master_planner",
             END: END,
         },
     )
 
+    builder.add_conditional_edges(
+        "master_planner",
+        route_after_master_planner,
+        {
+            "cache_store": "cache_store",
+            "summarizer": "summarizer",
+            END: END,
+        },
+    )
+
+    # Legacy agent path remains available if another route uses it later.
     builder.add_conditional_edges(
         "agent",
         should_continue,

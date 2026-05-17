@@ -206,17 +206,20 @@ def _update_status_for_node(node_name: str, node_data: dict, status) -> None:
     elif node_name == "master_orchestrator":
         status.update("[tool.call]Routing your request...[/tool.call]")
 
+    elif node_name == "preferences_memory":
+        status.update("[tool.call]Checking and updating travel memory...[/tool.call]")
+
+    elif node_name == "researcher":
+        status.update("[tool.call]Searching travel data...[/tool.call]")
+
     elif node_name == "cache_check":
         status.update("[tool.call]Checking cache...[/tool.call]")
 
-    elif node_name == "update_preferences":
-        status.update("[tool.call]Saving your preferences...[/tool.call]")
+    elif node_name == "master_planner":
+        status.update("[tool.call]Planning your trip...[/tool.call]")
 
-    elif node_name == "recall":
-        status.update("[tool.call]Checking memory...[/tool.call]")
-
-    elif node_name == "researcher":
-        status.update("[tool.call]Searching database...[/tool.call]")
+    elif node_name == "cache_store":
+        status.update("[tool.call]Saving answer to cache...[/tool.call]")
 
     elif node_name == "agent":
         msgs = node_data.get("messages", [])

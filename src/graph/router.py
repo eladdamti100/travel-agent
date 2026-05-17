@@ -75,20 +75,19 @@ def route_after_cache_check(state: AgentState) -> str:
     Conditional edge after semantic cache check.
 
     If cache hit, the cached answer was already added to messages, so the graph ends.
-    If cache miss, continue to the legacy agent for now.
-
-    Later:
-      cache_miss → planner
+    If cache miss, continue to the master planner.
     """
     if state.get("cache_status") == "hit":
         return END
 
-    return "agent"
+    return "master_planner"
 
 
 def should_continue(state: AgentState) -> str:
     """
     Conditional edge function — decides the next node after the legacy agent runs.
+
+    This is still used only by the legacy agent path.
 
     Decision tree:
       1. tool_call_count >= MAX_TOOL_CALLS        → circuit_breaker
@@ -113,6 +112,25 @@ def should_continue(state: AgentState) -> str:
 
     if is_admin and count >= 5 and state.get("current_city"):
         return "reviewer"
+
+    if state.get("cache_status") == "miss":
+        return "cache_store"
+
+    return "summarizer"
+
+
+def route_after_master_planner(state: AgentState) -> str:
+    """
+    Conditional edge after the new master planner.
+
+    If the planner produced a HITL question because required trip details are
+    missing, end the graph after showing that question.
+
+    If the planner produced a complete final answer after cache miss, store it
+    in semantic cache before summarizing.
+    """
+    if state.get("planner_status") == "missing_required_info":
+        return END
 
     if state.get("cache_status") == "miss":
         return "cache_store"

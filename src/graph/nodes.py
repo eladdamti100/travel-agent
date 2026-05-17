@@ -7,7 +7,7 @@ from langgraph.prebuilt import ToolNode
 from src.agents.cache_checker import run_cache_check
 from src.agents.cache_store import run_cache_store
 from src.agents.master_orchestrator import run_master_orchestrator
-from src.agents.planner import PLANNER_SYSTEM_PROMPT
+from src.agents.planner import PLANNER_SYSTEM_PROMPT, run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
 from src.graph.state import AgentState
@@ -33,7 +33,7 @@ _CITY_MAP = {
     "berlin": "Berlin",
 }
 
-# Lazy-initialised bound model.
+# Lazy-initialised bound model for the legacy planner path.
 _model = None
 
 
@@ -42,8 +42,8 @@ def _get_model():
     Returns the main tool-bound planning model.
 
     This is still used by the legacy planner path and summarizer.
-    The new researcher, preferences-memory, and cache paths live in their own
-    agent files.
+    The new researcher, preferences-memory, cache, and master-planner paths live
+    in their own agent files.
     """
     global _model
 
@@ -173,17 +173,25 @@ def cache_check_node(state: AgentState) -> dict:
     return run_cache_check(state)
 
 
-# ── Node 7: Legacy Planner Agent ─────────────────────────────────────────────
+# ── Node 7: Master Planner ──────────────────────────────────────────────────
+
+def master_planner_node(state: AgentState) -> dict:
+    """
+    LangGraph node wrapper for the master planner.
+
+    This is the new planner path used after semantic cache miss.
+    """
+    return run_master_planner(state)
+
+
+# ── Node 8: Legacy Planner Agent ─────────────────────────────────────────────
 
 def call_model(state: AgentState) -> dict:
     """
     Legacy planner node.
 
-    This is still used temporarily after cache_check miss until the dedicated
-    planner is implemented.
-
-    It sends the conversation history to the main tool-bound LLM and returns
-    either a tool-call request or a final human-readable answer.
+    This is kept temporarily for backward compatibility until the graph fully
+    routes cache_miss to master_planner instead of this legacy node.
     """
     profile_lines = []
 
@@ -281,7 +289,7 @@ def call_model(state: AgentState) -> dict:
     }
 
 
-# ── Node 8: Circuit Breaker ──────────────────────────────────────────────────
+# ── Node 9: Circuit Breaker ──────────────────────────────────────────────────
 
 def circuit_breaker(state: AgentState) -> dict:
     """
@@ -306,7 +314,7 @@ def circuit_breaker(state: AgentState) -> dict:
     }
 
 
-# ── Node 9: Reviewer ─────────────────────────────────────────────────────────
+# ── Node 10: Reviewer ────────────────────────────────────────────────────────
 
 def reviewer_node(state: AgentState) -> dict:
     """
@@ -337,7 +345,7 @@ def reviewer_node(state: AgentState) -> dict:
     }
 
 
-# ── Node 10: Cache Store ─────────────────────────────────────────────────────
+# ── Node 11: Cache Store ─────────────────────────────────────────────────────
 
 def cache_store_node(state: AgentState) -> dict:
     """
@@ -346,7 +354,7 @@ def cache_store_node(state: AgentState) -> dict:
     return run_cache_store(state)
 
 
-# ── Node 11: Summarizer ──────────────────────────────────────────────────────
+# ── Node 12: Summarizer ──────────────────────────────────────────────────────
 
 def summarizer_node(state: AgentState) -> dict:
     """
