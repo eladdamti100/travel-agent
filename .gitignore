@@ -13,9 +13,9 @@ dist/
 build/
 
 # Generated databases (recreated by db_init)
+data/*
 data/travel_agency.db
 data/checkpoints.db
-
 # Test artifacts
 .pytest_cache/
 test_results.txt

@@ -33,7 +33,7 @@ logger = get_logger("semantic_cache")
 
 _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.db"
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-_DEFAULT_THRESHOLD = 0.86
+_DEFAULT_THRESHOLD = 0.85
 
 _embedding_model: SentenceTransformer | None = None
 

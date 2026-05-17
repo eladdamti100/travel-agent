@@ -25,6 +25,7 @@ from src.utils.logger import get_logger
 
 logger = get_logger("cache_checker")
 
+DEFAULT_THRESHOLD = 0.85
 
 def run_cache_check(state: AgentState) -> dict:
     """
@@ -48,7 +49,7 @@ def run_cache_check(state: AgentState) -> dict:
     result = find_cached_answer(
         query=query,
         route="cache_check",
-        threshold=0.86,
+        threshold=DEFAULT_THRESHOLD,
     )
 
     if result.status == CacheStatus.HIT:
