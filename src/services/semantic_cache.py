@@ -24,6 +24,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+import os
+
+os.environ["TORCHINDUCTOR_DISABLE"] = "1"
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
 from sentence_transformers import SentenceTransformer
 
 from src.models.cache import CacheCheckResult, CacheEntry, CacheStatus

@@ -24,7 +24,9 @@ import asyncio
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
+from src.agents.sub_agents.transport_agent import TransportAgent
+from src.agents.sub_agents.stay_agent import StayAgent
+from src.agents.sub_agents.experience_agent import ExperienceAgent
 from src.agents.base import get_model
 from src.agents.context_enricher import (
     enrich_trip_context_async,
@@ -40,19 +42,24 @@ from src.models.planner import (
     PlannerTask,
     PlannerTaskStatus,
     PlannerTaskType,
+    ActivityResult,
+    CostResult,
+    FlightResult,
+    HotelResult,
+    PlannerToolResults,
+    VisaResult,
+    DependencyStatus,
+    PlannerDependency,
+    PlannerDependencyGraph,
+    PlannerTaskNode,
+    SchedulerResult,
+    SchedulerWave,
 )
 from src.models.trip_context import REQUIRED_TRIP_FIELDS, TripContext
 from src.tools.calc_tools import calculate_trip_cost
-from src.tools.db_tools import (
-    fetch_activities,
-    fetch_flights,
-    fetch_hotels,
-    get_visa_requirement,
-)
 from src.utils.logger import get_logger
 
 logger = get_logger("planner")
-
 
 PLANNER_SYSTEM_PROMPT = """You are Marco, an expert AI travel planning assistant.
 
@@ -126,6 +133,43 @@ _TASK_REQUIREMENTS: dict[PlannerTaskType, tuple[str, ...]] = {
     PlannerTaskType.CALCULATE_TRIP_COST: ("duration_days",),
 }
 
+async def run_sub_agents_async(
+    context: TripContext,
+    existing_results: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """
+    Runs planner sub-agents in parallel and safely merges their independent results.
+    """
+    agents = [
+        TransportAgent(),
+        StayAgent(),
+        ExperienceAgent(),
+    ]
+
+    results = await asyncio.gather(
+        *[
+            agent.run(context=context)
+            for agent in agents
+        ],
+        return_exceptions=True,
+    )
+
+    merged_raw_results: dict[str, str] = {
+        **(existing_results or {})
+    }
+
+    for agent, result in zip(agents, results):
+        if isinstance(result, Exception):
+            logger.error(
+                "Sub-agent failed. agent=%s error=%s",
+                getattr(agent, "agent_name", agent.__class__.__name__),
+                result,
+            )
+            continue
+
+        merged_raw_results.update(result.raw_results)
+
+    return merged_raw_results
 
 def run_master_planner(state: AgentState) -> dict:
     """
@@ -136,26 +180,146 @@ def run_master_planner(state: AgentState) -> dict:
     """
     return asyncio.run(_run_master_planner_async(state))
 
+def build_planner_dependency_graph(
+    context: TripContext,
+    completed_tasks: list[PlannerTaskType] | None = None,
+) -> PlannerDependencyGraph:
+    """
+    Builds an explicit planner dependency DAG.
+
+    This does not replace the current execution logic yet.
+    It gives the planner a structured graph that future async scheduling can use.
+    """
+    completed = completed_tasks or []
+
+    dependencies = [
+        PlannerDependency(
+            task=PlannerTaskType.CALCULATE_TRIP_COST,
+            depends_on=PlannerTaskType.FETCH_FLIGHTS,
+            reason="Cost calculation needs flight pricing.",
+        ),
+        PlannerDependency(
+            task=PlannerTaskType.CALCULATE_TRIP_COST,
+            depends_on=PlannerTaskType.FETCH_HOTELS,
+            reason="Cost calculation needs hotel pricing.",
+        ),
+    ]
+
+    dependency_map: dict[PlannerTaskType, list[PlannerTaskType]] = {}
+
+    for dependency in dependencies:
+        dependency_map.setdefault(dependency.task, []).append(
+            dependency.depends_on
+        )
+
+    nodes: dict[PlannerTaskType, PlannerTaskNode] = {}
+    ready_tasks: list[PlannerTaskType] = []
+    blocked_tasks: list[PlannerTaskType] = []
+
+    for task_type in PlannerTaskType:
+        required_fields = list(_TASK_REQUIREMENTS.get(task_type, ()))
+
+        missing_fields = [
+            field_name
+            for field_name in required_fields
+            if getattr(context, field_name) in (None, "", [])
+        ]
+
+        task_dependencies = dependency_map.get(task_type, [])
+
+        missing_dependencies = [
+            dep
+            for dep in task_dependencies
+            if dep not in completed
+        ]
+
+        if task_type in completed:
+            status = DependencyStatus.COMPLETED
+            reason = "Task already completed."
+
+        elif missing_fields:
+            status = DependencyStatus.BLOCKED
+            reason = (
+                "Task is blocked by missing context fields: "
+                f"{', '.join(missing_fields)}."
+            )
+
+        elif missing_dependencies:
+            status = DependencyStatus.BLOCKED
+            reason = (
+                "Task is blocked by unfinished dependencies: "
+                + ", ".join(dep.value for dep in missing_dependencies)
+                + "."
+            )
+
+        else:
+            status = DependencyStatus.READY
+            reason = "Task has all context fields and dependencies ready."
+
+        node = PlannerTaskNode(
+            task_type=task_type,
+            status=status,
+            required_context_fields=required_fields,
+            depends_on=task_dependencies,
+            unlocked_by=[
+                dependency.task
+                for dependency in dependencies
+                if dependency.depends_on == task_type
+            ],
+            reason=reason,
+        )
+
+        nodes[task_type] = node
+
+        if status == DependencyStatus.READY:
+            ready_tasks.append(task_type)
+
+        elif status == DependencyStatus.BLOCKED:
+            blocked_tasks.append(task_type)
+
+    return PlannerDependencyGraph(
+        nodes=nodes,
+        dependencies=dependencies,
+        ready_tasks=ready_tasks,
+        blocked_tasks=blocked_tasks,
+        completed_tasks=completed,
+    )
+
 
 async def _run_master_planner_async(state: AgentState) -> dict:
     """
-    Runs the master planner after semantic cache miss.
-
-    The planner starts deterministic extraction immediately, launches SLM
-    enrichment asynchronously, runs all currently-ready tasks, then merges
-    enrichment and continues with any newly-ready tasks.
+    Runs the master planner after semantic cache miss or HITL resume.
     """
-    deterministic_context = extract_trip_context_deterministic(state)
+    is_hitl_resume = bool(
+        state.get("pending_trip_context")
+        or state.get("awaiting_user_clarification")
+    )
+
+    if is_hitl_resume and state.get("trip_context"):
+        deterministic_context = TripContext(**state["trip_context"])
+        logger.info("Master planner resumed from HITL trip_context.")
+
+    elif is_hitl_resume and state.get("pending_trip_context"):
+        deterministic_context = TripContext(**state["pending_trip_context"])
+        logger.info("Master planner resumed from pending_trip_context.")
+
+    else:
+        deterministic_context = extract_trip_context_deterministic(state)
+        logger.info("Master planner created fresh deterministic context.")
 
     enrichment_task = asyncio.create_task(
         enrich_trip_context_async(state, deterministic_context)
     )
 
-    initial_dependency_result = check_planner_dependencies(deterministic_context)
+    existing_task_results = (
+        state.get("pending_planner_task_results", {}) or {}
+        if is_hitl_resume
+        else {}
+    )
 
-    initial_task_results = await run_ready_tasks_async(
-        deterministic_context,
-        initial_dependency_result.async_ready_tasks,
+    initial_task_results = await run_sub_agents_async(
+        context=deterministic_context,
+        existing_results=existing_task_results,
     )
 
     enrichment_result = await enrichment_task
@@ -163,24 +327,35 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
     final_dependency_result = check_planner_dependencies(merged_context)
 
-    additional_tasks = _filter_unexecuted_tasks(
-        final_dependency_result.async_ready_tasks,
-        initial_task_results,
+    task_results = await run_sub_agents_async(
+        context=merged_context,
+        existing_results={
+            **existing_task_results,
+            **initial_task_results,
+        },
     )
 
-    additional_task_results = await run_ready_tasks_async(
-        merged_context,
-        additional_tasks,
+    completed_tasks = [
+        PlannerTaskType(task_type)
+        for task_type in task_results.keys()
+        if task_type in {item.value for item in PlannerTaskType}
+    ]
+
+    dependency_graph = build_planner_dependency_graph(
+        context=merged_context,
+        completed_tasks=completed_tasks,
     )
 
-    task_results = {
-        **initial_task_results,
-        **additional_task_results,
-    }
+    scheduler_result = build_scheduler_result(dependency_graph)
 
     updates = _build_preference_state_updates(
         state,
         enrichment_result.preference_updates,
+    )
+
+    structured_results = _build_structured_tool_results(
+        context=merged_context,
+        raw_results=task_results,
     )
 
     updates["trip_context"] = merged_context.model_dump()
@@ -189,22 +364,28 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     )
     updates["planner_status"] = final_dependency_result.status.value
     updates["planner_task_results"] = task_results
+    updates["planner_structured_results"] = structured_results.model_dump()
+    updates["planner_dependency_graph"] = dependency_graph.model_dump()
+    updates["planner_scheduler_result"] = scheduler_result.model_dump()
 
     if final_dependency_result.missing_requirements:
-        updates["planner_status"] = PlannerStatus.MISSING_REQUIRED_INFO.value
-        updates["messages"] = [
-            AIMessage(
-                content=(
-                    final_dependency_result.hitl_question
-                    or _build_default_hitl_question()
-                )
-            )
-        ]
-
-        logger.info(
-            "Master planner stopped for HITL: %s",
-            final_dependency_result.hitl_question,
+        hitl_question = (
+            final_dependency_result.hitl_question
+            or _build_default_hitl_question()
         )
+
+        updates["planner_status"] = PlannerStatus.MISSING_REQUIRED_INFO.value
+        updates["awaiting_user_clarification"] = True
+        updates["pending_trip_context"] = merged_context.model_dump()
+        updates["pending_missing_fields"] = [
+            item.field_name
+            for item in final_dependency_result.missing_requirements
+        ]
+        updates["pending_hitl_question"] = hitl_question
+        updates["pending_planner_task_results"] = task_results
+        updates["messages"] = [AIMessage(content=hitl_question)]
+
+        logger.info("Master planner stopped for HITL: %s", hitl_question)
 
         return updates
 
@@ -217,6 +398,28 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         task_results[PlannerTaskType.CALCULATE_TRIP_COST.value] = cost_result
         updates["planner_task_results"] = task_results
 
+    completed_tasks = [
+        PlannerTaskType(task_type)
+        for task_type in task_results.keys()
+        if task_type in {item.value for item in PlannerTaskType}
+    ]
+
+    dependency_graph = build_planner_dependency_graph(
+        context=merged_context,
+        completed_tasks=completed_tasks,
+    )
+
+    scheduler_result = build_scheduler_result(dependency_graph)
+
+    structured_results = _build_structured_tool_results(
+        context=merged_context,
+        raw_results=task_results,
+    )
+
+    updates["planner_structured_results"] = structured_results.model_dump()
+    updates["planner_dependency_graph"] = dependency_graph.model_dump()
+    updates["planner_scheduler_result"] = scheduler_result.model_dump()
+
     final_answer = await _generate_final_plan(
         context=merged_context,
         dependency_result=final_dependency_result,
@@ -227,8 +430,44 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     updates["messages"] = [AIMessage(content=final_answer)]
     updates["tool_call_count"] = state.get("tool_call_count", 0) + len(task_results)
 
+    updates["awaiting_user_clarification"] = False
+    updates["pending_trip_context"] = {}
+    updates["pending_missing_fields"] = []
+    updates["pending_hitl_question"] = ""
+    updates["pending_planner_task_results"] = {}
+
     logger.info("Master planner completed final plan.")
     return updates
+
+
+def build_scheduler_result(
+    dependency_graph: PlannerDependencyGraph,
+) -> SchedulerResult:
+    """
+    Builds async execution waves from the dependency graph.
+
+    Tasks in the same wave can run in parallel.
+    """
+    waves: list[SchedulerWave] = []
+
+    if dependency_graph.ready_tasks:
+        waves.append(
+            SchedulerWave(
+                wave_number=1,
+                tasks=dependency_graph.ready_tasks,
+                reason="Tasks with all required context and completed dependencies.",
+            )
+        )
+
+    return SchedulerResult(
+        waves=waves,
+        completed_tasks=dependency_graph.completed_tasks,
+        blocked_tasks=dependency_graph.blocked_tasks,
+        reason=(
+            "Scheduler built from current dependency graph. "
+            "Ready tasks can run concurrently in the first wave."
+        ),
+    )
 
 
 def check_planner_dependencies(context: TripContext) -> DependencyCheckResult:
@@ -327,88 +566,6 @@ def _build_planner_task(
         ),
     )
 
-
-async def run_ready_tasks_async(
-    context: TripContext,
-    tasks: list[PlannerTask],
-) -> dict[str, str]:
-    """
-    Runs ready planner tasks concurrently.
-
-    Tool functions are synchronous LangChain tools, so they are executed with
-    asyncio.to_thread to keep the planner async.
-    """
-    ready_tasks = [
-        task
-        for task in tasks
-        if task.is_ready and task.can_run_async
-    ]
-
-    if not ready_tasks:
-        return {}
-
-    results = await asyncio.gather(
-        *[_execute_task_async(context, task) for task in ready_tasks],
-        return_exceptions=True,
-    )
-
-    output: dict[str, str] = {}
-
-    for task, result in zip(ready_tasks, results):
-        key = task.task_type.value
-
-        if isinstance(result, Exception):
-            logger.error("Planner task failed. task=%s error=%s", key, result)
-            output[key] = f"Task error: {result}"
-        else:
-            output[key] = str(result)
-
-    return output
-
-
-async def _execute_task_async(context: TripContext, task: PlannerTask) -> str:
-    """
-    Executes a single planner task asynchronously.
-    """
-    task_type = task.task_type
-
-    if task_type == PlannerTaskType.FETCH_FLIGHTS:
-        return await asyncio.to_thread(
-            fetch_flights.invoke,
-            {
-                "origin": context.origin_airport,
-                "destination": context.destination_city,
-            },
-        )
-
-    if task_type == PlannerTaskType.FETCH_HOTELS:
-        return await asyncio.to_thread(
-            fetch_hotels.invoke,
-            {
-                "city": context.destination_city,
-            },
-        )
-
-    if task_type == PlannerTaskType.FETCH_ACTIVITIES:
-        return await asyncio.to_thread(
-            fetch_activities.invoke,
-            {
-                "city": context.destination_city,
-            },
-        )
-
-    if task_type == PlannerTaskType.CHECK_VISA:
-        return await asyncio.to_thread(
-            get_visa_requirement.invoke,
-            {
-                "origin_country": context.origin_country,
-                "destination_country": context.destination_country,
-            },
-        )
-
-    return f"Unsupported planner task: {task_type.value}"
-
-
 async def _calculate_cost_if_possible(
     context: TripContext,
     task_results: dict[str, str],
@@ -467,20 +624,6 @@ async def _generate_final_plan(
 
     content = response.content
     return content if isinstance(content, str) else str(content)
-
-
-def _filter_unexecuted_tasks(
-    tasks: list[PlannerTask],
-    existing_results: dict[str, str],
-) -> list[PlannerTask]:
-    """
-    Filters out tasks that were already executed before enrichment completed.
-    """
-    return [
-        task
-        for task in tasks
-        if task.task_type.value not in existing_results
-    ]
 
 
 def _build_preference_state_updates(
@@ -588,6 +731,244 @@ def _missing_field_reason(field_name: str) -> str:
     }
 
     return reasons.get(field_name, "Required for full trip planning.")
+
+
+def _build_structured_tool_results(
+    *,
+    context: TripContext,
+    raw_results: dict[str, str],
+) -> PlannerToolResults:
+    """
+    Builds a structured planner output container from existing raw tool results.
+
+    This keeps backward compatibility:
+      - planner_task_results remains raw dict[str, str]
+      - planner_structured_results becomes typed/shared data for future agents
+    """
+    return PlannerToolResults(
+        flights=_parse_flight_results(
+            raw_results.get(PlannerTaskType.FETCH_FLIGHTS.value, "")
+        ),
+        hotels=_parse_hotel_results(
+            raw_results.get(PlannerTaskType.FETCH_HOTELS.value, "")
+        ),
+        activities=_parse_activity_results(
+            raw_results.get(PlannerTaskType.FETCH_ACTIVITIES.value, "")
+        ),
+        visa=_parse_visa_result(
+            raw_results.get(PlannerTaskType.CHECK_VISA.value, ""),
+            context=context,
+        ),
+        cost=_parse_cost_result(
+            raw_results.get(PlannerTaskType.CALCULATE_TRIP_COST.value, ""),
+            context=context,
+        ),
+        raw_results=raw_results,
+    )
+
+
+def _parse_json_result(raw: str):
+    """
+    Safely parses a JSON-like tool result.
+
+    Returns None when the tool output is not valid JSON.
+    """
+    if not raw:
+        return None
+
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _ensure_list(data) -> list:
+    """
+    Normalizes parsed tool data into a list.
+    """
+    if data is None:
+        return []
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        return [data]
+
+    return []
+
+
+def _as_float(value) -> float | None:
+    """
+    Converts a value to float when possible.
+    """
+    if value in (None, ""):
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value) -> int | None:
+    """
+    Converts a value to int when possible.
+    """
+    if value in (None, ""):
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_flight_results(raw: str) -> list[FlightResult]:
+    """
+    Parses raw flight tool output into structured FlightResult objects.
+    """
+    rows = _ensure_list(_parse_json_result(raw))
+    results: list[FlightResult] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        results.append(
+            FlightResult(
+                origin=row.get("origin"),
+                destination=row.get("destination"),
+                airline=row.get("airline"),
+                flight_number=row.get("flight_number") or row.get("flight"),
+                price=_as_float(row.get("price")),
+                departure_time=row.get("departure_time"),
+                arrival_time=row.get("arrival_time"),
+                duration=row.get("duration"),
+                raw=row,
+            )
+        )
+
+    return results
+
+
+def _parse_hotel_results(raw: str) -> list[HotelResult]:
+    """
+    Parses raw hotel tool output into structured HotelResult objects.
+    """
+    rows = _ensure_list(_parse_json_result(raw))
+    results: list[HotelResult] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        results.append(
+            HotelResult(
+                city=row.get("city"),
+                name=row.get("name") or row.get("hotel"),
+                price_per_night=_as_float(row.get("price_per_night")),
+                rating=_as_float(row.get("rating")),
+                location=row.get("location"),
+                raw=row,
+            )
+        )
+
+    return results
+
+
+def _parse_activity_results(raw: str) -> list[ActivityResult]:
+    """
+    Parses raw activity tool output into structured ActivityResult objects.
+    """
+    rows = _ensure_list(_parse_json_result(raw))
+    results: list[ActivityResult] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        results.append(
+            ActivityResult(
+                city=row.get("city"),
+                name=row.get("name") or row.get("activity"),
+                category=row.get("category"),
+                price=_as_float(row.get("price")),
+                duration=row.get("duration"),
+                raw=row,
+            )
+        )
+
+    return results
+
+
+def _parse_visa_result(
+    raw: str,
+    *,
+    context: TripContext,
+) -> VisaResult | None:
+    """
+    Parses raw visa tool output into a structured VisaResult.
+    """
+    data = _parse_json_result(raw)
+
+    if not isinstance(data, dict):
+        if not raw:
+            return None
+
+        return VisaResult(
+            origin_country=context.origin_country,
+            destination_country=context.destination_country,
+            requirement_summary=raw,
+            raw={},
+        )
+
+    return VisaResult(
+        origin_country=data.get("origin_country") or context.origin_country,
+        destination_country=(
+            data.get("destination_country") or context.destination_country
+        ),
+        visa_required=data.get("visa_required"),
+        requirement_summary=(
+            data.get("requirement_summary")
+            or data.get("requirement")
+            or data.get("summary")
+        ),
+        raw=data,
+    )
+
+
+def _parse_cost_result(
+    raw: str,
+    *,
+    context: TripContext,
+) -> CostResult | None:
+    """
+    Parses raw cost tool output into a structured CostResult.
+    """
+    data = _parse_json_result(raw)
+
+    if not isinstance(data, dict):
+        return None
+
+    total_cost = (
+        _as_float(data.get("total_cost"))
+        or _as_float(data.get("total"))
+        or _as_float(data.get("estimated_total"))
+    )
+
+    within_budget = None
+    if total_cost is not None and context.total_budget is not None:
+        within_budget = total_cost <= context.total_budget
+
+    return CostResult(
+        flight_price=_as_float(data.get("flight_price")),
+        hotel_price_per_night=_as_float(data.get("hotel_price_per_night")),
+        duration_days=_as_int(data.get("duration_days")) or context.duration_days,
+        total_cost=total_cost,
+        within_budget=within_budget,
+        raw=data,
+    )
 
 
 def _missing_field_question(field_name: str) -> str:

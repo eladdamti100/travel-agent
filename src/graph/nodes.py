@@ -6,11 +6,15 @@ from langgraph.prebuilt import ToolNode
 
 from src.agents.cache_checker import run_cache_check
 from src.agents.cache_store import run_cache_store
+from src.agents.context_enricher import (
+    extract_trip_context_deterministic,
+)
 from src.agents.master_orchestrator import run_master_orchestrator
 from src.agents.planner import PLANNER_SYSTEM_PROMPT, run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
 from src.graph.state import AgentState
+from src.models.trip_context import TripContext
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
 
@@ -133,7 +137,51 @@ def run_validator(state: AgentState) -> dict:
     return {"validation_status": "approved"}
 
 
-# ── Node 3: Master Orchestrator ──────────────────────────────────────────────
+# ── Node 3: HITL Resume Context ──────────────────────────────────────────────
+
+def resume_hitl_context_node(state: AgentState) -> dict:
+    """
+    Resumes a previously interrupted HITL planning flow.
+
+    This node:
+      1. Loads the pending TripContext from State.
+      2. Extracts new structured fields from the latest user clarification.
+      3. Merges the new fields into the pending context.
+      4. Returns the merged context so master_planner can continue planning.
+
+    This bypasses:
+      - master_orchestrator
+      - semantic cache
+      - researcher routing
+
+    because the user is continuing an already-started planning flow.
+    """
+    pending_context = state.get("pending_trip_context", {}) or {}
+
+    new_context = extract_trip_context_deterministic(state)
+
+    merged = {
+        **pending_context,
+        **{
+            key: value
+            for key, value in new_context.model_dump().items()
+            if value not in (None, "", [])
+        },
+    }
+
+    logger.info(
+        "HITL resume merged context. pending=%s merged=%s",
+        pending_context,
+        merged,
+    )
+
+    return {
+        "trip_context": TripContext(**merged).model_dump(),
+        "awaiting_user_clarification": False,
+    }
+
+
+# ── Node 4: Master Orchestrator ──────────────────────────────────────────────
 
 def master_orchestrator_node(state: AgentState) -> dict:
     """
@@ -142,7 +190,7 @@ def master_orchestrator_node(state: AgentState) -> dict:
     return run_master_orchestrator(state)
 
 
-# ── Node 4: Preferences Memory ───────────────────────────────────────────────
+# ── Node 5: Preferences Memory ───────────────────────────────────────────────
 
 def preferences_memory_node(state: AgentState) -> dict:
     """
@@ -155,7 +203,7 @@ def preferences_memory_node(state: AgentState) -> dict:
     return run_preferences_memory(state)
 
 
-# ── Node 5: Researcher ───────────────────────────────────────────────────────
+# ── Node 6: Researcher ───────────────────────────────────────────────────────
 
 def researcher_node(state: AgentState) -> dict:
     """
@@ -164,7 +212,7 @@ def researcher_node(state: AgentState) -> dict:
     return run_researcher(state)
 
 
-# ── Node 6: Cache Check ──────────────────────────────────────────────────────
+# ── Node 7: Cache Check ──────────────────────────────────────────────────────
 
 def cache_check_node(state: AgentState) -> dict:
     """
@@ -173,7 +221,7 @@ def cache_check_node(state: AgentState) -> dict:
     return run_cache_check(state)
 
 
-# ── Node 7: Master Planner ──────────────────────────────────────────────────
+# ── Node 8: Master Planner ──────────────────────────────────────────────────
 
 def master_planner_node(state: AgentState) -> dict:
     """
@@ -184,7 +232,7 @@ def master_planner_node(state: AgentState) -> dict:
     return run_master_planner(state)
 
 
-# ── Node 8: Legacy Planner Agent ─────────────────────────────────────────────
+# ── Node 9: Legacy Planner Agent ─────────────────────────────────────────────
 
 def call_model(state: AgentState) -> dict:
     """
@@ -289,7 +337,7 @@ def call_model(state: AgentState) -> dict:
     }
 
 
-# ── Node 9: Circuit Breaker ──────────────────────────────────────────────────
+# ── Node 10: Circuit Breaker ─────────────────────────────────────────────────
 
 def circuit_breaker(state: AgentState) -> dict:
     """
@@ -314,7 +362,7 @@ def circuit_breaker(state: AgentState) -> dict:
     }
 
 
-# ── Node 10: Reviewer ────────────────────────────────────────────────────────
+# ── Node 11: Reviewer ────────────────────────────────────────────────────────
 
 def reviewer_node(state: AgentState) -> dict:
     """
@@ -345,7 +393,7 @@ def reviewer_node(state: AgentState) -> dict:
     }
 
 
-# ── Node 11: Cache Store ─────────────────────────────────────────────────────
+# ── Node 12: Cache Store ─────────────────────────────────────────────────────
 
 def cache_store_node(state: AgentState) -> dict:
     """
@@ -354,7 +402,7 @@ def cache_store_node(state: AgentState) -> dict:
     return run_cache_store(state)
 
 
-# ── Node 12: Summarizer ──────────────────────────────────────────────────────
+# ── Node 13: Summarizer ──────────────────────────────────────────────────────
 
 def summarizer_node(state: AgentState) -> dict:
     """

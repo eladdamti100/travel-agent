@@ -15,6 +15,7 @@ from src.graph.nodes import (
     master_planner_node,
     preferences_memory_node,
     researcher_node,
+    resume_hitl_context_node,
     reviewer_node,
     run_validator,
     summarizer_node,
@@ -42,6 +43,15 @@ validator
   │
   ▼ route_after_validator
   ├─ [blocked]  → END
+  │
+  ├─ [resume_hitl_context]
+  │         │
+  │         ▼
+  │   resume_hitl_context
+  │         │
+  │         ▼
+  │   master_planner
+  │
   └─ [approved] → master_orchestrator
                       │
                       ▼ route_after_orchestrator
@@ -56,6 +66,15 @@ validator
                                                                           ▼ route_after_master_planner
                                                                           ├─ [missing_required_info] → END
                                                                           └─ [final_plan] → cache_store → summarizer → END
+
+HITL Resume Flow:
+  If a previous planner turn stopped because required trip information was
+  missing, the next user message bypasses:
+    - master_orchestrator
+    - researcher
+    - semantic cache
+
+  and resumes planning directly from the pending TripContext.
 
 Legacy path:
   The legacy agent/tools loop is still registered for backward compatibility,
@@ -91,6 +110,12 @@ def build_graph():
     # ── Nodes ─────────────────────────────────────────────────────────────────
     builder.add_node("extract_metadata", extract_metadata)
     builder.add_node("validator", run_validator)
+
+    builder.add_node(
+        "resume_hitl_context",
+        resume_hitl_context_node,
+    )
+
     builder.add_node("master_orchestrator", master_orchestrator_node)
     builder.add_node("preferences_memory", preferences_memory_node)
     builder.add_node("researcher", researcher_node)
@@ -121,9 +146,15 @@ def build_graph():
         "validator",
         route_after_validator,
         {
+            "resume_hitl_context": "resume_hitl_context",
             "master_orchestrator": "master_orchestrator",
             END: END,
         },
+    )
+
+    builder.add_edge(
+        "resume_hitl_context",
+        "master_planner",
     )
 
     builder.add_conditional_edges(

@@ -30,7 +30,17 @@ class AgentState(TypedDict):
     trip_context           — current structured trip context
     context_enrichment_status — "not_started" | "completed" | "failed"
     planner_status         — "ready" | "partial_ready" | "missing_required_info"
-    planner_task_results   — results returned by planner tool tasks
+
+    planner_task_results       — raw results returned by planner tools/sub-agents
+    planner_structured_results — typed shared planner outputs for sub-agents
+    planner_dependency_graph   — explicit planner task dependency DAG
+    planner_scheduler_result   — async scheduler waves and blocked tasks
+
+    awaiting_user_clarification — True when planner stopped to ask a HITL question
+    pending_trip_context        — saved partial TripContext waiting for user clarification
+    pending_missing_fields      — required TripContext fields still missing
+    pending_hitl_question       — last HITL question shown to the user
+    pending_planner_task_results — planner tool results already collected before HITL stop
     """
 
     messages: Annotated[list, add_messages]
@@ -59,4 +69,14 @@ class AgentState(TypedDict):
     trip_context: dict
     context_enrichment_status: str
     planner_status: str
+
     planner_task_results: dict
+    planner_structured_results: dict
+    planner_dependency_graph: dict
+    planner_scheduler_result: dict
+
+    awaiting_user_clarification: bool
+    pending_trip_context: dict
+    pending_missing_fields: list[str]
+    pending_hitl_question: str
+    pending_planner_task_results: dict

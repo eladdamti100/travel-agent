@@ -303,60 +303,72 @@ These databases are intentionally separate.
 
 ```text
 travel_agent/
-├── data/
-│   ├── travel_agency.db          # Business travel data
-│   ├── checkpoints.db            # LangGraph persistent memory
-│   ├── semantic_cache.db         # Semantic cache
-│   └── initial_data.json
-│
-├── src/
-│   ├── agents/
-│   │   ├── ai_validator.py
-│   │   ├── validator.py
-│   │   ├── base.py
-│   │   ├── master_orchestrator.py
-│   │   ├── preferences_memory_agent.py
-│   │   ├── researcher.py
-│   │   ├── cache_checker.py
-│   │   ├── cache_store.py
-│   │   ├── context_enricher.py
-│   │   ├── planner.py
-│   │   └── reviewer.py
-│   │
-│   ├── graph/
-│   │   ├── state.py
-│   │   ├── nodes.py
-│   │   ├── router.py
-│   │   └── workflow.py
-│   │
-│   ├── models/
-│   │   ├── cache.py
-│   │   ├── context_enrichment.py
-│   │   ├── planner.py
-│   │   ├── preferences.py
-│   │   ├── routing.py
-│   │   ├── session.py
-│   │   └── trip_context.py
-│   │
-│   ├── services/
-│   │   └── semantic_cache.py
-│   │
-│   ├── tools/
+├── .env                          # Optional environment overrides (local keys)
+├── .github/                      # CI/workflow configs
+│   └── workflows/
+│       └── ci.yml                # CI pipeline (tests, lint)
+├── .gitignore                    # files to ignore in git
+├── .early.coverage/              # optional coverage artifacts from CI
+├── data/                         # runtime databases and initial seed
+│   ├── checkpoints.db            # LangGraph persistent state
+│   ├── checkpoints.db-shm
+│   ├── checkpoints.db-wal
+│   ├── initial_data.json         # seed data used by `src/utils/db_init.py`
+│   ├── semantic_cache.db         # semantic cache (embeddings + answers)
+│   └── travel_agency.db          # business data: flights, hotels, activities, visa
+├── src/                          # application source code
+│   ├── __init__.py
+│   ├── main.py                   # CLI/entry point that starts a session
+│   ├── agents/                   # agent implementations (orchestrator, planners)
 │   │   ├── __init__.py
-│   │   ├── db_tools.py
-│   │   ├── calc_tools.py
-│   │   └── search_tools.py
-│   │
-│   ├── utils/
-│   │   ├── db_init.py
-│   │   ├── graph_guards.py
-│   │   └── logger.py
-│   │
-│   └── main.py
-│
-├── run.py
-├── requirements.txt
-└── README.md
+│   │   ├── ai_validator.py       # Groq-backed policy classifier
+│   │   ├── base.py               # shared agent base classes/utilities
+│   │   ├── cache_checker.py      # semantic cache lookup logic
+│   │   ├── cache_store.py        # write answers into semantic cache
+│   │   ├── context_enricher.py   # async SLM enrichment of TripContext
+│   │   ├── master_orchestrator.py# routes messages to research/preferences/cache/planner
+│   │   ├── planner.py            # master planner: task orchestration + tool execution
+│   │   ├── preferences_memory_agent.py # recall/update user preferences
+│   │   ├── researcher.py         # focused research agent (tools: flights/hotels)
+│   │   ├── reviewer.py           # post-process / safety checks on final answer
+│   │   └── validator.py          # rule-based validation fallback
+│   ├── graph/                    # LangGraph nodes, router, workflow, state
+│   │   ├── __init__.py
+│   │   ├── nodes.py              # node implementations used by the graph
+│   │   ├── router.py             # functions that decide next node/edge
+│   │   ├── state.py              # `AgentState` TypedDict and state helpers
+│   │   └── workflow.py           # graph composition (graph object)
+│   ├── models/                   # pydantic/typed models used across agents
+│   │   ├── cache.py              # semantic cache record model
+│   │   ├── context_enrichment.py # enrichment result schemas
+│   │   ├── planner.py            # planner task/result models
+│   │   ├── preferences.py        # user preferences schema
+│   │   ├── routing.py            # orchestrator routing models
+│   │   ├── session.py            # session/checkpoint schema
+│   │   └── trip_context.py       # TripContext extraction model
+│   ├── prompts/                  # prompt templates and examples
+│   ├── services/                 # infra services
+│   │   └── semantic_cache.py     # embedding, similarity and DB helpers
+│   ├── tools/                    # tool bindings used by agents
+│   │   ├── __init__.py
+│   │   ├── calc_tools.py         # cost calculation helpers
+│   │   ├── db_tools.py           # SQL-backed tools: fetch_flights, fetch_hotels...
+│   │   └── search_tools.py       # optional web/search tools (Tavily)
+│   └── utils/                    # engineering helpers
+│       ├── __init__.py
+│       ├── db_init.py            # creates and seeds `travel_agency.db`
+│       ├── graph_guards.py       # loop protection and max tool-call guards
+│       └── logger.py             # structured logging helper
+├── tests/                        # unit tests
+│   ├── __init__.py
+│   ├── test_connection.py        # DB and service connection tests
+│   └── test_tools.py             # tests for tool wrappers
+├── generate_graph.py             # helper to render the graph into `graph.png`
+├── graph.png                     # generated graph image
+├── requirements.txt              # pip dependencies
+├── run.py                        # small interactive runner for manual sessions
+├── smart_travel_agent_graph.svg  # svg graph export
+└── travel.sh                     # convenience script (POSIX) to run demos
 ```
 
 ---

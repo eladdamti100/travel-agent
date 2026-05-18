@@ -38,11 +38,17 @@ def route_after_validator(state: AgentState) -> str:
     If blocked, end immediately because the rejection message was already added
     to State by run_validator.
 
-    If approved, continue to the master orchestrator.
+    If approved and the previous planner turn is waiting for HITL clarification,
+    bypass the master orchestrator and resume the existing planning flow.
+
+    Otherwise, continue to the master orchestrator.
     """
     status = state.get("validation_status", "approved")
     if status != "approved":
         return END
+
+    if state.get("awaiting_user_clarification"):
+        return "resume_hitl_context"
 
     return "master_orchestrator"
 
