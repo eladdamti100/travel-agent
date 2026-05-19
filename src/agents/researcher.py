@@ -14,36 +14,11 @@ from src.agents.base import get_model
 from src.graph.state import AgentState
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
+from src.prompts.loader import get_prompt
 
 logger = get_logger("researcher_agent")
 
 _MAX_RESEARCH_STEPS = 6
-
-_RESEARCHER_PROMPT = """You are Marco's travel researcher agent.
-
-Your job is to answer focused travel research questions using tools.
-
-You are NOT the full trip planner.
-Use this agent for factual lookups such as:
-- available flights
-- available hotels
-- available activities
-- visa requirements
-- cheapest flight or hotel
-- available destinations
-- simple travel cost facts
-- real-time travel info if local database tools are insufficient
-
-Rules:
-1. Use tools for factual data. Do not invent prices, availability, visa rules, or database results.
-2. Keep answers concise and structured.
-3. If the user asks for flights and does not specify origin, use origin="TLV".
-4. If the user asks for visa requirements and does not specify origin country, use origin_country="Israel".
-5. If a tool returns no data, say so clearly.
-6. Do not perform full itinerary planning here. If the request requires a full trip plan, it should have gone to cache_check/planner.
-7. Never call the same tool with identical arguments more than once.
-"""
-
 
 _TOOL_BY_NAME = {tool.name: tool for tool in ALL_TOOLS}
 
@@ -69,7 +44,7 @@ def run_researcher(state: AgentState) -> dict:
     model = get_model(temperature=0, bind_tools=ALL_TOOLS)
 
     conversation = [
-        SystemMessage(content=_RESEARCHER_PROMPT),
+        SystemMessage(content=get_prompt("researcher_prompt")),
         HumanMessage(content=user_message),
     ]
 

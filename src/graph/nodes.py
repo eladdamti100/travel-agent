@@ -10,20 +10,16 @@ from src.agents.context_enricher import (
     extract_trip_context_deterministic,
 )
 from src.agents.master_orchestrator import run_master_orchestrator
-from src.agents.planner import PLANNER_SYSTEM_PROMPT, run_master_planner
+from src.agents.planner import run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
 from src.graph.state import AgentState
 from src.models.trip_context import TripContext
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
+from src.prompts.loader import get_prompt
 
 logger = get_logger("nodes")
-
-# Prompt caching — base SystemMessage built once at module level.
-# call_model reuses this instance when no user profile is present,
-# avoiding string reconstruction on every LLM call.
-_BASE_SYSTEM_MSG = SystemMessage(content=PLANNER_SYSTEM_PROMPT)
 
 _RETRY_PATTERN = re.compile(r"retry in (\d+(?:\.\d+)?)s", re.IGNORECASE)
 
@@ -256,6 +252,7 @@ def call_model(state: AgentState) -> dict:
         profile_lines.append(f"- Additional preferences:\n{state['travel_preferences']}")
 
     summary = state.get("conversation_summary", "")
+    planner_prompt = get_prompt("planner_prompt")
 
     if profile_lines or summary:
         extra = ""
@@ -270,10 +267,10 @@ def call_model(state: AgentState) -> dict:
         if summary:
             extra += f"\n\n## Conversation Summary (past context)\n{summary}"
 
-        system_msg = SystemMessage(content=PLANNER_SYSTEM_PROMPT + extra)
+        system_msg = SystemMessage(content=planner_prompt + extra)
 
     else:
-        system_msg = _BASE_SYSTEM_MSG
+        system_msg = SystemMessage(content=planner_prompt)
 
     all_messages = state["messages"]
 
