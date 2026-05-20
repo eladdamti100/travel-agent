@@ -324,11 +324,10 @@ def _extract_origin_country(text: str) -> str | None:
     Extracts traveler origin/passport country from simple wording.
     """
     patterns = [
-        r"\bpassport\s+(?:is\s+)?([a-zA-Z\s]+)",
-        r"\bpassport\s+country\s+(?:is\s+)?([a-zA-Z\s]+)",
-        r"\borigin\s+country\s+(?:is\s+)?([a-zA-Z\s]+)",
-        r"\bi\s+am\s+from\s+([a-zA-Z\s]+)",
-        r"\bi\s+am\s+([a-zA-Z]+)\b",
+        r"\bpassport(?:\s+country)?\s*(?:is\s+)?([a-z]+(?:\s+[a-z]+)?)\b",
+        r"\borigin(?:\s+country)?\s*(?:is\s+)?([a-z]+(?:\s+[a-z]+)?)\b",
+        r"\b(?:i\s*am|i'?m)\s+from\s+([a-z]+(?:\s+[a-z]+)?)\b",
+        r"\b(?:i\s*am|i'?m)\s+([a-z]+)\b",
     ]
 
     for pattern in patterns:
@@ -341,6 +340,9 @@ def _extract_origin_country(text: str) -> str | None:
         for alias, canonical in _COUNTRY_ALIASES.items():
             if alias in raw_country:
                 return canonical
+                
+        if raw_country not in ["looking", "planning", "going", "flying", "traveling", "a"]:
+            return raw_country.title()
 
     return None
 
@@ -382,14 +384,18 @@ def _extract_total_budget(text: str) -> float | None:
     """
     patterns = [
         r"\$(\d[\d,]*(?:\.\d+)?)",
-        r"\b(?:budget|under|up to|max|maximum)\s+\$?(\d[\d,]*(?:\.\d+)?)\b",
+        r"(\d[\d,]*(?:\.\d+)?)\s*\$",
+        r"\b(?:budget|under|up to|max|maximum)(?:\s+is)?\s+\$?(\d[\d,]*(?:\.\d+)?)\b",
         r"\b(\d[\d,]*(?:\.\d+)?)\s*(?:usd|dollars)\b",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
-            return float(match.group(1).replace(",", ""))
+            try:
+                return float(match.group(1).replace(",", ""))
+            except (ValueError, TypeError):
+                continue
 
     return None
 
