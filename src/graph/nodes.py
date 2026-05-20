@@ -21,6 +21,7 @@ from src.prompts.loader import get_prompt
 
 logger = get_logger("nodes")
 
+
 _RETRY_PATTERN = re.compile(r"retry in (\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 # City keyword → canonical city name.
@@ -253,7 +254,7 @@ def call_model(state: AgentState) -> dict:
 
     summary = state.get("conversation_summary", "")
     planner_prompt = get_prompt("planner_prompt")
-
+    
     if profile_lines or summary:
         extra = ""
 
@@ -271,7 +272,7 @@ def call_model(state: AgentState) -> dict:
 
     else:
         system_msg = SystemMessage(content=planner_prompt)
-
+        
     all_messages = state["messages"]
 
     if summary and len(all_messages) > 10:
