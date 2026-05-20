@@ -2,12 +2,12 @@ import importlib
 from typing import Any
 
 PROMPT_REGISTRY = {
-    "planner_prompt": "src.prompts.planner_prompts.PLANNER_SYSTEM_PROMPT",
+    "planner_prompt": "src.prompts.planner_prompt.PLANNER_SYSTEM_PROMPT",
     "final_answer_prompt": "src.prompts.final_answer_prompts.FINAL_ANSWER_PROMPT",  # מופרד לקובץ משלו!
-    "validator_prompt": "src.prompts.validator_prompts.VALIDATOR_SYSTEM_PROMPT",
-    "reviewer_prompt": "src.prompts.reviewer_prompts.REVIEWER_SYSTEM_PROMPT",
-    "orchestrator_prompt": "src.prompts.orchestrator_prompts.ORCHESTRATOR_SYSTEM_PROMPT",
-    "researcher_prompt": "src.prompts.researcher_prompts.RESEARCHER_SYSTEM_PROMPT",
+    "validator_prompt": "src.prompts.validator_prompt.VALIDATOR_SYSTEM_PROMPT",
+    "reviewer_prompt": "src.prompts.reviewer_prompt.REVIEWER_SYSTEM_PROMPT",
+    "orchestrator_prompt": "src.prompts.orchestrator_prompt.ORCHESTRATOR_SYSTEM_PROMPT",
+    "researcher_prompt": "src.prompts.researcher_prompt.RESEARCHER_SYSTEM_PROMPT",
 }
 
 def get_prompt(prompt_name: str) -> str:
