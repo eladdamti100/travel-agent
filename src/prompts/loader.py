@@ -9,6 +9,7 @@ PROMPT_REGISTRY = {
     "researcher_prompt": "src.prompts.researcher_prompt.RESEARCHER_SYSTEM_PROMPT",
     "context_enricher_prompt": "src.prompts.context_enricher_prompt.CONTEXT_ENRICHER_PROMPT",
     "preferences_memory_prompt": "src.prompts.preferences_memory_prompt.PREFERENCES_MEMORY_PROMPT",
+    "cache_compression_prompt": "src.prompts.cache_compression_prompt.CACHE_COMPRESSION_PROMPT",
 }
 
 

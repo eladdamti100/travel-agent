@@ -11,18 +11,10 @@ in future LLM calls.
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from src.prompts.loader import get_prompt
 from src.utils.logger import get_logger
 
 logger = get_logger("cache_compression")
-
-_COMPRESSION_SYSTEM_PROMPT = (
-    "You are a travel plan summarizer. "
-    "Given a full trip-planning answer, extract the key information "
-    "into 4–6 concise bullet points. "
-    "Include: destination, travel dates or duration, total budget, "
-    "flight/transport highlights, accommodation, and must-do activities. "
-    "Be brief. Do not add commentary or greetings."
-)
 
 _COMPRESSION_USER_TEMPLATE = (
     "Summarize the following trip plan into 4–6 bullet points:\n\n{answer}"
@@ -50,7 +42,7 @@ def compress_answer(answer: str) -> str:
     try:
         model = get_model(temperature=0)
         response = model.invoke([
-            SystemMessage(content=_COMPRESSION_SYSTEM_PROMPT),
+            SystemMessage(content=get_prompt("cache_compression_prompt")),
             HumanMessage(content=_COMPRESSION_USER_TEMPLATE.format(answer=truncated)),
         ])
 

@@ -13,7 +13,7 @@ Similarity:
     cosine similarity
 
 Default hit threshold:
-    0.86
+    0.85
 """
 
 import json
@@ -38,6 +38,8 @@ logger = get_logger("semantic_cache")
 _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.db"
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_HIT_THRESHOLD = 0.85
+_MAX_ROWS_PER_ROUTE = 200
+_MAX_AGE_DAYS = 30
 
 _embedding_model: Optional[SentenceTransformer] = None
 _db_initialized: bool = False
@@ -151,18 +153,21 @@ def cosine_similarity(vector_a: List[float], vector_b: List[float]) -> float:
     return float(np.dot(a, b) / denominator)
 
 
-def _load_cache_rows(route: str = "cache_check") -> List[Dict[str, Any]]:
+def _load_embedding_index(route: str) -> List[Dict[str, Any]]:
     """
-    Loads cache rows for a specific route.
+    Loads only id, query, and embedding_json for all rows in a route.
+
+    Intentionally excludes the large answer/compressed_answer columns so the
+    similarity scan never loads megabytes of cached text into memory.
+    The full row is fetched separately only when a hit is confirmed.
     """
     initialize_cache_db()
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-
         rows = conn.execute(
             """
-            SELECT query, normalized_query, answer, route, embedding_json, compressed_answer, created_at
+            SELECT id, query, embedding_json
             FROM semantic_cache
             WHERE route = ?
             ORDER BY id DESC
@@ -171,6 +176,24 @@ def _load_cache_rows(route: str = "cache_check") -> List[Dict[str, Any]]:
         ).fetchall()
 
     return [dict(row) for row in rows]
+
+
+def _fetch_row_by_id(row_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetches the full cache row (including answer) for a single id.
+    """
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT query, answer, compressed_answer
+            FROM semantic_cache
+            WHERE id = ?
+            """,
+            (row_id,),
+        ).fetchone()
+
+    return dict(row) if row else None
 
 
 def find_cached_answer(
@@ -182,6 +205,10 @@ def find_cached_answer(
     """
     Finds the best semantic cache match for the given query.
 
+    Two-phase lookup:
+      1. Load only id + embedding_json for all rows — no large answer text.
+      2. Fetch the full answer only for the single best-matching row.
+
     Returns HIT if the best cosine similarity is at least threshold.
     Otherwise returns MISS.
     """
@@ -190,9 +217,9 @@ def find_cached_answer(
     normalized_query = normalize_query(query)
     query_embedding = embed_text(normalized_query)
 
-    rows = _load_cache_rows(route=route)
+    index_rows = _load_embedding_index(route=route)
 
-    if not rows:
+    if not index_rows:
         return CacheCheckResult(
             status=CacheStatus.MISS,
             similarity_score=0.0,
@@ -202,9 +229,10 @@ def find_cached_answer(
         )
 
     best_score = 0.0
-    best_row: Optional[Dict[str, Any]] = None
+    best_id: Optional[int] = None
+    best_query: Optional[str] = None
 
-    for row in rows:
+    for row in index_rows:
         try:
             cached_embedding = json.loads(row["embedding_json"])
             score = cosine_similarity(query_embedding, cached_embedding)
@@ -214,21 +242,26 @@ def find_cached_answer(
 
         if score > best_score:
             best_score = score
-            best_row = row
+            best_id = row["id"]
+            best_query = row["query"]
 
-    if best_row and best_score >= threshold:
+    if best_id is not None and best_score >= threshold:
+        full_row = _fetch_row_by_id(best_id)
+
         logger.info(
             "Semantic cache hit. score=%.4f matched_query=%s",
             best_score,
-            best_row["query"],
+            best_query,
         )
 
         return CacheCheckResult(
             status=CacheStatus.HIT,
             similarity_score=best_score,
-            matched_query=best_row["query"],
-            cached_answer=best_row["answer"],
-            cached_compressed_answer=best_row.get("compressed_answer") or None,
+            matched_query=best_query,
+            cached_answer=full_row["answer"] if full_row else None,
+            cached_compressed_answer=(
+                full_row.get("compressed_answer") or None if full_row else None
+            ),
             reason="Found a sufficiently similar cached answer.",
         )
 
@@ -237,7 +270,7 @@ def find_cached_answer(
     return CacheCheckResult(
         status=CacheStatus.MISS,
         similarity_score=best_score,
-        matched_query=best_row["query"] if best_row else None,
+        matched_query=best_query,
         cached_answer=None,
         reason="No cached answer was similar enough.",
     )
@@ -308,10 +341,6 @@ def store_cache_entry(
     logger.info("Stored semantic cache entry for route=%s query=%s confidence=%.4f", route, query, confidence)
 
     return entry
-
-
-_MAX_ROWS_PER_ROUTE = 200
-_MAX_AGE_DAYS = 30
 
 
 def _cleanup_cache(route: str) -> None:
