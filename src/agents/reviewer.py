@@ -6,11 +6,12 @@ for completeness, budget realism, and missing information.
 Called from main.py via the 'review' command, not as a graph node.
 """
 
+import asyncio
+
 from langchain_core.messages import SystemMessage
+
 from src.agents.base import get_model
 from src.prompts.loader import get_prompt
-
-_model = get_model(temperature=0.3)
 
 
 def _content_to_text(content) -> str:
@@ -20,28 +21,36 @@ def _content_to_text(content) -> str:
     """
     if isinstance(content, list):
         return "\n".join(
-            item.get("text", str(item))
-            if isinstance(item, dict)
-            else str(item)
+            item.get("text", str(item)) if isinstance(item, dict) else str(item)
             for item in content
         )
 
     return str(content)
 
 
+async def _review_plan_async(plan: str) -> str:
+    """
+    Async implementation — critiques a travel plan using ainvoke so the
+    LLM call does not block the calling thread.
+    """
+    model = get_model(temperature=0.3)
+
+    response = await model.ainvoke([
+        SystemMessage(content=get_prompt("reviewer_prompt")),
+        ("user", f"Please review this travel plan:\n\n{plan}"),
+    ])
+
+    return _content_to_text(response.content)
+
+
 def review_plan(plan: str) -> str:
     """
+    Synchronous wrapper for the async reviewer.
+
     Critique and score a travel plan string.
     Returns the reviewer's structured feedback as a plain string.
     """
     if not plan or not plan.strip():
         return "No travel plan was provided for review."
 
-    response = _model.invoke(
-        [
-            SystemMessage(content=get_prompt("reviewer_prompt")),
-            ("user", f"Please review this travel plan:\n\n{plan}"),
-        ]
-    )
-
-    return _content_to_text(response.content)
+    return asyncio.run(_review_plan_async(plan))
