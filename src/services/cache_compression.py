@@ -29,6 +29,7 @@ _COMPRESSION_USER_TEMPLATE = (
 )
 
 _MAX_INPUT_CHARS = 6000
+_MIN_COMPRESS_CHARS = 300
 
 
 def compress_answer(answer: str) -> str:
@@ -38,6 +39,10 @@ def compress_answer(answer: str) -> str:
     Falls back to a plain truncation if the LLM call fails, so cache
     storage is never blocked by a compression error.
     """
+    if len(answer) < _MIN_COMPRESS_CHARS:
+        logger.info("Cache compression skipped: answer is already short (%d chars).", len(answer))
+        return answer
+
     from src.agents.base import get_model
 
     truncated = answer[:_MAX_INPUT_CHARS]

@@ -36,6 +36,11 @@ class CacheCheckResult(BaseModel):
         description="The cached answer to return when this is a cache hit."
     )
 
+    cached_compressed_answer: str | None = Field(
+        default=None,
+        description="Compressed bullet-point summary of the cached answer.",
+    )
+
     reason: str = Field(
         description="Short explanation of why the lookup was a cache hit or cache miss."
     )

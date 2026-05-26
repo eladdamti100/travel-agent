@@ -155,7 +155,7 @@ def _load_cache_rows(route: str = "cache_check") -> list[dict[str, Any]]:
 
         rows = conn.execute(
             """
-            SELECT query, normalized_query, answer, route, embedding_json, created_at
+            SELECT query, normalized_query, answer, route, embedding_json, compressed_answer, created_at
             FROM semantic_cache
             WHERE route = ?
             ORDER BY id DESC
@@ -221,6 +221,7 @@ def find_cached_answer(
             similarity_score=best_score,
             matched_query=best_row["query"],
             cached_answer=best_row["answer"],
+            cached_compressed_answer=best_row.get("compressed_answer") or None,
             reason="Found a sufficiently similar cached answer.",
         )
 
@@ -295,6 +296,46 @@ def store_cache_entry(
 
         conn.commit()
 
+    _cleanup_cache(route=route)
+
     logger.info("Stored semantic cache entry for route=%s query=%s confidence=%.4f", route, query, confidence)
 
     return entry
+
+
+_MAX_ROWS_PER_ROUTE = 200
+_MAX_AGE_DAYS = 30
+
+
+def _cleanup_cache(route: str) -> None:
+    """
+    Removes entries that are older than _MAX_AGE_DAYS and trims the route
+    to at most _MAX_ROWS_PER_ROUTE entries (keeping the most recent ones).
+    """
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        conn.execute(
+            """
+            DELETE FROM semantic_cache
+            WHERE route = ?
+              AND created_at < datetime('now', ? || ' days')
+            """,
+            (route, f"-{_MAX_AGE_DAYS}"),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM semantic_cache
+            WHERE route = ?
+              AND id NOT IN (
+                  SELECT id FROM semantic_cache
+                  WHERE route = ?
+                  ORDER BY id DESC
+                  LIMIT ?
+              )
+            """,
+            (route, route, _MAX_ROWS_PER_ROUTE),
+        )
+
+        conn.commit()
+
+    logger.debug("Cache cleanup done for route=%s (max_rows=%d, max_age_days=%d)", route, _MAX_ROWS_PER_ROUTE, _MAX_AGE_DAYS)
