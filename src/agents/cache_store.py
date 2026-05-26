@@ -7,6 +7,8 @@ This is used only for requests that passed through cache_check and then
 continued to the legacy planner/agent because no cached answer was found.
 """
 
+import threading
+
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.graph.state import AgentState
@@ -18,15 +20,35 @@ from src.utils.logger import get_logger
 logger = get_logger("cache_store")
 
 
+def _background_store(query: str, answer: str) -> None:
+    """
+    Compresses and stores a cache entry in the background.
+
+    Runs in a daemon thread — failures are logged but never propagated,
+    so the user experience is never affected.
+    """
+    try:
+        compressed = compress_answer(answer)
+        store_cache_entry(
+            query=query,
+            answer=answer,
+            route="cache_check",
+            compressed_answer=compressed,
+        )
+        logger.info("Background cache store completed for query=%s", query)
+    except Exception as error:
+        logger.error("Background cache store failed: %s", error)
+
+
 def run_cache_store(state: AgentState) -> dict:
     """
-    Stores the latest final AI answer in semantic cache when appropriate.
+    Fires a background thread to store the latest final AI answer in the
+    semantic cache, then returns immediately without blocking the user.
 
-    Store only when:
-      - cache_status == "miss"
-      - there is a latest user query
-      - there is a latest final AI message
-      - the final AI message is not a tool-call message
+    Skips when:
+      - awaiting_user_clarification is True (HITL mid-conversation)
+      - cache_status != "miss"
+      - query or final answer is missing
     """
     if state.get("awaiting_user_clarification"):
         logger.info("Cache store skipped: awaiting user clarification (HITL).")
@@ -42,17 +64,9 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
-    try:
-        compressed = compress_answer(answer)
-        store_cache_entry(
-            query=query,
-            answer=answer,
-            route="cache_check",
-            compressed_answer=compressed,
-        )
-        logger.info("Cache store saved answer for query=%s", query)
-    except Exception as error:
-        logger.error("Cache store failed: %s", error)
+    thread = threading.Thread(target=_background_store, args=(query, answer), daemon=True)
+    thread.start()
+    logger.info("Cache store fired in background for query=%s", query)
 
     return {}
 
