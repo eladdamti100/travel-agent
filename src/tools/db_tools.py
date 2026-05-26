@@ -1,7 +1,15 @@
+"""
+Database-backed travel tools.
+
+All tools query the local SQLite travel database (data/travel_agency.db).
+They are bound to the planner and researcher agents via ALL_TOOLS.
+"""
+
 import json
 import sqlite3
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
+
 from langchain_core.tools import tool
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "travel_agency.db"
@@ -11,17 +19,16 @@ def _run_query(query: str, params: tuple = ()) -> Union[list, str]:
     """Execute a parameterised SQL query and return rows as dicts, or an error string."""
     if not DB_PATH.exists():
         return "Error: Database not found. Run `python -m src.utils.db_init` first."
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
     try:
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
     except sqlite3.Error as e:
         return f"Database error: {e}"
-    finally:
-        conn.close()
+
 
 @tool
 def fetch_flights(origin: str, destination: str) -> str:
@@ -37,19 +44,13 @@ def fetch_flights(origin: str, destination: str) -> str:
         WHERE LOWER(origin) = ? AND LOWER(destination) = ?
         ORDER BY price ASC
     """
-
-    results = _run_query(
-        query,
-        (origin.strip().lower(), destination.strip().lower()),
-    )
-
+    results = _run_query(query, (origin.strip().lower(), destination.strip().lower()))
     if isinstance(results, str):
         return results
-
     if not results:
         return f"No flights found from {origin} to {destination}."
-
     return json.dumps(results, indent=2)
+
 
 @tool
 def get_cheapest_flight(origin: str, destination: str) -> str:
@@ -87,8 +88,9 @@ def list_destinations(origin: str) -> str:
         origin.upper(), ", ".join(r["destination"] for r in results)
     )
 
+
 @tool
-def fetch_hotels(city: str, max_price: int = None) -> str:
+def fetch_hotels(city: str, max_price: Optional[int] = None) -> str:
     """
     Find hotels in a specific city, optionally filtered by max price per night.
     city: city name (e.g. 'Paris'). max_price: optional USD ceiling per night.
@@ -130,8 +132,6 @@ def get_cheapest_hotel(city: str) -> str:
     return json.dumps(results[0], indent=2)
 
 
-# ── Activities ─────────────────────────────────────────────────────────────
-
 @tool
 def fetch_activities(city: str) -> str:
     """
@@ -151,8 +151,6 @@ def fetch_activities(city: str) -> str:
         return f"No activities found in {city}."
     return json.dumps(results, indent=2)
 
-
-# ── Visa Requirements ─────────────────────────────────────────────────────────
 
 @tool
 def get_visa_requirement(origin_country: str, destination_country: str) -> str:

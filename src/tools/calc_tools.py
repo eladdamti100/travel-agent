@@ -1,6 +1,12 @@
+"""
+Calculation tools — pure arithmetic, no database or API calls.
+"""
+
 import json
+
 from langchain_core.tools import tool
-from typing import Any
+
+
 @tool
 def calculate_trip_cost(
     flight_price: float,

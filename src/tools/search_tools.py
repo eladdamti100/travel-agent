@@ -1,4 +1,10 @@
+"""
+Web search tool — real-time travel information via Tavily.
+Requires TAVILY_API_KEY in .env. Falls back gracefully when key is absent.
+"""
+
 import os
+
 from langchain_core.tools import tool
 
 
