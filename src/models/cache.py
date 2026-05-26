@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 from enum import Enum
+from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -26,17 +28,17 @@ class CacheCheckResult(BaseModel):
         description="Cosine similarity score between the current query and the best cached query."
     )
 
-    matched_query: str | None = Field(
+    matched_query: Optional[str] = Field(
         default=None,
         description="The cached query that best matched the current query."
     )
 
-    cached_answer: str | None = Field(
+    cached_answer: Optional[str] = Field(
         default=None,
         description="The cached answer to return when this is a cache hit."
     )
 
-    cached_compressed_answer: str | None = Field(
+    cached_compressed_answer: Optional[str] = Field(
         default=None,
         description="Compressed bullet-point summary of the cached answer.",
     )
@@ -67,7 +69,7 @@ class CacheEntry(BaseModel):
         description="Route that generated this answer, usually cache_check/planner."
     )
 
-    embedding: list[float] = Field(
+    embedding: List[float] = Field(
         description="Vector embedding of the normalized query."
     )
 

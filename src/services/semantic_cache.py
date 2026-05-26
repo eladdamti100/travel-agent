@@ -21,7 +21,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -41,7 +41,7 @@ _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 _DEFAULT_THRESHOLD = 0.85
 
-_embedding_model: SentenceTransformer | None = None
+_embedding_model: Optional[SentenceTransformer] = None
 
 
 def _get_embedding_model() -> SentenceTransformer:
@@ -117,7 +117,7 @@ def normalize_query(query: str) -> str:
     return normalized
 
 
-def embed_text(text: str) -> list[float]:
+def embed_text(text: str) -> List[float]:
     """
     Creates an embedding vector for the given text.
     """
@@ -127,7 +127,7 @@ def embed_text(text: str) -> list[float]:
     return vector.astype(float).tolist()
 
 
-def cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
+def cosine_similarity(vector_a: List[float], vector_b: List[float]) -> float:
     """
     Computes cosine similarity between two vectors.
 
@@ -144,7 +144,7 @@ def cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
     return float(np.dot(a, b) / denominator)
 
 
-def _load_cache_rows(route: str = "cache_check") -> list[dict[str, Any]]:
+def _load_cache_rows(route: str = "cache_check") -> List[Dict[str, Any]]:
     """
     Loads cache rows for a specific route.
     """
@@ -195,7 +195,7 @@ def find_cached_answer(
         )
 
     best_score = 0.0
-    best_row: dict[str, Any] | None = None
+    best_row: Optional[Dict[str, Any]] = None
 
     for row in rows:
         try:
