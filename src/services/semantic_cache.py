@@ -76,16 +76,21 @@ def initialize_cache_db() -> None:
                 route TEXT NOT NULL,
                 embedding_json TEXT NOT NULL,
                 confidence REAL NOT NULL DEFAULT 1.0,
+                compressed_answer TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
         )
 
-        # Add confidence column to existing databases that predate this field.
-        try:
-            conn.execute("ALTER TABLE semantic_cache ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        # Migrate existing databases that predate these columns.
+        for migration in (
+            "ALTER TABLE semantic_cache ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+            "ALTER TABLE semantic_cache ADD COLUMN compressed_answer TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
         conn.execute(
             """
@@ -236,6 +241,7 @@ def store_cache_entry(
     *,
     route: str = "cache_check",
     confidence: float = 1.0,
+    compressed_answer: str = "",
 ) -> CacheEntry:
     """
     Stores a new semantic cache entry.
@@ -257,6 +263,7 @@ def store_cache_entry(
         embedding=embedding,
         confidence=confidence,
         timestamp=now,
+        compressed_answer=compressed_answer,
     )
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
@@ -269,9 +276,10 @@ def store_cache_entry(
                 route,
                 embedding_json,
                 confidence,
+                compressed_answer,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.query,
@@ -280,6 +288,7 @@ def store_cache_entry(
                 entry.route,
                 json.dumps(entry.embedding),
                 entry.confidence,
+                entry.compressed_answer,
                 entry.timestamp.isoformat(),
             ),
         )

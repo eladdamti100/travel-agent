@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.graph.state import AgentState
 from src.models.cache import CacheStatus
+from src.services.cache_compression import compress_answer
 from src.services.semantic_cache import store_cache_entry
 from src.utils.logger import get_logger
 
@@ -42,10 +43,12 @@ def run_cache_store(state: AgentState) -> dict:
         return {}
 
     try:
+        compressed = compress_answer(answer)
         store_cache_entry(
             query=query,
             answer=answer,
             route="cache_check",
+            compressed_answer=compressed,
         )
         logger.info("Cache store saved answer for query=%s", query)
     except Exception as error:

@@ -77,3 +77,8 @@ class CacheEntry(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp when this entry was stored.",
     )
+
+    compressed_answer: str = Field(
+        default="",
+        description="LLM-generated bullet-point summary of the full answer.",
+    )
