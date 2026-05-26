@@ -12,9 +12,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from src.agents.base import get_model
 from src.graph.state import AgentState
+from src.prompts.loader import get_prompt
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
-from src.prompts.loader import get_prompt
 
 logger = get_logger("researcher_agent")
 
@@ -123,19 +123,3 @@ def run_researcher(state: AgentState) -> dict:
         ],
         "tool_call_count": tool_call_count,
     }
-
-
-def research(query: str) -> str:
-    """
-    Compatibility helper for direct non-graph usage.
-
-    Runs the researcher from a plain text query and returns the final text.
-    """
-    result = run_researcher({"messages": [HumanMessage(content=query)]})
-    messages = result.get("messages", [])
-
-    if not messages:
-        return ""
-
-    content = messages[-1].content
-    return content if isinstance(content, str) else str(content)

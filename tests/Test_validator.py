@@ -4,8 +4,7 @@ No real API calls — ai_validate uses mocked Groq responses.
 """
 
 import json
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class TestInputValidator:

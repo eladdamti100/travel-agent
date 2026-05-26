@@ -12,8 +12,5 @@ Current sub-agent architecture:
 - experience_agent
     Activities and lightweight itinerary logic
 
-- budget_agent
-    Cost calculations and budget reasoning
-
 These agents are orchestrated by the master planner.
 """

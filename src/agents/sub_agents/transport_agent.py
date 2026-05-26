@@ -51,6 +51,9 @@ class TransportAgent(BaseSubAgent):
         context: TripContext,
         result: PlannerToolResults,
     ) -> None:
+        """
+        Fetch matching flights when origin and destination are available.
+        """
         if not context.origin_airport or not context.destination_city:
             return
 
@@ -72,6 +75,9 @@ class TransportAgent(BaseSubAgent):
         context: TripContext,
         result: PlannerToolResults,
     ) -> None:
+        """
+        Fetch visa requirements when both countries are available.
+        """
         if not context.origin_country or not context.destination_country:
             return
 

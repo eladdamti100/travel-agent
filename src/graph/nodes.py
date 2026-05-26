@@ -15,9 +15,9 @@ from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
 from src.graph.state import AgentState
 from src.models.trip_context import TripContext
+from src.prompts.loader import get_prompt
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
-from src.prompts.loader import get_prompt
 
 logger = get_logger("nodes")
 

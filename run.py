@@ -5,8 +5,8 @@ Run:  python run.py
       ./travel.sh
 """
 
-import warnings
 import logging
+import warnings
 
 warnings.warn = lambda *args, **kwargs: None  # suppress all third-party warnings
 logging.disable(logging.CRITICAL)             # suppress all log output to the terminal

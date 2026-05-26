@@ -1,4 +1,3 @@
-from typing import Dict, List, Optional
 """
 Context enricher.
 
@@ -22,6 +21,7 @@ The master planner should:
 """
 
 import re
+from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 

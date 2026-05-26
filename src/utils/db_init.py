@@ -10,6 +10,9 @@ DB_PATH = Path(__file__).parent.parent.parent / "data" / "travel_agency.db"
 
 
 def create_travel_db() -> None:
+    """
+    Recreates the local SQLite travel database with seed data.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

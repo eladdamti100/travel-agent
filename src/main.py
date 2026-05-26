@@ -10,6 +10,19 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage
+from rich.columns import Columns
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.rule import Rule
+from rich.text import Text
+from rich.theme import Theme
+
+from src.graph.workflow import graph
+from src.models.session import validate_session_id
+from src.utils.logger import get_logger
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -28,20 +41,6 @@ else:
             "\n[ERROR] GOOGLE_API_KEY is not set.\n"
             "Edit the .env file in the project root and add your real key.\n"
         )
-
-from langchain_core.messages import AIMessage
-from rich.columns import Columns
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.prompt import Prompt
-from rich.rule import Rule
-from rich.text import Text
-from rich.theme import Theme
-
-from src.graph.workflow import graph
-from src.models.session import validate_session_id
-from src.utils.logger import get_logger
 
 logger = get_logger("main")
 
@@ -75,6 +74,9 @@ _TOOL_LABELS = {
 
 
 def _extract_text(content) -> str:
+    """
+    Converts LangChain message content into printable text.
+    """
     if isinstance(content, list):
         return "\n".join(
             item.get("text", str(item)) if isinstance(item, dict) else str(item)
@@ -84,10 +86,16 @@ def _extract_text(content) -> str:
 
 
 def _is_review(text: str) -> bool:
+    """
+    Returns True for reviewer messages that need review styling.
+    """
     return text.startswith("\n---\n**Plan Review")
 
 
 def _is_researcher(text: str) -> bool:
+    """
+    Returns True for quick lookup answers that need researcher styling.
+    """
     return (
         text.startswith("**Hotels in")
         or text.startswith("**Flights")
@@ -96,6 +104,9 @@ def _is_researcher(text: str) -> bool:
 
 
 def _print_banner() -> None:
+    """
+    Prints the startup banner for the terminal UI.
+    """
     console.print()
 
     provider_label = os.getenv("LLM_PROVIDER", "gemini").upper()
@@ -117,6 +128,9 @@ def _print_banner() -> None:
 
 
 def _print_agent(text: str) -> None:
+    """
+    Prints an AI message using the appropriate terminal panel style.
+    """
     if _is_review(text):
         clean = text.replace("\n---\n**Plan Review (auto):**\n", "").strip()
         console.print(Panel(
@@ -145,6 +159,9 @@ def _print_agent(text: str) -> None:
 
 
 def _print_status(city: Optional[str], budget: Optional[float], tool_count: int) -> None:
+    """
+    Prints a compact turn summary after graph execution.
+    """
     if not city and not budget:
         return
 
@@ -244,6 +261,9 @@ def _update_status_for_node(node_name: str, node_data: dict, status) -> None:
 
 
 def run() -> None:
+    """
+    Starts the interactive terminal loop.
+    """
     _print_banner()
 
     session_id = _ask_for_session_id()

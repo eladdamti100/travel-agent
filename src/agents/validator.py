@@ -19,6 +19,10 @@ from typing import Optional
 
 @dataclass
 class ValidationResult:
+    """
+    Result returned by the input validation layer.
+    """
+
     approved: bool
     verdict: str          # APPROVED | BLOCKED_HARM | BLOCKED_INJECTION | BLOCKED_SCOPE | BLOCKED_CITY
     reason: str
@@ -252,6 +256,9 @@ class InputValidator:
 
     @classmethod
     def _harm_patterns(cls) -> list:
+        """
+        Returns compiled harmful-content regex patterns.
+        """
         if cls._harm_compiled is None:
             cls._harm_compiled = [
                 (re.compile(p, re.IGNORECASE), label)
@@ -261,6 +268,9 @@ class InputValidator:
 
     @classmethod
     def _injection_patterns(cls) -> list:
+        """
+        Returns compiled prompt-injection regex patterns.
+        """
         if cls._injection_compiled is None:
             cls._injection_compiled = [
                 re.compile(p, re.IGNORECASE) for p in cls._INJECTION_PATTERNS_RAW
@@ -269,6 +279,9 @@ class InputValidator:
 
     @classmethod
     def _off_topic_patterns(cls) -> list:
+        """
+        Returns compiled off-topic regex patterns with topic labels.
+        """
         if cls._off_topic_compiled is None:
             cls._off_topic_compiled = [
                 (re.compile(p, re.IGNORECASE), label)
@@ -297,6 +310,9 @@ class InputValidator:
 
     @classmethod
     def validate(cls, message: str) -> ValidationResult:
+        """
+        Validates a user message before it reaches the graph.
+        """
         msg_lower = message.lower().strip()
 
         # ── 0. Harm check (absolute highest priority) ─────────────────────────
@@ -367,6 +383,9 @@ class InputValidator:
 
     @classmethod
     def _detect_city(cls, msg_lower: str) -> Optional[str]:
+        """
+        Finds supported or known unsupported city mentions in a lowercased message.
+        """
         for city in cls.SUPPORTED_CITIES:
             if city in msg_lower:
                 return city
@@ -383,4 +402,7 @@ class InputValidator:
 # ── Public function (called by nodes.py) ─────────────────────────────────────
 
 def validate_input(user_message: str) -> ValidationResult:
+    """
+    Validates one raw user message with the default InputValidator.
+    """
     return InputValidator.validate(user_message)

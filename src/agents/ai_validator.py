@@ -26,11 +26,11 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
-load_dotenv()
-
 from src.agents.validator import ValidationResult, _REJECTION_MESSAGES
-from src.utils.logger import get_logger
 from src.prompts.loader import get_prompt
+from src.utils.logger import get_logger
+
+load_dotenv()
 
 logger = get_logger("ai_validator")
 

@@ -2,8 +2,6 @@
 Tests for planner scheduler result — build_scheduler_result
 """
 
-import pytest
-
 
 def _make_trip_context(**overrides):
     from src.models.trip_context import TripContext

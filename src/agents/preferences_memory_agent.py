@@ -1,8 +1,9 @@
-from typing import Dict, List, Optional
 import os
 import re
+from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
 from src.graph.state import AgentState
 from src.models.preferences import PREFERENCE_EXTRACTION_CONFIG
 from src.prompts.loader import get_prompt

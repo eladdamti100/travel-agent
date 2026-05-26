@@ -1,3 +1,7 @@
+"""
+Prompt registry and lazy loader.
+"""
+
 import importlib
 
 PROMPT_REGISTRY = {
@@ -14,6 +18,9 @@ PROMPT_REGISTRY = {
 
 
 def get_prompt(prompt_name: str) -> str:
+    """
+    Loads a prompt constant by registry name.
+    """
     if prompt_name not in PROMPT_REGISTRY:
         raise ValueError(f"Prompt '{prompt_name}' not found in registry.")
 

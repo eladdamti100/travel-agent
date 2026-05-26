@@ -2,16 +2,16 @@
 Central tool registry — import ALL_TOOLS from here to bind to any agent.
 """
 
+from src.tools.calc_tools import calculate_trip_cost
 from src.tools.db_tools import (
+    fetch_activities,
     fetch_flights,
     fetch_hotels,
-    fetch_activities,
+    get_cheapest_flight,
+    get_cheapest_hotel,
     get_visa_requirement,
     list_destinations,
-    get_cheapest_hotel,
-    get_cheapest_flight,
 )
-from src.tools.calc_tools import calculate_trip_cost
 from src.tools.search_tools import web_search
 
 ALL_TOOLS = [
