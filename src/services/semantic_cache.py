@@ -60,7 +60,7 @@ def _get_embedding_model() -> SentenceTransformer:
         logger.info("Loading embedding model: %s", _EMBEDDING_MODEL_NAME)
         import logging
         logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
-        _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME, show_progress_bar=False)
+        _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
 
     return _embedding_model
 
