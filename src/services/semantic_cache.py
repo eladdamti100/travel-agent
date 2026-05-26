@@ -26,6 +26,9 @@ from typing import Any, Dict, List, Optional
 
 os.environ["TORCHINDUCTOR_DISABLE"] = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -55,7 +58,9 @@ def _get_embedding_model() -> SentenceTransformer:
 
     if _embedding_model is None:
         logger.info("Loading embedding model: %s", _EMBEDDING_MODEL_NAME)
-        _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+        import logging
+        logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+        _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME, show_progress_bar=False)
 
     return _embedding_model
 
