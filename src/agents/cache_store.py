@@ -27,6 +27,10 @@ def run_cache_store(state: AgentState) -> dict:
       - there is a latest final AI message
       - the final AI message is not a tool-call message
     """
+    if state.get("awaiting_user_clarification"):
+        logger.info("Cache store skipped: awaiting user clarification (HITL).")
+        return {}
+
     if state.get("cache_status") != CacheStatus.MISS.value:
         return {}
 

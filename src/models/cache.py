@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -63,4 +64,16 @@ class CacheEntry(BaseModel):
 
     embedding: list[float] = Field(
         description="Vector embedding of the normalized query."
+    )
+
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Cosine similarity score at store time (1.0 for freshly computed entries).",
+    )
+
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="UTC timestamp when this entry was stored.",
     )

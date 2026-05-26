@@ -75,10 +75,17 @@ def initialize_cache_db() -> None:
                 answer TEXT NOT NULL,
                 route TEXT NOT NULL,
                 embedding_json TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
                 created_at TEXT NOT NULL
             )
             """
         )
+
+        # Add confidence column to existing databases that predate this field.
+        try:
+            conn.execute("ALTER TABLE semantic_cache ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
         conn.execute(
             """
@@ -228,6 +235,7 @@ def store_cache_entry(
     answer: str,
     *,
     route: str = "cache_check",
+    confidence: float = 1.0,
 ) -> CacheEntry:
     """
     Stores a new semantic cache entry.
@@ -239,6 +247,7 @@ def store_cache_entry(
 
     normalized_query = normalize_query(query)
     embedding = embed_text(normalized_query)
+    now = datetime.now(timezone.utc)
 
     entry = CacheEntry(
         query=query,
@@ -246,6 +255,8 @@ def store_cache_entry(
         answer=answer,
         route=route,
         embedding=embedding,
+        confidence=confidence,
+        timestamp=now,
     )
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
@@ -257,9 +268,10 @@ def store_cache_entry(
                 answer,
                 route,
                 embedding_json,
+                confidence,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.query,
@@ -267,12 +279,13 @@ def store_cache_entry(
                 entry.answer,
                 entry.route,
                 json.dumps(entry.embedding),
-                datetime.now(timezone.utc).isoformat(),
+                entry.confidence,
+                entry.timestamp.isoformat(),
             ),
         )
 
         conn.commit()
 
-    logger.info("Stored semantic cache entry for route=%s query=%s", route, query)
+    logger.info("Stored semantic cache entry for route=%s query=%s confidence=%.4f", route, query, confidence)
 
     return entry
