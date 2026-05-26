@@ -1,3 +1,7 @@
+"""
+AgentState — central shared memory passed between all graph nodes.
+"""
+
 from typing import Annotated, List, TypedDict
 
 from langgraph.graph.message import add_messages

@@ -1,4 +1,9 @@
+"""
+Routing models — orchestrator route types and structured route decisions.
+"""
+
 from enum import Enum
+
 from pydantic import BaseModel, Field
 
 
@@ -13,6 +18,7 @@ class RouteType(str, Enum):
 
 
 class RouteDecision(BaseModel):
+
     """
     Structured routing decision returned by the master orchestrator.
     """

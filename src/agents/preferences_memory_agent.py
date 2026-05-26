@@ -1,3 +1,10 @@
+"""
+Preferences memory agent — recalls and updates persisted user travel preferences.
+
+Handles the preferences_memory route selected by the master orchestrator.
+Does not plan trips or call travel tools.
+"""
+
 import os
 import re
 from typing import Optional

@@ -1,3 +1,7 @@
+"""
+Cache models — semantic cache entries and lookup results.
+"""
+
 from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional

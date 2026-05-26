@@ -1,3 +1,7 @@
+"""
+Stay sub-agent — fetches hotels for the destination city.
+"""
+
 import asyncio
 
 from src.agents.sub_agents.base import BaseSubAgent

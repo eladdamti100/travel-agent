@@ -1,3 +1,7 @@
+"""
+Transport sub-agent — fetches flights and checks visa requirements.
+"""
+
 import asyncio
 
 from src.agents.sub_agents.base import BaseSubAgent

@@ -1,3 +1,7 @@
+"""
+Session models — session ID validation before use as a LangGraph thread_id.
+"""
+
 import re
 from dataclasses import dataclass
 

@@ -1,3 +1,7 @@
+"""
+Context enrichment models — SLM enrichment result and preference updates.
+"""
+
 from typing import List, Optional
 
 from pydantic import BaseModel, Field

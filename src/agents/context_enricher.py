@@ -72,8 +72,6 @@ _COUNTRY_ALIASES = {
 }
 
 
-
-
 def extract_trip_context_deterministic(state: AgentState) -> TripContext:
     """
     Builds TripContext using only fast deterministic logic.

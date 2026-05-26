@@ -1,3 +1,7 @@
+"""
+LangGraph node implementations for every step in the travel planner graph.
+"""
+
 import re
 import time
 
@@ -6,9 +10,7 @@ from langgraph.prebuilt import ToolNode
 
 from src.agents.cache_checker import run_cache_check
 from src.agents.cache_store import run_cache_store
-from src.agents.context_enricher import (
-    extract_trip_context_deterministic,
-)
+from src.agents.context_enricher import extract_trip_context_deterministic
 from src.agents.master_orchestrator import run_master_orchestrator
 from src.agents.planner import run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
@@ -249,10 +251,10 @@ def master_planner_node(state: AgentState) -> dict:
 
 def call_model(state: AgentState) -> dict:
     """
-    Legacy planner node.
+    Legacy ReAct-style planner node kept for the agent/tools loop path.
 
-    This is kept temporarily for backward compatibility until the graph fully
-    routes cache_miss to master_planner instead of this legacy node.
+    The primary cache-miss path now routes to master_planner. This node
+    remains registered so the legacy conditional edges still resolve.
     """
     profile_lines = []
 

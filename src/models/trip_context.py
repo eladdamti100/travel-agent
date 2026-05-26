@@ -1,3 +1,7 @@
+"""
+Trip context model — structured representation of a user trip request.
+"""
+
 from typing import Optional
 
 from pydantic import BaseModel, Field

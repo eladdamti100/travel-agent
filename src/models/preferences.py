@@ -1,3 +1,7 @@
+"""
+Preferences models — static configuration for the preferences memory agent.
+"""
+
 from dataclasses import dataclass
 
 
