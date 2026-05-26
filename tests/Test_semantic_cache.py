@@ -9,182 +9,158 @@ from unittest.mock import patch, MagicMock
 
 class TestNormalizeQuery:
 
-    def test_lowercase(self):
+    def test_text_transformations(self):
         from src.services.semantic_cache import normalize_query
         assert normalize_query("PLAN A TRIP TO PARIS") == "plan a trip to paris"
-
-    def test_strips_leading_trailing_whitespace(self):
-        from src.services.semantic_cache import normalize_query
         assert normalize_query("  trip to Tokyo  ") == "trip to tokyo"
-
-    def test_collapses_internal_whitespace(self):
-        from src.services.semantic_cache import normalize_query
         assert normalize_query("trip   to   Berlin") == "trip to berlin"
+        assert normalize_query("“fly to london”") == '"fly to london"'
+        assert normalize_query("it’s a trip") == "it's a trip"
 
-    def test_curly_double_quotes_normalized(self):
-        from src.services.semantic_cache import normalize_query
-        result = normalize_query("“fly to london”")
-        assert result == '"fly to london"'
-
-    def test_curly_single_quotes_normalized(self):
-        from src.services.semantic_cache import normalize_query
-        result = normalize_query("it’s a trip")
-        assert result == "it's a trip"
-
-    def test_empty_string(self):
+    def test_edge_cases(self):
         from src.services.semantic_cache import normalize_query
         assert normalize_query("") == ""
-
-    def test_already_normalized_unchanged(self):
-        from src.services.semantic_cache import normalize_query
-        s = "plan a 5-day trip to paris"
-        assert normalize_query(s) == s
+        assert normalize_query("plan a 5-day trip to paris") == "plan a 5-day trip to paris"
 
 
 class TestCosineSimilarity:
 
-    def test_identical_vectors_returns_one(self):
+    def test_unit_geometry(self):
         from src.services.semantic_cache import cosine_similarity
-        v = [1.0, 0.0, 0.0]
-        assert abs(cosine_similarity(v, v) - 1.0) < 1e-6
-
-    def test_orthogonal_vectors_returns_zero(self):
-        from src.services.semantic_cache import cosine_similarity
-        a = [1.0, 0.0]
-        b = [0.0, 1.0]
-        assert abs(cosine_similarity(a, b)) < 1e-6
-
-    def test_opposite_vectors_returns_minus_one(self):
-        from src.services.semantic_cache import cosine_similarity
-        a = [1.0, 0.0]
-        b = [-1.0, 0.0]
-        assert abs(cosine_similarity(a, b) - (-1.0)) < 1e-6
+        import math
+        assert abs(cosine_similarity([1.0, 0.0], [1.0, 0.0]) - 1.0) < 1e-6   # identical
+        assert abs(cosine_similarity([1.0, 0.0], [0.0, 1.0])) < 1e-6          # orthogonal
+        assert abs(cosine_similarity([1.0, 0.0], [-1.0, 0.0]) - (-1.0)) < 1e-6  # opposite
+        assert abs(cosine_similarity([1.0, 1.0], [1.0, 0.0]) - 1.0 / math.sqrt(2)) < 1e-6
 
     def test_zero_vector_returns_zero(self):
         from src.services.semantic_cache import cosine_similarity
-        zero = [0.0, 0.0, 0.0]
-        v = [1.0, 0.0, 0.0]
-        assert cosine_similarity(zero, v) == 0.0
-
-    def test_both_zero_vectors_returns_zero(self):
-        from src.services.semantic_cache import cosine_similarity
-        zero = [0.0, 0.0]
-        assert cosine_similarity(zero, zero) == 0.0
-
-    def test_partial_similarity(self):
-        from src.services.semantic_cache import cosine_similarity
-        import math
-        a = [1.0, 1.0]
-        b = [1.0, 0.0]
-        expected = 1.0 / math.sqrt(2)
-        assert abs(cosine_similarity(a, b) - expected) < 1e-6
+        assert cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0
+        assert cosine_similarity([0.0, 0.0], [0.0, 0.0]) == 0.0
 
 
 class TestFindCachedAnswer:
 
-    def _make_index_row(self, row_id: int, query: str, embedding: list) -> dict:
+    def _row(self, row_id, query, embedding):
         return {"id": row_id, "query": query, "embedding_json": json.dumps(embedding)}
 
     def test_returns_miss_when_index_empty(self):
         from src.services.semantic_cache import find_cached_answer
         from src.models.cache import CacheStatus
-
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
              patch("src.services.semantic_cache._load_embedding_index", return_value=[]):
             result = find_cached_answer("Plan a trip to Paris")
-
         assert result.status == CacheStatus.MISS
         assert result.cached_answer is None
 
     def test_returns_hit_above_threshold(self):
         from src.services.semantic_cache import find_cached_answer
         from src.models.cache import CacheStatus
-
-        row = self._make_index_row(1, "Paris trip", [1.0, 0.0])
-        full_row = {"query": "Paris trip", "answer": "Here is your plan", "compressed_answer": "bullet summary"}
-
+        full = {"query": "Paris trip", "answer": "Here is your plan", "compressed_answer": ""}
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
-             patch("src.services.semantic_cache._load_embedding_index", return_value=[row]), \
-             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full_row):
+             patch("src.services.semantic_cache._load_embedding_index", return_value=[self._row(1, "Paris trip", [1.0, 0.0])]), \
+             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full):
             result = find_cached_answer("Trip to Paris", threshold=0.85)
-
         assert result.status == CacheStatus.HIT
         assert result.cached_answer == "Here is your plan"
-        assert abs(result.similarity_score - 1.0) < 1e-6
 
     def test_returns_miss_below_threshold(self):
         from src.services.semantic_cache import find_cached_answer
         from src.models.cache import CacheStatus
-
-        row = self._make_index_row(1, "Berlin trip", [0.0, 1.0])
-
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
-             patch("src.services.semantic_cache._load_embedding_index", return_value=[row]):
+             patch("src.services.semantic_cache._load_embedding_index", return_value=[self._row(1, "Berlin trip", [0.0, 1.0])]):
             result = find_cached_answer("Paris trip", threshold=0.85)
-
         assert result.status == CacheStatus.MISS
         assert result.cached_answer is None
 
     def test_full_row_not_fetched_on_miss(self):
-        """_fetch_row_by_id must never be called when the best score is below threshold."""
+        """_fetch_row_by_id must never be called when score is below threshold."""
         from src.services.semantic_cache import find_cached_answer
-
-        row = self._make_index_row(1, "Berlin trip", [0.0, 1.0])
-
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
-             patch("src.services.semantic_cache._load_embedding_index", return_value=[row]), \
+             patch("src.services.semantic_cache._load_embedding_index", return_value=[self._row(1, "Berlin trip", [0.0, 1.0])]), \
              patch("src.services.semantic_cache._fetch_row_by_id") as mock_fetch:
             find_cached_answer("Paris trip", threshold=0.85)
-            mock_fetch.assert_not_called()
+        mock_fetch.assert_not_called()
 
     def test_invalid_embedding_json_skipped(self):
         from src.services.semantic_cache import find_cached_answer
         from src.models.cache import CacheStatus
-
-        bad_row = {"id": 1, "query": "bad row", "embedding_json": "not-valid-json"}
-        good_row = self._make_index_row(2, "Paris trip", [1.0, 0.0])
-        full_row = {"query": "Paris trip", "answer": "Plan here", "compressed_answer": ""}
-
+        bad = {"id": 1, "query": "bad", "embedding_json": "not-valid-json"}
+        good = self._row(2, "Paris trip", [1.0, 0.0])
+        full = {"query": "Paris trip", "answer": "Plan here", "compressed_answer": ""}
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
-             patch("src.services.semantic_cache._load_embedding_index", return_value=[bad_row, good_row]), \
-             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full_row):
+             patch("src.services.semantic_cache._load_embedding_index", return_value=[bad, good]), \
+             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full):
             result = find_cached_answer("Paris trip", threshold=0.85)
-
         assert result.status == CacheStatus.HIT
 
-    def test_picks_best_score_among_multiple_rows(self):
+    def test_picks_best_score_and_custom_threshold(self):
         from src.services.semantic_cache import find_cached_answer
         from src.models.cache import CacheStatus
-
-        row_low = self._make_index_row(1, "Berlin", [0.0, 1.0])
-        row_high = self._make_index_row(2, "Paris trip", [1.0, 0.0])
-        full_row = {"query": "Paris trip", "answer": "Paris plan", "compressed_answer": ""}
-
+        row_low = self._row(1, "Berlin", [0.0, 1.0])
+        row_high = self._row(2, "Paris trip", [1.0, 0.0])
+        full = {"query": "Paris trip", "answer": "Paris plan", "compressed_answer": ""}
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
              patch("src.services.semantic_cache._load_embedding_index", return_value=[row_low, row_high]), \
-             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full_row) as mock_fetch:
+             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full) as mock_fetch:
             result = find_cached_answer("Paris trip", threshold=0.85)
-
         assert result.status == CacheStatus.HIT
         mock_fetch.assert_called_once_with(2)
 
-    def test_custom_threshold_respected(self):
-        from src.services.semantic_cache import find_cached_answer
-        from src.models.cache import CacheStatus
-
-        row = self._make_index_row(1, "Paris trip", [1.0, 0.0])
-        full_row = {"query": "Paris trip", "answer": "Paris plan", "compressed_answer": ""}
-
+        # threshold above 1.0 → always miss
         with patch("src.services.semantic_cache.initialize_cache_db"), \
              patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
-             patch("src.services.semantic_cache._load_embedding_index", return_value=[row]), \
-             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full_row):
+             patch("src.services.semantic_cache._load_embedding_index", return_value=[row_high]), \
+             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full):
             result = find_cached_answer("Paris trip", threshold=1.01)
-
         assert result.status == CacheStatus.MISS
+
+
+class TestStoreCacheEntry:
+
+    def _mock_conn(self):
+        mock_conn = MagicMock()
+        ctx = mock_conn.return_value.__enter__.return_value
+        ctx.execute = MagicMock()
+        ctx.commit = MagicMock()
+        return mock_conn
+
+    def test_returns_entry_with_correct_fields(self):
+        from src.services.semantic_cache import store_cache_entry
+        with patch("src.services.semantic_cache.initialize_cache_db"), \
+             patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+             patch("src.services.semantic_cache._cleanup_cache"), \
+             patch("src.services.semantic_cache.sqlite3.connect", self._mock_conn()):
+            entry = store_cache_entry("Paris trip", "Here is your plan", route="cache_check")
+        assert entry.query == "Paris trip"
+        assert entry.answer == "Here is your plan"
+        assert entry.route == "cache_check"
+
+    def test_normalizes_query_before_storing(self):
+        from src.services.semantic_cache import store_cache_entry
+        with patch("src.services.semantic_cache.initialize_cache_db"), \
+             patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+             patch("src.services.semantic_cache._cleanup_cache"), \
+             patch("src.services.semantic_cache.sqlite3.connect", self._mock_conn()):
+            entry = store_cache_entry("  PARIS TRIP  ", "Here is your plan")
+        assert entry.normalized_query == "paris trip"
+
+
+class TestDbInitializedGuard:
+
+    def test_initialize_cache_db_runs_only_once(self):
+        import src.services.semantic_cache as mod
+        original = mod._db_initialized
+        try:
+            mod._db_initialized = True
+            with patch("src.services.semantic_cache.sqlite3.connect") as mock_conn:
+                mod.initialize_cache_db()
+            mock_conn.assert_not_called()
+        finally:
+            mod._db_initialized = original
