@@ -143,8 +143,8 @@ class InputValidator:
         # Creative writing
         (r"\bwrite\s+(me\s+)?(a\s+)?(poem|essay|story|song|lyrics|novel|script|haiku|sonnet)", "creative writing"),
 
-        # Coding — explicit write/create requests
-        (r"\b(write|generate|create|give me)\s+(some\s+)?(code|function|class|algorithm|script|program)\b", "coding"),
+        # Coding — explicit write/create requests (flexible middle words: "write me a Python function")
+        (r"\b(write|generate|create|give\s+me)\s+(\w+\s+){0,4}(code|function|class|algorithm|script|program)\b", "coding"),
         (r"\b(debug|fix|review)\s+(this|my|the)\s+(code|function|script|program|bug)", "coding"),
 
         # Coding — "how to" programming questions
@@ -191,6 +191,17 @@ class InputValidator:
         # Weather (the original bug)
         (r"\b(weather|temperature|forecast|rain|snow|sunny|cloudy|humidity)\s+(in|at|for|today|tomorrow|right\s+now)\b", "weather"),
         (r"\bwhat('s|\s+is)\s+the\s+weather\b", "weather"),
+
+        # Entertainment
+        (r"\btell\s+me\s+a\s+(joke|riddle|pun|story)\b", "entertainment"),
+        (r"\b(make\s+me\s+laugh|say\s+something\s+funny)\b", "entertainment"),
+
+        # News
+        (r"\b(latest|breaking|today'?s?)\s+(news|headlines)\b", "news"),
+        (r"\bwhat('s|\s+is)\s+(happening|in\s+the\s+news)\b", "news"),
+
+        # Social media / relationships
+        (r"\b(tinder|instagram|snapchat|tiktok|dating\s+app|how\s+to\s+get\s+a\s+(girlfriend|boyfriend|date))\b", "social"),
     ]
 
     # Travel-related keywords — any match overrides the off-topic check
@@ -329,6 +340,17 @@ class InputValidator:
             reason="Valid travel-related request.",
             rejection_message="",
         )
+
+    @classmethod
+    def is_clearly_travel(cls, message: str) -> bool:
+        """
+        Returns True when the message unambiguously relates to travel.
+
+        Used by nodes.py to skip the LLM validator and fast-approve obvious requests,
+        saving ~200ms per typical travel message.
+        """
+        msg_lower = message.lower()
+        return any(kw in msg_lower for kw in cls._TRAVEL_KEYWORDS)
 
     @classmethod
     def _detect_city(cls, msg_lower: str) -> Optional[str]:

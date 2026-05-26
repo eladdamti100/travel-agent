@@ -97,15 +97,16 @@ def run_validator(state: AgentState) -> dict:
     """
     Security guardrail node — validates every user message before orchestration.
 
-    Validation order:
-      1. AI validator via Groq, if available.
-      2. Rule-based fallback validator.
+    Three-stage fast path (fastest first):
+      1. Instant regex check — blocks clear harm/injection/off-topic without any LLM.
+      2. Travel keyword fast-approve — skips the 200ms Groq call for obvious travel requests.
+      3. LLM check via Groq — only runs for ambiguous messages with no travel keywords.
 
     If blocked, the rejection message is added to State and the graph ends.
     If approved, validation_status is set to "approved".
     """
     from src.agents.ai_validator import ai_validate
-    from src.agents.validator import validate_input
+    from src.agents.validator import InputValidator, validate_input
 
     messages = state.get("messages", [])
     if not messages:
@@ -118,17 +119,27 @@ def run_validator(state: AgentState) -> dict:
 
     last_content = getattr(messages[-1], "content", "")
 
+    # Stage 1: instant regex — block clear violations immediately, no LLM cost.
+    regex_result = validate_input(last_content)
+    if not regex_result.approved:
+        logger.info("Validator: fast-blocked by regex. verdict=%s", regex_result.verdict)
+        return {
+            "validation_status": regex_result.verdict.lower(),
+            "messages": [AIMessage(content=regex_result.rejection_message)],
+        }
+
+    # Stage 2: travel keyword fast-approve — skip ~200ms Groq call for obvious travel messages.
+    if InputValidator.is_clearly_travel(last_content):
+        logger.info("Validator: fast-approved (travel keyword present).")
+        return {"validation_status": "approved"}
+
+    # Stage 3: ambiguous message — consult LLM for nuanced classification.
     result = ai_validate(last_content)
-
     if result is None:
-        logger.info("Validator: using rule-based fallback.")
-        result = validate_input(last_content)
+        logger.info("Validator: LLM unavailable, regex approved.")
+        return {"validation_status": "approved"}
 
-    logger.info(
-        "Validator: verdict=%s reason=%s",
-        result.verdict,
-        result.reason,
-    )
+    logger.info("Validator: LLM verdict=%s reason=%s", result.verdict, result.reason)
 
     if not result.approved:
         return {
