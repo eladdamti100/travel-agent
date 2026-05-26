@@ -19,4 +19,5 @@ from tests.Test_semantic_cache import (
     TestStoreCacheEntry, TestDbInitializedGuard,
 )
 from tests.Test_sub_agents_parallel import TestSubAgentsParallel
+from tests.Test_context_enricher import TestExtractors, TestExtractTripContextDeterministic
 from tests.Test_validator import TestInputValidator, TestAiValidator
