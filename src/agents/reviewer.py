@@ -3,7 +3,7 @@ Reviewer agent — self-correction and quality control.
 
 After the planner produces a travel plan, the reviewer critiques it
 for completeness, budget realism, and missing information.
-Called from main.py via the 'review' command, not as a graph node.
+Runs as a graph node (reviewer_node) and via the 'review' command in main.py.
 """
 
 import asyncio
