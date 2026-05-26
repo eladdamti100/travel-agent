@@ -20,6 +20,7 @@ class TransportAgent(BaseSubAgent):
     """
 
     agent_name = "transport_agent"
+    result_keys = ("fetch_flights", "check_visa")
 
     async def run(
         self,

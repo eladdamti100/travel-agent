@@ -15,6 +15,7 @@ class StayAgent(BaseSubAgent):
     """
 
     agent_name = "stay_agent"
+    result_keys = ("fetch_hotels",)
 
     async def run(
         self,

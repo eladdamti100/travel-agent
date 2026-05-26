@@ -62,6 +62,7 @@ from src.prompts.loader import get_prompt
 
 logger = get_logger("planner")
 
+_PLANNER_TASK_VALUE_SET: frozenset = frozenset(item.value for item in PlannerTaskType)
 
 _TASK_REQUIREMENTS: Dict[PlannerTaskType, Tuple[str, ...]] = {
     PlannerTaskType.FETCH_FLIGHTS: ("origin_airport", "destination_city"),
@@ -241,11 +242,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         },
     )
 
-    completed_tasks = [
-        PlannerTaskType(task_type)
-        for task_type in task_results.keys()
-        if task_type in {item.value for item in PlannerTaskType}
-    ]
+    completed_tasks = _completed_tasks_from(task_results)
 
     dependency_graph = build_planner_dependency_graph(
         context=merged_context,
@@ -304,11 +301,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         task_results[PlannerTaskType.CALCULATE_TRIP_COST.value] = cost_result
         updates["planner_task_results"] = task_results
 
-    completed_tasks = [
-        PlannerTaskType(task_type)
-        for task_type in task_results.keys()
-        if task_type in {item.value for item in PlannerTaskType}
-    ]
+    completed_tasks = _completed_tasks_from(task_results)
 
     dependency_graph = build_planner_dependency_graph(
         context=merged_context,
@@ -352,19 +345,26 @@ async def run_sub_agents_async(
 ) -> Dict[str, str]:
     """
     Runs planner sub-agents in parallel and safely merges their independent results.
+
+    Agents whose result keys are all already present in existing_results are skipped
+    entirely — avoids redundant DB calls on the second enrichment pass.
     """
+    covered = set(existing_results or {})
+
     agents = [
-        TransportAgent(),
-        StayAgent(),
-        ExperienceAgent(),
+        agent for agent in [TransportAgent(), StayAgent(), ExperienceAgent()]
+        if not all(key in covered for key in agent.result_keys)
     ]
+
+    merged_raw_results: Dict[str, str] = {**(existing_results or {})}
+
+    if not agents:
+        return merged_raw_results
 
     results = await asyncio.gather(
         *[agent.run(context=context) for agent in agents],
         return_exceptions=True,
     )
-
-    merged_raw_results: Dict[str, str] = {**(existing_results or {})}
 
     for agent, result in zip(agents, results):
         if isinstance(result, Exception):
@@ -446,6 +446,15 @@ def check_planner_dependencies(context: TripContext) -> DependencyCheckResult:
         async_ready_tasks=async_ready_tasks,
         hitl_question=hitl_question,
     )
+
+
+def _completed_tasks_from(task_results: Dict[str, str]) -> List[PlannerTaskType]:
+    """Returns PlannerTaskType values for every key present in task_results."""
+    return [
+        PlannerTaskType(key)
+        for key in task_results
+        if key in _PLANNER_TASK_VALUE_SET
+    ]
 
 
 def _build_missing_requirements(context: TripContext) -> List[MissingRequirement]:

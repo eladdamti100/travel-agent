@@ -17,6 +17,7 @@ class ExperienceAgent(BaseSubAgent):
     """
 
     agent_name = "experience_agent"
+    result_keys = ("fetch_activities",)
 
     async def run(
         self,
