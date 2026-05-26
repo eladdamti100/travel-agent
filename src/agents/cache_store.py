@@ -74,8 +74,22 @@ def run_cache_store(state: AgentState) -> dict:
 
 def _get_latest_user_query(state: AgentState) -> str:
     """
-    Returns the latest HumanMessage content from graph state.
+    Returns the latest HumanMessage content from graph state or its canonical structured string.
     """
+    # --- START OF MINIMAL CHANGE: Canonical Trip Context Key ---
+    from src.agents.context_enricher import extract_trip_context_deterministic
+    ctx = extract_trip_context_deterministic(state)
+
+    if ctx.destination_city and ctx.duration_days and ctx.origin_airport:
+        return (
+            f"origin_airport: {ctx.origin_airport} | "
+            f"origin_country: {ctx.origin_country or 'unknown'} | "
+            f"destination_city: {ctx.destination_city} | "
+            f"duration_days: {ctx.duration_days} | "
+            f"total_budget: {int(ctx.total_budget) if ctx.total_budget else 0}"
+        )
+    # --- END OF MINIMAL CHANGE ---
+
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
             content = message.content

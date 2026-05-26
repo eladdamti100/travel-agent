@@ -6,6 +6,9 @@ Set LLM_PROVIDER=groq or LLM_PROVIDER=gemini (default) in .env.
 
 import os
 
+os.environ["TQDM_DISABLE"] = "True"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
 from dotenv import load_dotenv
 
 load_dotenv()

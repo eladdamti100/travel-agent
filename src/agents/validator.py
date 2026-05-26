@@ -25,7 +25,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
-
+from src.agents.preferences_memory_agent import _is_recall_request
 from src.agents.validator_patterns import (
     HARM_PATTERNS_RAW,
     INJECTION_PATTERNS_RAW,
@@ -386,6 +386,9 @@ def validate_input(user_message: str, *, is_hitl: bool = False) -> ValidationRes
 
     Regular flow (is_hitl=False): full three-stage pipeline.
     """
+    if _is_recall_request(user_message.lower()):
+        return ValidationResult(approved=True, verdict="APPROVED", reason="Profile recall request.", rejection_message="")
+    
     if is_hitl:
         # Fast-approve obvious clarification answers before any regex work.
         if _is_hitl_safe(user_message):

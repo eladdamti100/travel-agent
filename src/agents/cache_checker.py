@@ -56,7 +56,21 @@ def run_cache_check(state: AgentState) -> dict:
             "cache_answer": "",
         }
 
-    query = getattr(messages[-1], "content", "")
+    # --- START OF MINIMAL CHANGE: Canonical Trip Context Key ---
+    from src.agents.context_enricher import extract_trip_context_deterministic
+    ctx = extract_trip_context_deterministic(state)
+
+    if ctx.destination_city and ctx.duration_days and ctx.origin_airport:
+        query = (
+            f"origin_airport: {ctx.origin_airport} | "
+            f"origin_country: {ctx.origin_country or 'unknown'} | "
+            f"destination_city: {ctx.destination_city} | "
+            f"duration_days: {ctx.duration_days} | "
+            f"total_budget: {int(ctx.total_budget) if ctx.total_budget else 0}"
+        )
+    else:
+        query = getattr(messages[-1], "content", "")
+    # --- END OF MINIMAL CHANGE ---
 
     result = find_cached_answer(
         query=query,
