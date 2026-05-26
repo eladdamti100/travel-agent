@@ -33,6 +33,8 @@ class TestExtractors:
         assert _extract_origin_country("i am from israel") == "Israel"
         assert _extract_origin_country("i'm from the usa") == "United States"
         assert _extract_origin_country("passport is uk") == "United Kingdom"
+        assert _extract_origin_country("israeli passport") == "Israel"
+        assert _extract_origin_country("israel") == "Israel"
         assert _extract_origin_country("plan a trip to Paris") is None
 
     def test_duration_days(self):

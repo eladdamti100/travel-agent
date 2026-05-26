@@ -300,6 +300,7 @@ def _extract_origin_country(text: str) -> Optional[str]:
     """
     patterns = [
         r"\bpassport(?:\s+country)?\s*(?:is\s+)?([a-z]+(?:\s+[a-z]+)?)\b",
+        r"\b([a-z]+(?:\s+[a-z]+)?)\s+passport\b",
         r"\borigin(?:\s+country)?\s*(?:is\s+)?([a-z]+(?:\s+[a-z]+)?)\b",
         r"\b(?:i\s*am|i'?m)\s+from\s+([a-z]+(?:\s+[a-z]+)?)\b",
         r"\b(?:i\s*am|i'?m)\s+([a-z]+)\b",
@@ -315,9 +316,14 @@ def _extract_origin_country(text: str) -> Optional[str]:
         for alias, canonical in _COUNTRY_ALIASES.items():
             if alias in raw_country:
                 return canonical
-                
+
         if raw_country not in ["looking", "planning", "going", "flying", "traveling", "a"]:
             return raw_country.title()
+
+    # Fallback: bare country word with no sentence context (e.g. HITL reply "Israel")
+    for alias, canonical in _COUNTRY_ALIASES.items():
+        if re.search(r"\b" + re.escape(alias) + r"\b", text):
+            return canonical
 
     return None
 
