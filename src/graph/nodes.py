@@ -111,6 +111,11 @@ def run_validator(state: AgentState) -> dict:
     if not messages:
         return {"validation_status": "approved"}
 
+    # HITL replies are factual travel details answering the planner's question.
+    # Running the full validator on them causes false positives (e.g. "Israeli passport").
+    if state.get("awaiting_user_clarification"):
+        return {"validation_status": "approved"}
+
     last_content = getattr(messages[-1], "content", "")
 
     result = ai_validate(last_content)
