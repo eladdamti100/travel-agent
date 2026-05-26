@@ -387,16 +387,7 @@ def reviewer_node(state: AgentState) -> dict:
     """
     from src.agents.reviewer import review_plan
 
-    last_msg = state["messages"][-1]
-    content = last_msg.content
-
-    if isinstance(content, list):
-        content = "\n".join(
-            item.get("text", str(item)) if isinstance(item, dict) else str(item)
-            for item in content
-        )
-
-    review = review_plan(str(content))
+    review = review_plan(state["messages"][-1].content)
 
     logger.info("Reviewer node completed critique.")
 

@@ -7,6 +7,7 @@ Called from main.py via the 'review' command, not as a graph node.
 """
 
 import asyncio
+from typing import Any
 
 from langchain_core.messages import SystemMessage
 
@@ -43,14 +44,17 @@ async def _review_plan_async(plan: str) -> str:
     return _content_to_text(response.content)
 
 
-def review_plan(plan: str) -> str:
+def review_plan(plan: Any) -> str:
     """
     Synchronous wrapper for the async reviewer.
 
-    Critique and score a travel plan string.
+    Accepts raw LangChain message content (str or list of content blocks)
+    and normalizes it before review, so callers never need to do it themselves.
     Returns the reviewer's structured feedback as a plain string.
     """
-    if not plan or not plan.strip():
+    text = _content_to_text(plan)
+
+    if not text.strip():
         return "No travel plan was provided for review."
 
-    return asyncio.run(_review_plan_async(plan))
+    return asyncio.run(_review_plan_async(text))
