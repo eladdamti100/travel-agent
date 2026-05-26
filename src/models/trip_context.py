@@ -51,6 +51,11 @@ class TripContext(BaseModel):
         description="Total trip budget in USD.",
     )
 
+    travel_month: Optional[str] = Field(
+        default=None,
+        description="Month of travel in lowercase English, for example june, december.",
+    )
+
     num_travelers: Optional[int] = Field(
         default=None,
         description="Number of travelers.",
