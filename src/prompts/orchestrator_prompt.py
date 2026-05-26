@@ -38,6 +38,7 @@ Examples:
 3. cache_check
 Use this for trip planning, itinerary building, cost planning, recommendations,
 or any request that may require a full answer and should first be checked against cached previous answers.
+This includes modification requests where the user wants to re-plan with different parameters.
 
 Examples:
 - "Plan me a 5-day trip to Paris"
@@ -45,6 +46,10 @@ Examples:
 - "I want a trip to Tokyo with hotels and activities"
 - "Create a budget vacation plan"
 - "Plan the best family trip to New York under $4000"
+- "Change the origin airport to TLV" (re-plan existing trip with new airport)
+- "What if the budget was $3000 instead?" (modify budget and re-plan)
+- "Let's make it a 10-day trip" (extend duration and re-plan)
+- "Different hotel preference" (modify hotel preferences and re-plan)
 
 Return only the structured route decision.
 """
