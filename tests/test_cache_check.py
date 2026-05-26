@@ -65,3 +65,22 @@ class TestCacheCheck:
 
         result = run_cache_check(_make_state(messages=[]))
         assert result["cache_status"] == CacheStatus.MISS.value
+
+    def test_force_replan_bypasses_cache(self):
+        from src.agents.cache_checker import run_cache_check
+        from src.models.cache import CacheStatus
+
+        hit_result = MagicMock()
+        hit_result.status = CacheStatus.HIT
+        hit_result.similarity_score = 0.95
+        hit_result.matched_query = "Paris trip"
+        hit_result.cached_answer = "Here is your Paris trip plan."
+
+        with patch("src.agents.cache_checker.find_cached_answer", return_value=hit_result):
+            # Even though cache would hit, force_replan=True should bypass it
+            result = run_cache_check(_make_state(force_replan=True))
+
+        # Should return MISS when force_replan is True
+        assert result["cache_status"] == CacheStatus.MISS.value
+        assert result["cache_answer"] == ""
+        assert "messages" not in result or result.get("messages") is None

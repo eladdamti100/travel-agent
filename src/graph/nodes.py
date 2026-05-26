@@ -69,26 +69,35 @@ def extract_metadata(state: AgentState) -> dict:
       - resets tool_call_count for the current turn
       - detects supported destination city
       - detects a USD budget if explicitly written as "$1500"
+      - detects trip parameter modifications to force re-planning
     """
+    from src.utils.modification_detector import detect_modification_context
+
     messages = state.get("messages", [])
-    updates: dict = {"tool_call_count": 0}
+    updates: dict = {"tool_call_count": 0, "force_replan": False}
 
     if not messages:
         return updates
 
-    last_content = getattr(messages[-1], "content", "").lower()
+    last_content = getattr(messages[-1], "content", "")
+    last_content_lower = last_content.lower()
 
     for keyword, city in _CITY_MAP.items():
-        if keyword in last_content:
+        if keyword in last_content_lower:
             updates["current_city"] = city
             logger.info("Detected city: %s", city)
             break
 
-    budget_match = re.search(r"\$(\d[\d,]*(?:\.\d+)?)", last_content)
+    budget_match = re.search(r"\$(\d[\d,]*(?:\.\d+)?)", last_content_lower)
     if budget_match:
         budget = float(budget_match.group(1).replace(",", ""))
         updates["total_budget"] = budget
         logger.info("Detected budget: $%s", budget)
+
+    # Detect when user is modifying trip parameters
+    if detect_modification_context(last_content):
+        updates["force_replan"] = True
+        logger.info("Detected trip parameter modification — forcing re-planning")
 
     return updates
 

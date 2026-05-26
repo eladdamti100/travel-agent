@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     cache_similarity_score — best semantic similarity score
     cache_matched_query    — cached query that best matched the current query
     cache_answer           — cached answer returned on cache hit
+    force_replan           — True when user is modifying trip params, bypass cache hit
 
     trip_context           — current structured trip context
     context_enrichment_status — "not_started" | "completed" | "failed"
@@ -70,6 +71,7 @@ class AgentState(TypedDict):
     cache_similarity_score: float
     cache_matched_query: str
     cache_answer: str
+    force_replan: bool
 
     trip_context: dict
     context_enrichment_status: str

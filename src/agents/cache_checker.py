@@ -32,10 +32,23 @@ def run_cache_check(state: AgentState) -> dict:
 
     This function does not call the planner.
     It only decides whether a previous answer can be reused.
+
+    If force_replan is True (user is modifying trip parameters), bypass cache.
     """
     messages = state.get("messages", [])
+    force_replan = state.get("force_replan", False)
 
     if not messages:
+        return {
+            "cache_status": CacheStatus.MISS.value,
+            "cache_similarity_score": 0.0,
+            "cache_matched_query": "",
+            "cache_answer": "",
+        }
+
+    # If user is modifying parameters, force re-planning
+    if force_replan:
+        logger.info("Cache checker: force_replan=True, bypassing cache to re-plan with modifications")
         return {
             "cache_status": CacheStatus.MISS.value,
             "cache_similarity_score": 0.0,
