@@ -1,4 +1,3 @@
-from typing import Dict, List, Optional
 """
 Planner agent — master trip planner for the cache-miss path.
 
@@ -22,6 +21,7 @@ cache_miss
 
 import asyncio
 import json
+from typing import Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.agents.sub_agents.transport_agent import TransportAgent
@@ -63,7 +63,7 @@ from src.prompts.loader import get_prompt
 logger = get_logger("planner")
 
 
-_TASK_REQUIREMENTS: Dict[PlannerTaskType, tuple[str, ...]] = {
+_TASK_REQUIREMENTS: Dict[PlannerTaskType, Tuple[str, ...]] = {
     PlannerTaskType.FETCH_FLIGHTS: ("origin_airport", "destination_city"),
     PlannerTaskType.FETCH_HOTELS: ("destination_city",),
     PlannerTaskType.FETCH_ACTIVITIES: ("destination_city",),
@@ -75,43 +75,6 @@ _TASK_REQUIREMENTS: Dict[PlannerTaskType, tuple[str, ...]] = {
     PlannerTaskType.CALCULATE_TRIP_COST: ("duration_days",),
 }
 
-async def run_sub_agents_async(
-    context: TripContext,
-    existing_results: Optional[Dict[str, str]] = None,
-) -> Dict[str, str]:
-    """
-    Runs planner sub-agents in parallel and safely merges their independent results.
-    """
-    agents = [
-        TransportAgent(),
-        StayAgent(),
-        ExperienceAgent(),
-    ]
-
-    results = await asyncio.gather(
-        *[
-            agent.run(context=context)
-            for agent in agents
-        ],
-        return_exceptions=True,
-    )
-
-    merged_raw_results: Dict[str, str] = {
-        **(existing_results or {})
-    }
-
-    for agent, result in zip(agents, results):
-        if isinstance(result, Exception):
-            logger.error(
-                "Sub-agent failed. agent=%s error=%s",
-                getattr(agent, "agent_name", agent.__class__.__name__),
-                result,
-            )
-            continue
-
-        merged_raw_results.update(result.raw_results)
-
-    return merged_raw_results
 
 def run_master_planner(state: AgentState) -> dict:
     """
@@ -121,6 +84,7 @@ def run_master_planner(state: AgentState) -> dict:
     synchronous while the planner internally runs async tasks with asyncio.
     """
     return asyncio.run(_run_master_planner_async(state))
+
 
 def build_planner_dependency_graph(
     context: TripContext,
@@ -382,6 +346,40 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     return updates
 
 
+async def run_sub_agents_async(
+    context: TripContext,
+    existing_results: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """
+    Runs planner sub-agents in parallel and safely merges their independent results.
+    """
+    agents = [
+        TransportAgent(),
+        StayAgent(),
+        ExperienceAgent(),
+    ]
+
+    results = await asyncio.gather(
+        *[agent.run(context=context) for agent in agents],
+        return_exceptions=True,
+    )
+
+    merged_raw_results: Dict[str, str] = {**(existing_results or {})}
+
+    for agent, result in zip(agents, results):
+        if isinstance(result, Exception):
+            logger.error(
+                "Sub-agent failed. agent=%s error=%s",
+                getattr(agent, "agent_name", agent.__class__.__name__),
+                result,
+            )
+            continue
+
+        merged_raw_results.update(result.raw_results)
+
+    return merged_raw_results
+
+
 def build_scheduler_result(
     dependency_graph: PlannerDependencyGraph,
 ) -> SchedulerResult:
@@ -507,6 +505,7 @@ def _build_planner_task(
             else f"Task is missing required fields: {', '.join(missing_fields)}."
         ),
     )
+
 
 async def _calculate_cost_if_possible(
     context: TripContext,
