@@ -102,10 +102,11 @@ class InputValidator:
         # "follow the next command / instruction / prompt"
         r"follow\s+(the\s+)?(next|this|my|new|following)\s+(command|instruction|prompt|rule|order)",
 
-        # Style / personality change requests
-        r"answer\s+(me\s+)?(only\s+)?(in|using|with|like)\s+\w+",
-        r"respond\s+(only\s+)?(in|using|with|like)\s+\w+",
-        r"(speak|write|talk|communicate|reply)\s+(only\s+)?(in|using|like|as)\s+\w+",
+        # Style / personality change requests — require "only" to avoid blocking
+        # legitimate requests like "answer me in Hebrew" or "respond in English"
+        r"answer\s+(me\s+)?only\s+(in|using|with|like)\s+\w+",
+        r"respond\s+only\s+(in|using|with|like)\s+\w+",
+        r"(speak|write|talk|communicate|reply)\s+only\s+(in|using|like|as)\s+\w+",
         r"change\s+(your\s+)?(tone|style|language|personality|character|voice|way\s+of)",
         r"(from\s+now\s+on|starting\s+now|henceforth)\s+.*(speak|respond|answer|write|talk)",
 
@@ -203,6 +204,18 @@ class InputValidator:
         # Social media / relationships
         (r"\b(tinder|instagram|snapchat|tiktok|dating\s+app|how\s+to\s+get\s+a\s+(girlfriend|boyfriend|date))\b", "social"),
     ]
+
+    # Strong travel signals — unambiguously travel-related words only.
+    # Used by is_clearly_travel() to fast-approve without calling the LLM.
+    # Intentionally excludes generic words like "plan", "help", "hi", "book"
+    # that also appear in non-travel messages.
+    _STRONG_TRAVEL_SIGNALS = frozenset({
+        "flight", "flights", "hotel", "hotels", "itinerary",
+        "visa", "airport", "airline", "airlines", "vacation", "holiday",
+        "accommodation", "ticket", "passport", "sightseeing",
+        "travel", "travelling", "traveling", "trip", "fly", "flying",
+        "tourism", "tourist", "tour", "destination",
+    })
 
     # Travel-related keywords — any match overrides the off-topic check
     _TRAVEL_KEYWORDS = frozenset({
@@ -350,7 +363,7 @@ class InputValidator:
         saving ~200ms per typical travel message.
         """
         msg_lower = message.lower()
-        return any(kw in msg_lower for kw in cls._TRAVEL_KEYWORDS)
+        return any(kw in msg_lower for kw in cls._STRONG_TRAVEL_SIGNALS)
 
     @classmethod
     def _detect_city(cls, msg_lower: str) -> Optional[str]:
