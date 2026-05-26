@@ -1,3 +1,7 @@
+"""
+Stay sub-agent — fetches hotels for the destination city.
+"""
+
 import asyncio
 
 from src.agents.sub_agents.base import BaseSubAgent
@@ -15,6 +19,7 @@ class StayAgent(BaseSubAgent):
     """
 
     agent_name = "stay_agent"
+    result_keys = ("fetch_hotels",)
 
     async def run(
         self,

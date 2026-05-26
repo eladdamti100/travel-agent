@@ -1,3 +1,7 @@
+"""
+LangGraph node implementations for every step in the travel planner graph.
+"""
+
 import re
 import time
 
@@ -6,18 +10,16 @@ from langgraph.prebuilt import ToolNode
 
 from src.agents.cache_checker import run_cache_check
 from src.agents.cache_store import run_cache_store
-from src.agents.context_enricher import (
-    extract_trip_context_deterministic,
-)
+from src.agents.context_enricher import extract_trip_context_deterministic
 from src.agents.master_orchestrator import run_master_orchestrator
 from src.agents.planner import run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
 from src.graph.state import AgentState
 from src.models.trip_context import TripContext
+from src.prompts.loader import get_prompt
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
-from src.prompts.loader import get_prompt
 
 logger = get_logger("nodes")
 
@@ -97,15 +99,16 @@ def run_validator(state: AgentState) -> dict:
     """
     Security guardrail node — validates every user message before orchestration.
 
-    Validation order:
-      1. AI validator via Groq, if available.
-      2. Rule-based fallback validator.
+    Three-stage fast path (fastest first):
+      1. Instant regex check — blocks clear harm/injection/off-topic without any LLM.
+      2. Travel keyword fast-approve — skips the 200ms Groq call for obvious travel requests.
+      3. LLM check via Groq — only runs for ambiguous messages with no travel keywords.
 
     If blocked, the rejection message is added to State and the graph ends.
     If approved, validation_status is set to "approved".
     """
     from src.agents.ai_validator import ai_validate
-    from src.agents.validator import validate_input
+    from src.agents.validator import InputValidator, validate_input
 
     messages = state.get("messages", [])
     if not messages:
@@ -118,17 +121,27 @@ def run_validator(state: AgentState) -> dict:
 
     last_content = getattr(messages[-1], "content", "")
 
+    # Stage 1: instant regex — block clear violations immediately, no LLM cost.
+    regex_result = validate_input(last_content)
+    if not regex_result.approved:
+        logger.info("Validator: fast-blocked by regex. verdict=%s", regex_result.verdict)
+        return {
+            "validation_status": regex_result.verdict.lower(),
+            "messages": [AIMessage(content=regex_result.rejection_message)],
+        }
+
+    # Stage 2: travel keyword fast-approve — skip ~200ms Groq call for obvious travel messages.
+    if InputValidator.is_clearly_travel(last_content):
+        logger.info("Validator: fast-approved (travel keyword present).")
+        return {"validation_status": "approved"}
+
+    # Stage 3: ambiguous message — consult LLM for nuanced classification.
     result = ai_validate(last_content)
-
     if result is None:
-        logger.info("Validator: using rule-based fallback.")
-        result = validate_input(last_content)
+        logger.info("Validator: LLM unavailable, regex approved.")
+        return {"validation_status": "approved"}
 
-    logger.info(
-        "Validator: verdict=%s reason=%s",
-        result.verdict,
-        result.reason,
-    )
+    logger.info("Validator: LLM verdict=%s reason=%s", result.verdict, result.reason)
 
     if not result.approved:
         return {
@@ -238,10 +251,10 @@ def master_planner_node(state: AgentState) -> dict:
 
 def call_model(state: AgentState) -> dict:
     """
-    Legacy planner node.
+    Legacy ReAct-style planner node kept for the agent/tools loop path.
 
-    This is kept temporarily for backward compatibility until the graph fully
-    routes cache_miss to master_planner instead of this legacy node.
+    The primary cache-miss path now routes to master_planner. This node
+    remains registered so the legacy conditional edges still resolve.
     """
     profile_lines = []
 
@@ -376,16 +389,7 @@ def reviewer_node(state: AgentState) -> dict:
     """
     from src.agents.reviewer import review_plan
 
-    last_msg = state["messages"][-1]
-    content = last_msg.content
-
-    if isinstance(content, list):
-        content = "\n".join(
-            item.get("text", str(item)) if isinstance(item, dict) else str(item)
-            for item in content
-        )
-
-    review = review_plan(str(content))
+    review = review_plan(state["messages"][-1].content)
 
     logger.info("Reviewer node completed critique.")
 

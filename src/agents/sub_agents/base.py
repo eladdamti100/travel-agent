@@ -1,4 +1,9 @@
+"""
+Base class for all planner sub-agents.
+"""
+
 from abc import ABC, abstractmethod
+from typing import Tuple
 
 from src.models.planner import PlannerToolResults
 from src.models.trip_context import TripContext
@@ -14,6 +19,7 @@ class BaseSubAgent(ABC):
     """
 
     agent_name: str = "base_sub_agent"
+    result_keys: Tuple[str, ...] = ()
 
     @abstractmethod
     async def run(

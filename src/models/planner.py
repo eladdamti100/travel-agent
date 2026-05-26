@@ -1,5 +1,10 @@
-from typing import Dict, List, Optional
+"""
+Planner models — enums, task types, dependency graph, and structured tool results.
+"""
+
 from enum import Enum
+from typing import Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -118,6 +123,7 @@ class DependencyCheckResult(BaseModel):
         default=None,
         description="Human-in-the-loop question to ask when critical information is missing."
     )
+
 
 class FlightResult(BaseModel):
     """
@@ -417,6 +423,7 @@ class PlannerTaskNode(BaseModel):
         description="Explanation of the current node status."
     )
 
+
 class PlannerDependencyGraph(BaseModel):
     """
     Explicit dependency graph for planner execution.
@@ -448,6 +455,7 @@ class PlannerDependencyGraph(BaseModel):
         default_factory=list,
         description="Tasks already completed."
     )
+
 
 class SchedulerWave(BaseModel):
     """

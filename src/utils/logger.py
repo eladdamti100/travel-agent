@@ -1,3 +1,7 @@
+"""
+Logging factory — returns a consistently formatted named logger.
+"""
+
 import logging
 import sys
 

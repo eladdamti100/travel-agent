@@ -1,3 +1,7 @@
+"""
+Transport sub-agent — fetches flights and checks visa requirements.
+"""
+
 import asyncio
 
 from src.agents.sub_agents.base import BaseSubAgent
@@ -20,6 +24,7 @@ class TransportAgent(BaseSubAgent):
     """
 
     agent_name = "transport_agent"
+    result_keys = ("fetch_flights", "check_visa")
 
     async def run(
         self,
@@ -50,6 +55,9 @@ class TransportAgent(BaseSubAgent):
         context: TripContext,
         result: PlannerToolResults,
     ) -> None:
+        """
+        Fetch matching flights when origin and destination are available.
+        """
         if not context.origin_airport or not context.destination_city:
             return
 
@@ -71,6 +79,9 @@ class TransportAgent(BaseSubAgent):
         context: TripContext,
         result: PlannerToolResults,
     ) -> None:
+        """
+        Fetch visa requirements when both countries are available.
+        """
         if not context.origin_country or not context.destination_country:
             return
 

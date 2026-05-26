@@ -26,11 +26,11 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
-load_dotenv()
-
 from src.agents.validator import ValidationResult, _REJECTION_MESSAGES
-from src.utils.logger import get_logger
 from src.prompts.loader import get_prompt
+from src.utils.logger import get_logger
+
+load_dotenv()
 
 logger = get_logger("ai_validator")
 
@@ -42,7 +42,7 @@ _groq_model: Optional[ChatGroq] = None
 def _get_groq_model() -> Optional[ChatGroq]:
     """
     Returns a cached Groq client for validation.
-    Uses llama-3.1- 8b -instant: fast (~ 200ms ), accurate for classification,
+    Uses llama-3.1-8b-instant: fast (~200ms), accurate for classification,
     generous free tier (14,400 req/day).
     Returns None if GROQ_API_KEY is not configured.
     """
@@ -69,7 +69,7 @@ def ai_validate(message: str) -> Optional[ValidationResult]:
     """
     Validates a user message using Groq LLM.
 
-    Sends the message to llama-3.1- 8b -instant with a comprehensive policy
+    Sends the message to llama-3.1-8b-instant with a comprehensive policy
     prompt. The model returns a JSON verdict that is parsed into a
     ValidationResult — the same interface used by the hardcoded validator.
 

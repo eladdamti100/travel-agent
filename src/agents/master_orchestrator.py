@@ -1,10 +1,16 @@
+"""
+Master orchestrator — routes approved requests to the correct high-level path.
+
+Writes orchestrator_route into AgentState; never executes tools or answers users directly.
+"""
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.base import get_model
 from src.graph.state import AgentState
 from src.models.routing import RouteDecision, RouteType
-from src.utils.logger import get_logger
 from src.prompts.loader import get_prompt
+from src.utils.logger import get_logger
 
 logger = get_logger("master_orchestrator")
 

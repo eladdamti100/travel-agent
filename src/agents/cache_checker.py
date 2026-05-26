@@ -20,12 +20,11 @@ from langchain_core.messages import AIMessage
 
 from src.graph.state import AgentState
 from src.models.cache import CacheStatus
-from src.services.semantic_cache import find_cached_answer
+from src.services.semantic_cache import DEFAULT_HIT_THRESHOLD, find_cached_answer
 from src.utils.logger import get_logger
 
 logger = get_logger("cache_checker")
 
-DEFAULT_THRESHOLD = 0.85
 
 def run_cache_check(state: AgentState) -> dict:
     """
@@ -49,7 +48,7 @@ def run_cache_check(state: AgentState) -> dict:
     result = find_cached_answer(
         query=query,
         route="cache_check",
-        threshold=DEFAULT_THRESHOLD,
+        threshold=DEFAULT_HIT_THRESHOLD,
     )
 
     if result.status == CacheStatus.HIT:

@@ -1,3 +1,47 @@
+"""
+LangGraph workflow — compiles the full travel planner state graph.
+
+Graph topology
+──────────────
+START
+  │
+  ▼
+extract_metadata
+  │
+  ▼
+validator
+  │
+  ▼ route_after_validator
+  ├─ [blocked]            → END
+  ├─ [resume_hitl_context]→ resume_hitl_context → master_planner
+  └─ [approved]           → master_orchestrator
+                                │
+                                ▼ route_after_orchestrator
+                                ├─ [preferences_memory] → preferences_memory → summarizer → END
+                                ├─ [research]           → researcher → END
+                                └─ [cache_check]        → cache_check
+                                                               │
+                                                               ▼ route_after_cache_check
+                                                               ├─ [hit]  → END
+                                                               └─ [miss] → master_planner
+                                                                               │
+                                                                               ▼ route_after_master_planner
+                                                                               ├─ [missing_required_info] → END
+                                                                               └─ [final_plan] → cache_store → summarizer → END
+
+HITL Resume Flow:
+  When a previous planner turn stopped to ask for missing trip details, the next
+  user reply bypasses master_orchestrator, researcher, and semantic cache, and
+  resumes planning directly from the saved pending TripContext.
+
+Legacy path:
+  The agent/tools loop remains registered for backward compatibility.
+  cache_miss now routes to master_planner.
+
+Strict rule:
+  Every user query must pass through validator before intent routing.
+"""
+
 import sqlite3
 from pathlib import Path
 
@@ -30,66 +74,6 @@ from src.graph.router import (
 )
 from src.graph.state import AgentState
 
-"""
-Graph topology
-──────────────
-START
-  │
-  ▼
-extract_metadata
-  │
-  ▼
-validator
-  │
-  ▼ route_after_validator
-  ├─ [blocked]  → END
-  │
-  ├─ [resume_hitl_context]
-  │         │
-  │         ▼
-  │   resume_hitl_context
-  │         │
-  │         ▼
-  │   master_planner
-  │
-  └─ [approved] → master_orchestrator
-                      │
-                      ▼ route_after_orchestrator
-                      ├─ [preferences_memory] → preferences_memory_node → summarizer → END
-                      ├─ [research]           → researcher_node ───────→ END
-                      └─ [cache_check]        → cache_check
-                                                     │
-                                                     ▼ route_after_cache_check
-                                                     ├─ [cache_hit]  → END
-                                                     └─ [cache_miss] → master_planner
-                                                                          │
-                                                                          ▼ route_after_master_planner
-                                                                          ├─ [missing_required_info] → END
-                                                                          └─ [final_plan] → cache_store → summarizer → END
-
-HITL Resume Flow:
-  If a previous planner turn stopped because required trip information was
-  missing, the next user message bypasses:
-    - master_orchestrator
-    - researcher
-    - semantic cache
-
-  and resumes planning directly from the pending TripContext.
-
-Legacy path:
-  The legacy agent/tools loop is still registered for backward compatibility,
-  but cache_miss now routes to master_planner.
-
-Strict rule:
-  Every user query must pass through validator before intent routing.
-
-Current phase:
-  preferences_memory and research are implemented as dedicated agent routes.
-  cache_check is implemented with semantic embeddings.
-  cache_miss routes to master_planner.
-  cache_store saves successful planner answers for future cache hits.
-"""
-
 # SQLite connection created once at module level — stays open for app lifetime.
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "checkpoints.db"
 _conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
@@ -110,12 +94,7 @@ def build_graph():
     # ── Nodes ─────────────────────────────────────────────────────────────────
     builder.add_node("extract_metadata", extract_metadata)
     builder.add_node("validator", run_validator)
-
-    builder.add_node(
-        "resume_hitl_context",
-        resume_hitl_context_node,
-    )
-
+    builder.add_node("resume_hitl_context", resume_hitl_context_node)
     builder.add_node("master_orchestrator", master_orchestrator_node)
     builder.add_node("preferences_memory", preferences_memory_node)
     builder.add_node("researcher", researcher_node)
@@ -123,7 +102,7 @@ def build_graph():
     builder.add_node("master_planner", master_planner_node)
     builder.add_node("cache_store", cache_store_node)
 
-    # Legacy nodes kept for backward compatibility and future fallbacks.
+    # Legacy nodes kept for the agent/tools loop path.
     builder.add_node("agent", call_model)
     builder.add_node("tools", build_tools_node())
     builder.add_node("circuit_breaker", circuit_breaker)
@@ -137,9 +116,7 @@ def build_graph():
     builder.add_conditional_edges(
         "extract_metadata",
         route_after_metadata,
-        {
-            "validator": "validator",
-        },
+        {"validator": "validator"},
     )
 
     builder.add_conditional_edges(
@@ -152,10 +129,7 @@ def build_graph():
         },
     )
 
-    builder.add_edge(
-        "resume_hitl_context",
-        "master_planner",
-    )
+    builder.add_edge("resume_hitl_context", "master_planner")
 
     builder.add_conditional_edges(
         "master_orchestrator",
@@ -173,10 +147,7 @@ def build_graph():
     builder.add_conditional_edges(
         "cache_check",
         route_after_cache_check,
-        {
-            "master_planner": "master_planner",
-            END: END,
-        },
+        {"master_planner": "master_planner", END: END},
     )
 
     builder.add_conditional_edges(
@@ -189,7 +160,6 @@ def build_graph():
         },
     )
 
-    # Legacy agent path remains available if another route uses it later.
     builder.add_conditional_edges(
         "agent",
         should_continue,

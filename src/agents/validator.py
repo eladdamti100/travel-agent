@@ -14,11 +14,26 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from src.agents.validator_patterns import (
+    HARM_PATTERNS_RAW,
+    INJECTION_PATTERNS_RAW,
+    KNOWN_UNSUPPORTED_CITIES,
+    OFF_TOPIC_PATTERNS_RAW,
+    STRONG_TRAVEL_SIGNALS,
+    SUPPORTED_CITIES,
+    TRAVEL_KEYWORDS,
+    VISA_COUNTRY_NAMES,
+)
+
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
 class ValidationResult:
+    """
+    Result returned by the input validation layer.
+    """
+
     approved: bool
     verdict: str          # APPROVED | BLOCKED_HARM | BLOCKED_INJECTION | BLOCKED_SCOPE | BLOCKED_CITY
     reason: str
@@ -61,165 +76,14 @@ class InputValidator:
     detect_harm() is a public static method and can be called independently.
     """
 
-    # Cities in the database
-    SUPPORTED_CITIES = frozenset({"paris", "london", "tokyo", "new york", "berlin"})
-
-    # Common world cities NOT in the database — detected to give a helpful block
-    KNOWN_UNSUPPORTED_CITIES = frozenset({
-        "rome", "madrid", "amsterdam", "dubai", "bangkok", "sydney",
-        "barcelona", "singapore", "istanbul", "prague", "vienna",
-        "los angeles", "chicago", "toronto", "seoul", "beijing", "shanghai",
-        "hong kong", "mumbai", "delhi", "cairo", "mexico city",
-        "buenos aires", "johannesburg", "moscow", "athens", "lisbon",
-        "florence", "venice", "milan", "brussels", "geneva", "zurich",
-        "stockholm", "oslo", "copenhagen", "helsinki", "warsaw", "budapest",
-        "kyoto", "osaka", "bali", "phuket", "cancun", "havana",
-        "nairobi", "casablanca", "abu dhabi", "doha", "riyadh",
-        "tel aviv", "jerusalem", "beirut", "karachi", "lahore",
-        "lagos", "accra", "tunis", "algiers", "cape town",
-    })
-
-    # ── Harm patterns (checked before everything else) ────────────────────────
-    _HARM_PATTERNS_RAW = [
-        (r"\b(kill|murder|shoot|stab|blow\s+up|slaughter)\s+(someone|people|person|him|her|them|you|us|everyone)\b", "threat of violence"),
-        (r"\bi\s+(want\s+to|will|am\s+going\s+to)\s+(kill|murder|hurt|attack|destroy|harm)\b", "direct threat"),
-        (r"\bhow\s+to\s+(make|build|create|synthesize)\s+(a\s+)?(bomb|weapon|explosive|poison|bioweapon|nerve\s+agent|drug)\b", "dangerous instructions"),
-        (r"\b(suicide|self[\-\s]harm|kill\s+myself|end\s+my\s+life|want\s+to\s+die)\b", "self-harm"),
-        (r"\b(hack|breach|crack)\s+(into\s+)?(the\s+)?(system|server|database|account|network|mainframe)\b", "hacking"),
-        (r"\b(child\s+porn|csam|underage\s+(sex|nude|naked|porn))\b", "csam"),
-        (r"\b(ethnic\s+cleansing|genocide|hate\s+crime|racial\s+violence)\b", "hate crime"),
-        (r"\b(fuck\s+you|go\s+to\s+hell|you\s+(suck|are\s+stupid|idiot|moron))\b", "abusive language"),
-        (r"\b(steal|rob|defraud|scam|phish)\s+(credit\s+card|identity|money|bank|people)\b", "fraud"),
-        (r"\b(drug\s+deal|sell\s+drugs|buy\s+cocaine|buy\s+heroin|smuggl(e|ing))\b", "illegal substances"),
-    ]
-
-    # Regex patterns that signal prompt injection
-    _INJECTION_PATTERNS_RAW = [
-        # ignore / disregard — catches any combination of modifiers before the target word
-        r"ignore\s+(all\s+)?(previous\s+|your\s+|the\s+|above\s+)?(instructions?|prompts?|commands?|rules?|context)",
-        r"disregard\s+(all\s+)?(previous\s+|your\s+|the\s+)?(instructions?|prompts?|commands?|rules?|context)",
-
-        # "follow the next command / instruction / prompt"
-        r"follow\s+(the\s+)?(next|this|my|new|following)\s+(command|instruction|prompt|rule|order)",
-
-        # Style / personality change requests
-        r"answer\s+(me\s+)?(only\s+)?(in|using|with|like)\s+\w+",
-        r"respond\s+(only\s+)?(in|using|with|like)\s+\w+",
-        r"(speak|write|talk|communicate|reply)\s+(only\s+)?(in|using|like|as)\s+\w+",
-        r"change\s+(your\s+)?(tone|style|language|personality|character|voice|way\s+of)",
-        r"(from\s+now\s+on|starting\s+now|henceforth)\s+.*(speak|respond|answer|write|talk)",
-
-        # Role / identity injection
-        r"new\s+system\s+prompt",
-        r"your\s+new\s+role",
-        r"\bact\s+as\s+(a|an|if)\b",
-        r"pretend\s+(you\s+are|to\s+be)",
-        r"you\s+are\s+now\s+(a|an)\b",
-        r"you\s+are\s+(actually|really|secretly|truly)\s+a",
-        r"(switch|change|enter)\s+(to\s+)?(a\s+)?(different|new|unrestricted)\s+mode",
-        r"simulate\s+(a|an)\s+.*(ai|assistant|bot|system)",
-
-        # Jailbreak keywords
-        r"\bjailbreak\b",
-        r"\bDAN\b",
-        r"do\s+anything\s+now",
-
-        # Reveal / override system
-        r"what\s+are\s+your\s+(instructions?|rules?|prompt|system)",
-        r"(repeat|show|reveal|print|output)\s+(your\s+)?(system\s+)?(prompt|instructions?|rules?)",
-        r"forget\s+(everything|all|your\s+(instructions?|rules?|prompts?))",
-        r"override\s+(your|the)\s+(instructions?|prompt|rules?|system)",
-        r"(developer|god|admin|sudo|root)\s+mode",
-        r"bypass\s+(your|the)\s+(restrictions?|rules?|guidelines?|filters?|safety)",
-        r"from\s+now\s+on\s+(you|act|be|ignore|forget)",
-    ]
-
-    # (pattern, topic_label) pairs for clearly off-topic content
-    _OFF_TOPIC_PATTERNS_RAW = [
-        # Mathematics
-        (r"\b(solve|calculate|compute|evaluate)\s+(this\s+)?(equation|math|formula|integral|derivative|sum|problem)", "mathematics"),
-        (r"\b\d+\s*[\+\-\*\/\^]\s*\d+\b", "arithmetic"),
-
-        # Creative writing
-        (r"\bwrite\s+(me\s+)?(a\s+)?(poem|essay|story|song|lyrics|novel|script|haiku|sonnet)", "creative writing"),
-
-        # Coding — explicit write/create requests
-        (r"\b(write|generate|create|give me)\s+(some\s+)?(code|function|class|algorithm|script|program)\b", "coding"),
-        (r"\b(debug|fix|review)\s+(this|my|the)\s+(code|function|script|program|bug)", "coding"),
-
-        # Coding — "how to" programming questions
-        (r"\bhow\s+(do\s+i|to|can\s+i)\s+(reverse|sort|search|traverse|implement|merge|split|flatten|parse|serialize)\s+(a\s+)?(linked\s+list|array|string|tree|graph|stack|queue|dict|list|tuple)", "coding"),
-        (r"\bhow\s+(do\s+i|to|can\s+i)\s+(write|code|build|create|make|implement)\s+(a\s+)?(function|class|loop|recursion|algorithm|api|server|database|query)", "coding"),
-
-        # Programming data structures and concepts (clearly non-travel)
-        (r"\b(linked\s+list|binary\s+tree|binary\s+search|hash\s+table|hash\s+map|depth.first|breadth.first|big.o\s+notation|time\s+complexity|space\s+complexity)\b", "computer science"),
-        (r"\b(recursion|polymorphism|inheritance|encapsulation|abstraction|object.oriented|functional\s+programming)\b", "computer science"),
-
-        # Programming language syntax
-        (r"\bin\s+(python|java(?:script)?|c\+\+|c#|ruby|golang|go|rust|php|swift|kotlin|typescript|scala|r\b)\b", "programming language"),
-        (r"\b(def\s+\w+|class\s+\w+|import\s+\w+|print\s*\(|console\.log|System\.out)\b", "code snippet"),
-
-        # General knowledge
-        (r"\bwhat\s+is\s+the\s+(capital|population|president|prime\s+minister|gdp|area)\s+of\b", "general knowledge"),
-        (r"\bwho\s+(is|was|invented|discovered|wrote|created|founded)\b", "general knowledge"),
-        (r"\bexplain\s+(to\s+me\s+)?(what|how|why)\s+(is|are|does|do)\s+(machine\s+learning|deep\s+learning|neural|quantum|blockchain|ai|llm)\b", "general knowledge"),
-
-        # Translation
-        (r"\btranslate\s+(this|the|from|to|into)\b", "translation"),
-
-        # Games
-        (r"\bplay\s+(a\s+)?(game|chess|quiz|trivia|riddle)\b", "games"),
-
-        # Finance
-        (r"\b(stock|crypto|bitcoin|ethereum|forex)\s+(market|price|trading|chart)\b", "finance"),
-
-        # Cooking
-        (r"\b(recipe|how\s+to\s+cook|how\s+to\s+bake|ingredient|dish)\b", "cooking"),
-
-        # Sports
-        (r"\bsport(s)?\s+(score|result|match|standings|league)\b", "sports"),
-
-        # Medical
-        (r"\b(diagnosis|symptom|medicine|prescription|disease|treatment)\b", "medical"),
-
-        # Legal
-        (r"\b(law|legal\s+advice|is\s+it\s+legal|lawsuit|attorney)\b", "legal"),
-
-        # Philosophy/science
-        (r"\bthe\s+(meaning\s+of\s+life|universe|everything|big\s+bang)\b", "philosophy/science"),
-
-        # Weather (the original bug)
-        (r"\b(weather|temperature|forecast|rain|snow|sunny|cloudy|humidity)\s+(in|at|for|today|tomorrow|right\s+now)\b", "weather"),
-        (r"\bwhat('s|\s+is)\s+the\s+weather\b", "weather"),
-    ]
-
-    # Travel-related keywords — any match overrides the off-topic check
-    _TRAVEL_KEYWORDS = frozenset({
-        "flight", "flights", "hotel", "hotels", "trip", "travel", "travelling",
-        "destination", "visa", "activities", "activity", "itinerary", "airport",
-        "airline", "vacation", "holiday", "tourism", "tourist", "accommodation",
-        "booking", "book", "ticket", "passport", "tour", "sightseeing",
-        "cheapest", "budget", "cost", "price", "nights", "days",
-        "plan", "help", "hi", "hello",
-        # Preference keywords — always travel-related
-        "prefer", "preference", "favourite", "favorite", "kosher", "vegan",
-        "vegetarian", "halal", "traveler", "travellers", "travelers", "passenger",
-        "flying", "fly",
-        # Country names for visa checks — map to supported cities
-        # Japan→Tokyo, France→Paris, uk/england/britain→London,
-        # germany→Berlin, usa/america→New York
-        "japan", "france", "germany",
-        "uk", "england", "britain", "united kingdom",
-        "usa", "america", "united states",
-    })
-
-    # Country names that correspond to supported cities — never block these
-    # even though they are not city names in SUPPORTED_CITIES
-    _VISA_COUNTRY_NAMES = frozenset({
-        "japan", "france", "germany",
-        "uk", "england", "britain", "united kingdom",
-        "usa", "america", "united states",
-    })
+    SUPPORTED_CITIES = SUPPORTED_CITIES
+    KNOWN_UNSUPPORTED_CITIES = KNOWN_UNSUPPORTED_CITIES
+    _HARM_PATTERNS_RAW = HARM_PATTERNS_RAW
+    _INJECTION_PATTERNS_RAW = INJECTION_PATTERNS_RAW
+    _OFF_TOPIC_PATTERNS_RAW = OFF_TOPIC_PATTERNS_RAW
+    _STRONG_TRAVEL_SIGNALS = STRONG_TRAVEL_SIGNALS
+    _TRAVEL_KEYWORDS = TRAVEL_KEYWORDS
+    _VISA_COUNTRY_NAMES = VISA_COUNTRY_NAMES
 
     # Compiled pattern caches
     _harm_compiled: Optional[list] = None
@@ -228,6 +92,9 @@ class InputValidator:
 
     @classmethod
     def _harm_patterns(cls) -> list:
+        """
+        Returns compiled harmful-content regex patterns.
+        """
         if cls._harm_compiled is None:
             cls._harm_compiled = [
                 (re.compile(p, re.IGNORECASE), label)
@@ -237,6 +104,9 @@ class InputValidator:
 
     @classmethod
     def _injection_patterns(cls) -> list:
+        """
+        Returns compiled prompt-injection regex patterns.
+        """
         if cls._injection_compiled is None:
             cls._injection_compiled = [
                 re.compile(p, re.IGNORECASE) for p in cls._INJECTION_PATTERNS_RAW
@@ -245,6 +115,9 @@ class InputValidator:
 
     @classmethod
     def _off_topic_patterns(cls) -> list:
+        """
+        Returns compiled off-topic regex patterns with topic labels.
+        """
         if cls._off_topic_compiled is None:
             cls._off_topic_compiled = [
                 (re.compile(p, re.IGNORECASE), label)
@@ -273,6 +146,9 @@ class InputValidator:
 
     @classmethod
     def validate(cls, message: str) -> ValidationResult:
+        """
+        Validates a user message before it reaches the graph.
+        """
         msg_lower = message.lower().strip()
 
         # ── 0. Harm check (absolute highest priority) ─────────────────────────
@@ -331,7 +207,21 @@ class InputValidator:
         )
 
     @classmethod
+    def is_clearly_travel(cls, message: str) -> bool:
+        """
+        Returns True when the message unambiguously relates to travel.
+
+        Used by nodes.py to skip the LLM validator and fast-approve obvious requests,
+        saving ~200ms per typical travel message.
+        """
+        msg_lower = message.lower()
+        return any(kw in msg_lower for kw in cls._STRONG_TRAVEL_SIGNALS)
+
+    @classmethod
     def _detect_city(cls, msg_lower: str) -> Optional[str]:
+        """
+        Finds supported or known unsupported city mentions in a lowercased message.
+        """
         for city in cls.SUPPORTED_CITIES:
             if city in msg_lower:
                 return city
@@ -348,4 +238,7 @@ class InputValidator:
 # ── Public function (called by nodes.py) ─────────────────────────────────────
 
 def validate_input(user_message: str) -> ValidationResult:
+    """
+    Validates one raw user message with the default InputValidator.
+    """
     return InputValidator.validate(user_message)

@@ -1,3 +1,7 @@
+"""
+Experience sub-agent — fetches activities for the destination city.
+"""
+
 import asyncio
 
 from src.agents.sub_agents.base import BaseSubAgent
@@ -17,6 +21,7 @@ class ExperienceAgent(BaseSubAgent):
     """
 
     agent_name = "experience_agent"
+    result_keys = ("fetch_activities",)
 
     async def run(
         self,

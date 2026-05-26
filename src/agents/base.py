@@ -1,4 +1,11 @@
+"""
+LLM factory — returns a configured model instance for the selected provider.
+
+Set LLM_PROVIDER=groq or LLM_PROVIDER=gemini (default) in .env.
+"""
+
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
