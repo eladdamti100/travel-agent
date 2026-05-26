@@ -97,19 +97,19 @@ def should_continue(state: AgentState) -> str:
     """
     Conditional edge function — decides the next node after the legacy agent runs.
 
-    This is still used only by the legacy agent path.
+    This is used only by the legacy agent/tools loop path.
+    The reviewer no longer sits in this blocking path; admin plan reviews are
+    fired asynchronously from main.py after the stream completes.
 
     Decision tree:
       1. tool_call_count >= MAX_TOOL_CALLS        → circuit_breaker
       2. Repetitive identical tool call detected  → circuit_breaker
       3. Last message contains tool_calls         → tools
-      4. Full plan + admin session                → reviewer
-      5. Final answer after cache miss            → cache_store
-      6. Final answer otherwise                   → summarizer
+      4. Final answer after cache miss            → cache_store
+      5. Final answer otherwise                   → summarizer
     """
     last = state["messages"][-1]
     count = state.get("tool_call_count", 0)
-    is_admin = state.get("is_admin", False)
 
     if count >= MAX_TOOL_CALLS:
         return "circuit_breaker"
@@ -119,9 +119,6 @@ def should_continue(state: AgentState) -> str:
 
     if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
-
-    if is_admin and count >= 5 and state.get("current_city"):
-        return "reviewer"
 
     if state.get("cache_status") == "miss":
         return "cache_store"

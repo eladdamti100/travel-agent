@@ -2,6 +2,7 @@
 AI Travel Planner interactive terminal entrypoint.
 """
 
+import concurrent.futures
 import os
 import re
 from pathlib import Path
@@ -95,6 +96,48 @@ def is_rate_limit_error(error: str) -> bool:
     )
 
 
+def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
+    """
+    Runs the plan reviewer in a background thread so it never blocks the user.
+
+    Admin sessions: displays the review in a yellow panel once it finishes.
+    Regular sessions: logs the review internally only (not shown to user).
+
+    The thread is daemonised so it does not prevent process exit.
+    """
+    from src.agents.reviewer import review_plan
+
+    def _do_review():
+        try:
+            review = review_plan(plan_text)
+            if is_admin:
+                console.print()
+                console.print(Panel(
+                    review,
+                    title="[yellow]Plan Review (Admin)[/yellow]",
+                    border_style="yellow",
+                ))
+            else:
+                logger.info("Plan review (non-admin, internal only):\n%s", review)
+        except Exception as err:
+            logger.warning("Reviewer failed: %s", err)
+
+    if is_admin:
+        # For admin: block briefly with a spinner so the review appears immediately.
+        with console.status("[dim]Reviewing plan...[/dim]", spinner="dots"):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_do_review)
+                try:
+                    future.result(timeout=60)
+                except concurrent.futures.TimeoutError:
+                    console.print("[dim]Plan review timed out.[/dim]")
+    else:
+        # For regular users: fire-and-forget daemon thread (no UI impact).
+        t = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        t.submit(_do_review)
+        t.shutdown(wait=False)
+
+
 def run() -> None:
     """
     Starts the interactive terminal loop.
@@ -139,6 +182,9 @@ def run() -> None:
             "total_budget": None,
             "tool_call_count": 0,
         }
+        # Track the final plan text for the async reviewer (admin sessions only).
+        final_plan_text: str | None = None
+        _PLAN_NODES = {"master_planner", "cache_check"}
 
         try:
             with console.status("[tool.call]Starting...[/tool.call]", spinner="dots") as status:
@@ -176,11 +222,26 @@ def run() -> None:
                                 print_agent(text)
                                 status.start()
 
+                            # Capture the final plan for post-stream review.
+                            # Skip when master_planner stopped to ask a HITL question
+                            # (planner_status == "missing_required_info") — that is
+                            # not a complete plan, so the reviewer should not fire.
+                            if node_name in _PLAN_NODES and text:
+                                is_hitl_stop = (
+                                    node_data.get("planner_status") == "missing_required_info"
+                                )
+                                if not is_hitl_stop:
+                                    final_plan_text = text
+
             print_status(
                 city=accumulated.get("current_city"),
                 budget=accumulated.get("total_budget"),
                 tool_count=accumulated.get("tool_call_count", 0),
             )
+
+            # ── Async reviewer (runs AFTER the answer is shown) ───────────────
+            if final_plan_text:
+                _run_reviewer_async(final_plan_text, is_admin=is_admin)
 
         except Exception as error:
             err = str(error)

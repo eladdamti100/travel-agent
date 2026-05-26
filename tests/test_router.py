@@ -59,13 +59,14 @@ class TestRouterFunctions:
             "tool_call_count": 0,
         }) == "tools"
 
-        # Admin session with enough calls → reviewer
+        # Admin session with enough calls → cache_store (reviewer is now async in main.py)
         assert should_continue({
             "messages": base + [AIMessage(content="Final plan")],
             "tool_call_count": 6,
             "is_admin": True,
             "current_city": "Paris",
-        }) == "reviewer"
+            "cache_status": "miss",
+        }) == "cache_store"
 
         # Cache miss final answer → cache_store
         assert should_continue({

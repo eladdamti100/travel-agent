@@ -284,6 +284,8 @@ def _extract_origin_airport(text: str) -> Optional[str]:
         r"\bFLYING\s+FROM\s+([A-Z]{3})\b",
         r"\bDEPART(?:ING)?\s+FROM\s+([A-Z]{3})\b",
         r"\bORIGIN\s+AIRPORT\s+([A-Z]{3})\b",
+        r"^([A-Z]{3})$",                           # bare code: "TLV"
+        r"^([A-Z]{3})[,\s]",                       # code first: "TLV, Israeli passport"
     ]
 
     for pattern in patterns:

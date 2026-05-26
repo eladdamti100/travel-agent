@@ -100,42 +100,44 @@ def run_validator(state: AgentState) -> dict:
     Security guardrail node — validates every user message before orchestration.
 
     Three-stage fast path (fastest first):
-      1. Instant regex check — blocks clear harm/injection/off-topic without any LLM.
-      2. Travel keyword fast-approve — skips the 200ms Groq call for obvious travel requests.
-      3. LLM check via Groq — only runs for ambiguous messages with no travel keywords.
+      1. Instant regex — blocks harm/injection/off-topic without any LLM.
+      2. Travel keyword fast-approve — skips the Groq call for obvious travel messages.
+      3. Groq LLM — only for ambiguous messages with no travel keywords (~200 ms).
+
+    HITL turns use is_hitl=True: short factual answers (airport codes, nationalities,
+    durations, budgets) are fast-approved; harm and injection checks still run.
 
     If blocked, the rejection message is added to State and the graph ends.
-    If approved, validation_status is set to "approved".
     """
-    from src.agents.ai_validator import ai_validate
-    from src.agents.validator import InputValidator, validate_input
+    from src.agents.validator import InputValidator, ai_validate, validate_input
 
     messages = state.get("messages", [])
     if not messages:
         return {"validation_status": "approved"}
 
-    # HITL replies are factual travel details answering the planner's question.
-    # Running the full validator on them causes false positives (e.g. "Israeli passport").
-    if state.get("awaiting_user_clarification"):
-        return {"validation_status": "approved"}
-
     last_content = getattr(messages[-1], "content", "")
+    is_hitl = bool(state.get("awaiting_user_clarification"))
 
-    # Stage 1: instant regex — block clear violations immediately, no LLM cost.
-    regex_result = validate_input(last_content)
+    # Stage 1: regex check (with HITL-aware logic when is_hitl=True).
+    regex_result = validate_input(last_content, is_hitl=is_hitl)
     if not regex_result.approved:
-        logger.info("Validator: fast-blocked by regex. verdict=%s", regex_result.verdict)
+        logger.info("Validator: blocked. verdict=%s is_hitl=%s", regex_result.verdict, is_hitl)
         return {
             "validation_status": regex_result.verdict.lower(),
             "messages": [AIMessage(content=regex_result.rejection_message)],
         }
 
-    # Stage 2: travel keyword fast-approve — skip ~200ms Groq call for obvious travel messages.
+    # HITL replies that pass the regex stage are approved — skip the LLM call.
+    if is_hitl:
+        logger.info("Validator: HITL reply approved after regex check.")
+        return {"validation_status": "approved"}
+
+    # Stage 2: travel keyword fast-approve — skip ~200ms Groq call.
     if InputValidator.is_clearly_travel(last_content):
         logger.info("Validator: fast-approved (travel keyword present).")
         return {"validation_status": "approved"}
 
-    # Stage 3: ambiguous message — consult LLM for nuanced classification.
+    # Stage 3: ambiguous message — consult Groq LLM.
     result = ai_validate(last_content)
     if result is None:
         logger.info("Validator: LLM unavailable, regex approved.")
