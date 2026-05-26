@@ -17,19 +17,17 @@ Default hit threshold:
 """
 
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-
-import os
-
 os.environ["TORCHINDUCTOR_DISABLE"] = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from src.models.cache import CacheCheckResult, CacheEntry, CacheStatus
@@ -39,9 +37,10 @@ logger = get_logger("semantic_cache")
 
 _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.db"
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-_DEFAULT_THRESHOLD = 0.85
+DEFAULT_HIT_THRESHOLD = 0.85
 
 _embedding_model: Optional[SentenceTransformer] = None
+_db_initialized: bool = False
 
 
 def _get_embedding_model() -> SentenceTransformer:
@@ -62,7 +61,13 @@ def _get_embedding_model() -> SentenceTransformer:
 def initialize_cache_db() -> None:
     """
     Creates the semantic cache SQLite database and table if they do not exist.
+
+    Guarded by _db_initialized so schema checks run only once per process.
     """
+    global _db_initialized
+    if _db_initialized:
+        return
+
     _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
@@ -100,6 +105,8 @@ def initialize_cache_db() -> None:
         )
 
         conn.commit()
+
+    _db_initialized = True
 
 
 def normalize_query(query: str) -> str:
@@ -170,7 +177,7 @@ def find_cached_answer(
     query: str,
     *,
     route: str = "cache_check",
-    threshold: float = _DEFAULT_THRESHOLD,
+    threshold: float = DEFAULT_HIT_THRESHOLD,
 ) -> CacheCheckResult:
     """
     Finds the best semantic cache match for the given query.
