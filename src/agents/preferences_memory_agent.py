@@ -1,3 +1,4 @@
+from typing import Dict, List, Optional
 import os
 import re
 
@@ -141,7 +142,7 @@ def _update_preferences(state: AgentState, raw_message: str) -> dict:
     return updates
 
 
-def _extract_airline(message: str) -> str | None:
+def _extract_airline(message: str) -> Optional[str]:
     """
     Extracts a known preferred airline from the message.
     """
@@ -152,7 +153,7 @@ def _extract_airline(message: str) -> str | None:
     return None
 
 
-def _extract_food_preference(message: str) -> str | None:
+def _extract_food_preference(message: str) -> Optional[str]:
     """
     Extracts a known dietary preference from the message.
     """
@@ -163,7 +164,7 @@ def _extract_food_preference(message: str) -> str | None:
     return None
 
 
-def _extract_num_travelers(message: str) -> int | None:
+def _extract_num_travelers(message: str) -> Optional[int]:
     """
     Extracts the number of travelers from common travel preference phrases.
     """
@@ -183,7 +184,7 @@ def _extract_num_travelers(message: str) -> int | None:
     return None
 
 
-def _extract_preference_with_llm(message: str) -> str | None:
+def _extract_preference_with_llm(message: str) -> Optional[str]:
     """
     Uses Groq llama-3.1-8b-instant to extract additional travel preferences
     that are not covered by deterministic airline, food, and traveler detection.

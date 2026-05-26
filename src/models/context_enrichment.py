@@ -1,3 +1,4 @@
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from src.models.trip_context import TripContext
@@ -41,7 +42,7 @@ class ContextEnrichmentResult(BaseModel):
         description="Improved trip context for the current planning request."
     )
 
-    preference_updates: list[PreferenceUpdate] = Field(
+    preference_updates: List[PreferenceUpdate] = Field(
         default_factory=list,
         description="Stable user preferences that should be persisted for future sessions."
     )
@@ -53,7 +54,7 @@ class ContextEnrichmentResult(BaseModel):
         description="Overall confidence of the SLM enrichment result."
     )
 
-    notes: str | None = Field(
+    notes: Optional[str] = Field(
         default=None,
         description="Optional short notes about ambiguity or assumptions in the enrichment."
     )

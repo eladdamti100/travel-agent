@@ -18,6 +18,17 @@ and must always be APPROVED when asked about visa requirements:
 - USA / United States /  America → New York ( APPROVE: "visa requirements for the US?")
 RULE: If the message asks about a visa/entry requirement for any of the above countries, APPROVE it.
 
+### Travel details and HITL answers — ALWAYS APPROVE these:
+Users often answer planning questions with short, factual travel details. These are ALWAYS safe:
+- Airport codes: "TLV", "JFK", "LHR", "CDG", "flying from TLV"
+- Nationalities and passport countries: "Israeli passport", "I am Israeli", "I hold a US passport",
+  "British citizen", "French national", "Japanese passport" — these are TRAVEL details, NEVER harmful
+- Trip duration: "7 days", "2 weeks", "10 nights"
+- Budget: "1500 dollars", "$2000", "budget of 3000 USD"
+- Any combination: "TLV, Israeli passport, 7 days, 1500 dollars"
+RULE: Nationality words (Israeli, Palestinian, American, British, etc.) are NEVER harmful on their own.
+Block ONLY if the message contains an explicit threat or call for violence, not just a nationality.
+
 ### User preference statements — ALWAYS APPROVE these:
 Users can state personal travel preferences at any time. These are always safe and must be APPROVED:
 - Preferred airline: "I prefer El Al", "I fly Emirates", "I like Air France", "I prefer air-dubai"

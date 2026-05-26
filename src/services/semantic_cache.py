@@ -21,7 +21,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -41,7 +41,7 @@ _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 _DEFAULT_THRESHOLD = 0.85
 
-_embedding_model: SentenceTransformer | None = None
+_embedding_model: Optional[SentenceTransformer] = None
 
 
 def _get_embedding_model() -> SentenceTransformer:
@@ -75,10 +75,22 @@ def initialize_cache_db() -> None:
                 answer TEXT NOT NULL,
                 route TEXT NOT NULL,
                 embedding_json TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                compressed_answer TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
         )
+
+        # Migrate existing databases that predate these columns.
+        for migration in (
+            "ALTER TABLE semantic_cache ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+            "ALTER TABLE semantic_cache ADD COLUMN compressed_answer TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
         conn.execute(
             """
@@ -105,7 +117,7 @@ def normalize_query(query: str) -> str:
     return normalized
 
 
-def embed_text(text: str) -> list[float]:
+def embed_text(text: str) -> List[float]:
     """
     Creates an embedding vector for the given text.
     """
@@ -115,7 +127,7 @@ def embed_text(text: str) -> list[float]:
     return vector.astype(float).tolist()
 
 
-def cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
+def cosine_similarity(vector_a: List[float], vector_b: List[float]) -> float:
     """
     Computes cosine similarity between two vectors.
 
@@ -132,7 +144,7 @@ def cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
     return float(np.dot(a, b) / denominator)
 
 
-def _load_cache_rows(route: str = "cache_check") -> list[dict[str, Any]]:
+def _load_cache_rows(route: str = "cache_check") -> List[Dict[str, Any]]:
     """
     Loads cache rows for a specific route.
     """
@@ -143,7 +155,7 @@ def _load_cache_rows(route: str = "cache_check") -> list[dict[str, Any]]:
 
         rows = conn.execute(
             """
-            SELECT query, normalized_query, answer, route, embedding_json, created_at
+            SELECT query, normalized_query, answer, route, embedding_json, compressed_answer, created_at
             FROM semantic_cache
             WHERE route = ?
             ORDER BY id DESC
@@ -183,7 +195,7 @@ def find_cached_answer(
         )
 
     best_score = 0.0
-    best_row: dict[str, Any] | None = None
+    best_row: Optional[Dict[str, Any]] = None
 
     for row in rows:
         try:
@@ -209,6 +221,7 @@ def find_cached_answer(
             similarity_score=best_score,
             matched_query=best_row["query"],
             cached_answer=best_row["answer"],
+            cached_compressed_answer=best_row.get("compressed_answer") or None,
             reason="Found a sufficiently similar cached answer.",
         )
 
@@ -228,6 +241,8 @@ def store_cache_entry(
     answer: str,
     *,
     route: str = "cache_check",
+    confidence: float = 1.0,
+    compressed_answer: str = "",
 ) -> CacheEntry:
     """
     Stores a new semantic cache entry.
@@ -239,6 +254,7 @@ def store_cache_entry(
 
     normalized_query = normalize_query(query)
     embedding = embed_text(normalized_query)
+    now = datetime.now(timezone.utc)
 
     entry = CacheEntry(
         query=query,
@@ -246,6 +262,9 @@ def store_cache_entry(
         answer=answer,
         route=route,
         embedding=embedding,
+        confidence=confidence,
+        timestamp=now,
+        compressed_answer=compressed_answer,
     )
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
@@ -257,9 +276,11 @@ def store_cache_entry(
                 answer,
                 route,
                 embedding_json,
+                confidence,
+                compressed_answer,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.query,
@@ -267,12 +288,54 @@ def store_cache_entry(
                 entry.answer,
                 entry.route,
                 json.dumps(entry.embedding),
-                datetime.now(timezone.utc).isoformat(),
+                entry.confidence,
+                entry.compressed_answer,
+                entry.timestamp.isoformat(),
             ),
         )
 
         conn.commit()
 
-    logger.info("Stored semantic cache entry for route=%s query=%s", route, query)
+    _cleanup_cache(route=route)
+
+    logger.info("Stored semantic cache entry for route=%s query=%s confidence=%.4f", route, query, confidence)
 
     return entry
+
+
+_MAX_ROWS_PER_ROUTE = 200
+_MAX_AGE_DAYS = 30
+
+
+def _cleanup_cache(route: str) -> None:
+    """
+    Removes entries that are older than _MAX_AGE_DAYS and trims the route
+    to at most _MAX_ROWS_PER_ROUTE entries (keeping the most recent ones).
+    """
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        conn.execute(
+            """
+            DELETE FROM semantic_cache
+            WHERE route = ?
+              AND created_at < datetime('now', ? || ' days')
+            """,
+            (route, f"-{_MAX_AGE_DAYS}"),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM semantic_cache
+            WHERE route = ?
+              AND id NOT IN (
+                  SELECT id FROM semantic_cache
+                  WHERE route = ?
+                  ORDER BY id DESC
+                  LIMIT ?
+              )
+            """,
+            (route, route, _MAX_ROWS_PER_ROUTE),
+        )
+
+        conn.commit()
+
+    logger.debug("Cache cleanup done for route=%s (max_rows=%d, max_age_days=%d)", route, _MAX_ROWS_PER_ROUTE, _MAX_AGE_DAYS)

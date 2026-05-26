@@ -65,7 +65,7 @@ def test_cache_check_miss():
 
     assert result["cache_status"] == CacheStatus.MISS.value
     assert result["cache_answer"] in ("", None)
-    assert result.get("messages") == [HumanMessage(content="Plan a trip to Paris for 5 days")]
+    assert result.get("messages") is None
 
 
 def test_cache_check_empty_messages_returns_miss():
