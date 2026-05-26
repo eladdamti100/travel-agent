@@ -1,7 +1,7 @@
 from unittest.mock import patch, AsyncMock, MagicMock
 from src.agents.planner import run_master_planner
-from tests.Test_cache_check import _make_state
-from tests.Test_planner_dependency_graph import _make_trip_context
+from tests.test_cache_check import _make_state
+from tests.test_planner_dependency_graph import _make_trip_context
 
 class TestHitlResume:
     @patch("src.agents.planner.enrich_trip_context_async", new_callable=AsyncMock)
