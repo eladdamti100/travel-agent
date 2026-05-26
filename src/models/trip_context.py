@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -15,72 +17,72 @@ class TripContext(BaseModel):
       - SLM enrichment layer: async structured enrichment that may improve context later
     """
 
-    origin_airport: str | None = Field(
+    origin_airport: Optional[str] = Field(
         default=None,
         description="Departure airport code, for example TLV, JFK, LHR.",
     )
 
-    origin_country: str | None = Field(
+    origin_country: Optional[str] = Field(
         default=None,
         description="Traveler passport/origin country, used for visa requirements.",
     )
 
-    destination_city: str | None = Field(
+    destination_city: Optional[str] = Field(
         default=None,
         description="Destination city, for example Paris, London, Tokyo, New York, Berlin.",
     )
 
-    destination_country: str | None = Field(
+    destination_country: Optional[str] = Field(
         default=None,
         description="Destination country derived from the destination city when possible.",
     )
 
-    duration_days: int | None = Field(
+    duration_days: Optional[int] = Field(
         default=None,
         description="Trip duration in days or nights, depending on user wording.",
     )
 
-    total_budget: float | None = Field(
+    total_budget: Optional[float] = Field(
         default=None,
         description="Total trip budget in USD.",
     )
 
-    num_travelers: int | None = Field(
+    num_travelers: Optional[int] = Field(
         default=None,
         description="Number of travelers.",
     )
 
-    preferred_airline: str | None = Field(
+    preferred_airline: Optional[str] = Field(
         default=None,
         description="User's preferred airline, if known.",
     )
 
-    food_preference: str | None = Field(
+    food_preference: Optional[str] = Field(
         default=None,
         description="User's dietary preference, for example kosher, vegan, halal.",
     )
 
-    travel_preferences: str | None = Field(
+    travel_preferences: Optional[str] = Field(
         default=None,
         description="Additional saved free-form travel preferences.",
     )
 
-    hotel_preference: str | None = Field(
+    hotel_preference: Optional[str] = Field(
         default=None,
         description="Hotel preference such as 5-star, cheap, central location, family-friendly.",
     )
 
-    flight_preference: str | None = Field(
+    flight_preference: Optional[str] = Field(
         default=None,
         description="Flight preference such as direct flights, morning flights, business class.",
     )
 
-    activity_preference: str | None = Field(
+    activity_preference: Optional[str] = Field(
         default=None,
         description="Activity preference such as museums, kids activities, nature, shopping.",
     )
 
-    travel_style: str | None = Field(
+    travel_style: Optional[str] = Field(
         default=None,
         description="General travel style such as budget, luxury, relaxed, family, adventure.",
     )

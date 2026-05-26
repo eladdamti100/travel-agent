@@ -1,4 +1,4 @@
-from typing import Annotated, TypedDict
+from typing import Annotated, Dict, List, Optional, TypedDict
 from langgraph.graph.message import add_messages
 
 
@@ -77,6 +77,6 @@ class AgentState(TypedDict):
 
     awaiting_user_clarification: bool
     pending_trip_context: dict
-    pending_missing_fields: list[str]
+    pending_missing_fields: List[str]
     pending_hitl_question: str
     pending_planner_task_results: dict

@@ -1,3 +1,4 @@
+from typing import Dict, List, Optional
 """
 Planner agent — master trip planner for the cache-miss path.
 
@@ -62,7 +63,7 @@ from src.prompts.loader import get_prompt
 logger = get_logger("planner")
 
 
-_TASK_REQUIREMENTS: dict[PlannerTaskType, tuple[str, ...]] = {
+_TASK_REQUIREMENTS: Dict[PlannerTaskType, tuple[str, ...]] = {
     PlannerTaskType.FETCH_FLIGHTS: ("origin_airport", "destination_city"),
     PlannerTaskType.FETCH_HOTELS: ("destination_city",),
     PlannerTaskType.FETCH_ACTIVITIES: ("destination_city",),
@@ -76,8 +77,8 @@ _TASK_REQUIREMENTS: dict[PlannerTaskType, tuple[str, ...]] = {
 
 async def run_sub_agents_async(
     context: TripContext,
-    existing_results: dict[str, str] | None = None,
-) -> dict[str, str]:
+    existing_results: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     """
     Runs planner sub-agents in parallel and safely merges their independent results.
     """
@@ -95,7 +96,7 @@ async def run_sub_agents_async(
         return_exceptions=True,
     )
 
-    merged_raw_results: dict[str, str] = {
+    merged_raw_results: Dict[str, str] = {
         **(existing_results or {})
     }
 
@@ -123,7 +124,7 @@ def run_master_planner(state: AgentState) -> dict:
 
 def build_planner_dependency_graph(
     context: TripContext,
-    completed_tasks: list[PlannerTaskType] | None = None,
+    completed_tasks: Optional[List[PlannerTaskType]] = None,
 ) -> PlannerDependencyGraph:
     """
     Builds an explicit planner dependency DAG.
@@ -146,16 +147,16 @@ def build_planner_dependency_graph(
         ),
     ]
 
-    dependency_map: dict[PlannerTaskType, list[PlannerTaskType]] = {}
+    dependency_map: Dict[PlannerTaskType, List[PlannerTaskType]] = {}
 
     for dependency in dependencies:
         dependency_map.setdefault(dependency.task, []).append(
             dependency.depends_on
         )
 
-    nodes: dict[PlannerTaskType, PlannerTaskNode] = {}
-    ready_tasks: list[PlannerTaskType] = []
-    blocked_tasks: list[PlannerTaskType] = []
+    nodes: Dict[PlannerTaskType, PlannerTaskNode] = {}
+    ready_tasks: List[PlannerTaskType] = []
+    blocked_tasks: List[PlannerTaskType] = []
 
     for task_type in PlannerTaskType:
         required_fields = list(_TASK_REQUIREMENTS.get(task_type, ()))
@@ -389,7 +390,7 @@ def build_scheduler_result(
 
     Tasks in the same wave can run in parallel.
     """
-    waves: list[SchedulerWave] = []
+    waves: List[SchedulerWave] = []
 
     if dependency_graph.ready_tasks:
         waves.append(
@@ -449,7 +450,7 @@ def check_planner_dependencies(context: TripContext) -> DependencyCheckResult:
     )
 
 
-def _build_missing_requirements(context: TripContext) -> list[MissingRequirement]:
+def _build_missing_requirements(context: TripContext) -> List[MissingRequirement]:
     """
     Builds missing critical field objects for full trip planning.
     """
@@ -509,8 +510,8 @@ def _build_planner_task(
 
 async def _calculate_cost_if_possible(
     context: TripContext,
-    task_results: dict[str, str],
-) -> str | None:
+    task_results: Dict[str, str],
+) -> Optional[str]:
     """
     Calculates trip cost if flight and hotel data are available.
     """
@@ -542,7 +543,7 @@ async def _calculate_cost_if_possible(
 async def _generate_final_plan(
     context: TripContext,
     dependency_result: DependencyCheckResult,
-    task_results: dict[str, str],
+    task_results: Dict[str, str],
 ) -> str:
     """
     Uses the LLM to generate a final user-facing travel plan from structured data.
@@ -569,7 +570,7 @@ async def _generate_final_plan(
 
 def _build_preference_state_updates(
     state: AgentState,
-    preference_updates: list[PreferenceUpdate],
+    preference_updates: List[PreferenceUpdate],
 ) -> dict:
     """
     Converts persistent preference updates into AgentState field updates.
@@ -597,7 +598,7 @@ def _extract_lowest_price_from_json(
     raw_json: str,
     *,
     price_key: str = "price",
-) -> float | None:
+) -> Optional[float]:
     """
     Extracts the lowest price from a tool JSON response.
     """
@@ -631,7 +632,7 @@ def _extract_lowest_price_from_json(
     return min(prices) if prices else None
 
 
-def _build_hitl_question(missing_requirements: list[MissingRequirement]) -> str:
+def _build_hitl_question(missing_requirements: List[MissingRequirement]) -> str:
     """
     Builds a concise HITL question from missing critical fields.
     """
@@ -677,7 +678,7 @@ def _missing_field_reason(field_name: str) -> str:
 def _build_structured_tool_results(
     *,
     context: TripContext,
-    raw_results: dict[str, str],
+    raw_results: Dict[str, str],
 ) -> PlannerToolResults:
     """
     Builds a structured planner output container from existing raw tool results.
@@ -739,7 +740,7 @@ def _ensure_list(data) -> list:
     return []
 
 
-def _as_float(value) -> float | None:
+def _as_float(value) -> Optional[float]:
     """
     Converts a value to float when possible.
     """
@@ -752,7 +753,7 @@ def _as_float(value) -> float | None:
         return None
 
 
-def _as_int(value) -> int | None:
+def _as_int(value) -> Optional[int]:
     """
     Converts a value to int when possible.
     """
@@ -765,12 +766,12 @@ def _as_int(value) -> int | None:
         return None
 
 
-def _parse_flight_results(raw: str) -> list[FlightResult]:
+def _parse_flight_results(raw: str) -> List[FlightResult]:
     """
     Parses raw flight tool output into structured FlightResult objects.
     """
     rows = _ensure_list(_parse_json_result(raw))
-    results: list[FlightResult] = []
+    results: List[FlightResult] = []
 
     for row in rows:
         if not isinstance(row, dict):
@@ -793,12 +794,12 @@ def _parse_flight_results(raw: str) -> list[FlightResult]:
     return results
 
 
-def _parse_hotel_results(raw: str) -> list[HotelResult]:
+def _parse_hotel_results(raw: str) -> List[HotelResult]:
     """
     Parses raw hotel tool output into structured HotelResult objects.
     """
     rows = _ensure_list(_parse_json_result(raw))
-    results: list[HotelResult] = []
+    results: List[HotelResult] = []
 
     for row in rows:
         if not isinstance(row, dict):
@@ -818,12 +819,12 @@ def _parse_hotel_results(raw: str) -> list[HotelResult]:
     return results
 
 
-def _parse_activity_results(raw: str) -> list[ActivityResult]:
+def _parse_activity_results(raw: str) -> List[ActivityResult]:
     """
     Parses raw activity tool output into structured ActivityResult objects.
     """
     rows = _ensure_list(_parse_json_result(raw))
-    results: list[ActivityResult] = []
+    results: List[ActivityResult] = []
 
     for row in rows:
         if not isinstance(row, dict):
@@ -847,7 +848,7 @@ def _parse_visa_result(
     raw: str,
     *,
     context: TripContext,
-) -> VisaResult | None:
+) -> Optional[VisaResult]:
     """
     Parses raw visa tool output into a structured VisaResult.
     """
@@ -883,7 +884,7 @@ def _parse_cost_result(
     raw: str,
     *,
     context: TripContext,
-) -> CostResult | None:
+) -> Optional[CostResult]:
     """
     Parses raw cost tool output into a structured CostResult.
     """

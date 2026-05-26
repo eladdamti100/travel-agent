@@ -1,3 +1,4 @@
+from typing import Dict, List, Optional
 """
 Context enricher.
 
@@ -292,7 +293,7 @@ def _build_saved_preferences_snapshot(state: AgentState) -> dict:
     }
 
 
-def _extract_origin_airport(text: str) -> str | None:
+def _extract_origin_airport(text: str) -> Optional[str]:
     """
     Extracts a departure airport code from the user message.
 
@@ -319,7 +320,7 @@ def _extract_origin_airport(text: str) -> str | None:
     return None
 
 
-def _extract_origin_country(text: str) -> str | None:
+def _extract_origin_country(text: str) -> Optional[str]:
     """
     Extracts traveler origin/passport country from simple wording.
     """
@@ -347,7 +348,7 @@ def _extract_origin_country(text: str) -> str | None:
     return None
 
 
-def _extract_destination_city(text: str) -> str | None:
+def _extract_destination_city(text: str) -> Optional[str]:
     """
     Extracts a supported destination city from the user message.
     """
@@ -358,7 +359,7 @@ def _extract_destination_city(text: str) -> str | None:
     return None
 
 
-def _extract_duration_days(text: str) -> int | None:
+def _extract_duration_days(text: str) -> Optional[int]:
     """
     Extracts trip duration in days or nights.
     """
@@ -378,7 +379,7 @@ def _extract_duration_days(text: str) -> int | None:
     return None
 
 
-def _extract_total_budget(text: str) -> float | None:
+def _extract_total_budget(text: str) -> Optional[float]:
     """
     Extracts total budget in USD from common formats.
     """
@@ -400,7 +401,7 @@ def _extract_total_budget(text: str) -> float | None:
     return None
 
 
-def _extract_num_travelers(text: str) -> int | None:
+def _extract_num_travelers(text: str) -> Optional[int]:
     """
     Extracts number of travelers.
     """
@@ -418,7 +419,7 @@ def _extract_num_travelers(text: str) -> int | None:
     return None
 
 
-def _extract_hotel_preference(text: str) -> str | None:
+def _extract_hotel_preference(text: str) -> Optional[str]:
     """
     Extracts simple hotel preferences.
     """
@@ -437,7 +438,7 @@ def _extract_hotel_preference(text: str) -> str | None:
     return None
 
 
-def _extract_flight_preference(text: str) -> str | None:
+def _extract_flight_preference(text: str) -> Optional[str]:
     """
     Extracts simple flight preferences.
     """
@@ -456,7 +457,7 @@ def _extract_flight_preference(text: str) -> str | None:
     return None
 
 
-def _extract_activity_preference(text: str) -> str | None:
+def _extract_activity_preference(text: str) -> Optional[str]:
     """
     Extracts simple activity preferences.
     """
@@ -475,7 +476,7 @@ def _extract_activity_preference(text: str) -> str | None:
     return None
 
 
-def _extract_travel_style(text: str) -> str | None:
+def _extract_travel_style(text: str) -> Optional[str]:
     """
     Extracts general travel style.
     """
