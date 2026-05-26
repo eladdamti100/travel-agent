@@ -1,5 +1,4 @@
 import importlib
-from typing import Any
 
 PROMPT_REGISTRY = {
     "planner_prompt": "src.prompts.planner_prompt.PLANNER_SYSTEM_PROMPT",
@@ -12,13 +11,14 @@ PROMPT_REGISTRY = {
     "preferences_memory_prompt": "src.prompts.preferences_memory_prompt.PREFERENCES_MEMORY_PROMPT",
 }
 
+
 def get_prompt(prompt_name: str) -> str:
     if prompt_name not in PROMPT_REGISTRY:
         raise ValueError(f"Prompt '{prompt_name}' not found in registry.")
-    
+
     full_path = PROMPT_REGISTRY[prompt_name]
     module_path, attr_name = full_path.rsplit(".", 1)
-    
+
     try:
         module = importlib.import_module(module_path)
         return getattr(module, attr_name)
