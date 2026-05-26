@@ -59,6 +59,58 @@ class TestInputValidator:
         assert result.approved is True
 
 
+    def test_entertainment_blocked(self):
+        from src.agents.validator import validate_input
+        result = validate_input("Tell me a joke")
+        assert result.approved is False
+        assert result.verdict == "BLOCKED_SCOPE"
+
+    def test_breaking_news_blocked(self):
+        from src.agents.validator import validate_input
+        result = validate_input("What are the latest news headlines?")
+        assert result.approved is False
+        assert result.verdict == "BLOCKED_SCOPE"
+
+    def test_social_media_blocked(self):
+        from src.agents.validator import validate_input
+        result = validate_input("How do I get followers on Instagram?")
+        assert result.approved is False
+        assert result.verdict == "BLOCKED_SCOPE"
+
+    def test_answer_in_language_not_blocked(self):
+        """'answer me in Hebrew' should NOT be flagged as injection — no 'only' present."""
+        from src.agents.validator import validate_input
+        result = validate_input("Plan a trip to Paris and answer me in Hebrew")
+        assert result.approved is True
+
+    def test_answer_only_in_pirate_blocked(self):
+        from src.agents.validator import validate_input
+        result = validate_input("answer me only in pirate speak")
+        assert result.approved is False
+        assert result.verdict == "BLOCKED_INJECTION"
+
+    def test_is_clearly_travel_strong_signal(self):
+        from src.agents.validator import InputValidator
+        assert InputValidator.is_clearly_travel("I need to book a flight to Tokyo") is True
+
+    def test_is_clearly_travel_itinerary(self):
+        from src.agents.validator import InputValidator
+        assert InputValidator.is_clearly_travel("Build me an itinerary for Paris") is True
+
+    def test_is_clearly_travel_generic_plan_not_strong(self):
+        """'plan' alone is in _TRAVEL_KEYWORDS but not _STRONG_TRAVEL_SIGNALS."""
+        from src.agents.validator import InputValidator
+        assert InputValidator.is_clearly_travel("I need a plan for my weekend") is False
+
+    def test_is_clearly_travel_visa(self):
+        from src.agents.validator import InputValidator
+        assert InputValidator.is_clearly_travel("Do I need a visa for Japan?") is True
+
+    def test_is_clearly_travel_empty(self):
+        from src.agents.validator import InputValidator
+        assert InputValidator.is_clearly_travel("") is False
+
+
 class TestAiValidator:
 
     def test_returns_none_when_no_api_key(self):

@@ -3,7 +3,7 @@ Tests for cache store — run_cache_store
 Verifies that HITL questions, tool-call messages, and cache hits are never stored.
 """
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from langchain_core.messages import AIMessage, HumanMessage
 
 
@@ -17,25 +17,10 @@ def _make_state(**overrides) -> dict:
     return base
 
 
-def _should_skip_caching(state: dict) -> bool:
-    """Check if caching should be skipped based on state conditions."""
-    # Skip if awaiting user clarification
-    if state.get("awaiting_user_clarification", False):
-        return True
-    
-    # Skip if cache hit
-    from src.models.cache import CacheStatus
-    if state.get("cache_status") == CacheStatus.HIT.value:
-        return True
-    
-    # Skip if last message is a tool call
-    messages = state.get("messages", [])
-    if messages:
-        last_msg = messages[-1]
-        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-            return True
-    
-    return False
+def _sync_executor_side_effect(fn, *args, **kwargs):
+    """Run submitted functions synchronously so assertions are deterministic."""
+    fn(*args, **kwargs)
+    return MagicMock()
 
 
 class TestCacheStore:
@@ -53,7 +38,9 @@ class TestCacheStore:
             ],
         )
 
-        with patch("src.agents.cache_store.store_cache_entry") as mock_store:
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec:
+            mock_exec.submit.side_effect = _sync_executor_side_effect
             run_cache_store(state)
             mock_store.assert_not_called()
 
@@ -69,7 +56,10 @@ class TestCacheStore:
             ],
         )
 
-        with patch("src.agents.cache_store.store_cache_entry") as mock_store:
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec, \
+             patch("src.agents.cache_store.compress_answer", return_value="compressed"):
+            mock_exec.submit.side_effect = _sync_executor_side_effect
             run_cache_store(state)
             mock_store.assert_called_once()
             call_kwargs = mock_store.call_args.kwargs
@@ -88,7 +78,9 @@ class TestCacheStore:
             ],
         )
 
-        with patch("src.agents.cache_store.store_cache_entry") as mock_store:
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec:
+            mock_exec.submit.side_effect = _sync_executor_side_effect
             run_cache_store(state)
             mock_store.assert_not_called()
 
@@ -108,6 +100,59 @@ class TestCacheStore:
             ],
         )
 
-        with patch("src.agents.cache_store.store_cache_entry") as mock_store:
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec:
+            mock_exec.submit.side_effect = _sync_executor_side_effect
+            run_cache_store(state)
+            mock_store.assert_not_called()
+
+    def test_missing_query_skips_store(self):
+        from src.agents.cache_store import run_cache_store
+        from src.models.cache import CacheStatus
+
+        state = _make_state(
+            cache_status=CacheStatus.MISS.value,
+            messages=[
+                AIMessage(content="Here is your Paris trip plan!"),
+            ],
+        )
+
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec:
+            mock_exec.submit.side_effect = _sync_executor_side_effect
+            run_cache_store(state)
+            mock_store.assert_not_called()
+
+    def test_missing_answer_skips_store(self):
+        from src.agents.cache_store import run_cache_store
+        from src.models.cache import CacheStatus
+
+        state = _make_state(
+            cache_status=CacheStatus.MISS.value,
+            messages=[
+                HumanMessage(content="Plan a trip to Paris"),
+            ],
+        )
+
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec:
+            mock_exec.submit.side_effect = _sync_executor_side_effect
+            run_cache_store(state)
+            mock_store.assert_not_called()
+
+    def test_none_cache_status_skips_store(self):
+        from src.agents.cache_store import run_cache_store
+
+        state = _make_state(
+            cache_status=None,
+            messages=[
+                HumanMessage(content="Plan a trip to Paris"),
+                AIMessage(content="Here is your trip plan!"),
+            ],
+        )
+
+        with patch("src.agents.cache_store.store_cache_entry") as mock_store, \
+             patch("src.agents.cache_store._executor") as mock_exec:
+            mock_exec.submit.side_effect = _sync_executor_side_effect
             run_cache_store(state)
             mock_store.assert_not_called()

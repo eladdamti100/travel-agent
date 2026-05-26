@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
 from src.agents.planner import run_master_planner
 from tests.Test_cache_check import _make_state
@@ -20,5 +19,5 @@ class TestHitlResume:
             awaiting_user_clarification=True, 
             pending_trip_context=_make_trip_context().model_dump()
         )
-        result = asyncio.run(run_master_planner(state))
+        result = run_master_planner(state)
         assert result.get("awaiting_user_clarification") is False
