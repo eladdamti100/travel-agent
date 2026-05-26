@@ -3,11 +3,13 @@ from typing import Any
 
 PROMPT_REGISTRY = {
     "planner_prompt": "src.prompts.planner_prompt.PLANNER_SYSTEM_PROMPT",
-    "final_answer_prompt": "src.prompts.final_answer_prompts.FINAL_ANSWER_PROMPT",  # מופרד לקובץ משלו!
+    "final_answer_prompt": "src.prompts.final_answer_prompts.FINAL_ANSWER_PROMPT",
     "validator_prompt": "src.prompts.validator_prompt.VALIDATOR_SYSTEM_PROMPT",
     "reviewer_prompt": "src.prompts.reviewer_prompt.REVIEWER_SYSTEM_PROMPT",
     "orchestrator_prompt": "src.prompts.orchestrator_prompt.ORCHESTRATOR_SYSTEM_PROMPT",
     "researcher_prompt": "src.prompts.researcher_prompt.RESEARCHER_SYSTEM_PROMPT",
+    "context_enricher_prompt": "src.prompts.context_enricher_prompt.CONTEXT_ENRICHER_PROMPT",
+    "preferences_memory_prompt": "src.prompts.preferences_memory_prompt.PREFERENCES_MEMORY_PROMPT",
 }
 
 def get_prompt(prompt_name: str) -> str:

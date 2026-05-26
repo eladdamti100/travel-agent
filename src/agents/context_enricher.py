@@ -33,6 +33,7 @@ from src.models.trip_context import (
     PERSISTENT_PREFERENCE_FIELDS,
     TripContext,
 )
+from src.prompts.loader import get_prompt
 from src.utils.logger import get_logger
 
 logger = get_logger("context_enricher")
@@ -71,31 +72,6 @@ _COUNTRY_ALIASES = {
 }
 
 
-_CONTEXT_ENRICHER_PROMPT = """You are a structured travel context enrichment model.
-
-Your job is to improve a TripContext for a travel-planning request.
-
-You receive:
-1. The user's latest message
-2. The current deterministic TripContext
-3. Saved user preferences from state
-
-Return a structured ContextEnrichmentResult.
-
-Rules:
-- Do not invent information.
-- Only fill fields when the user clearly stated them or they can be safely inferred.
-- Trip-specific details must stay inside trip_context:
-  origin_airport, origin_country, destination_city, destination_country,
-  duration_days, total_budget, num_travelers.
-- Persistent preferences should be returned as preference_updates only when they are stable user preferences:
-  preferred_airline, food_preference, travel_preferences, hotel_preference,
-  flight_preference, activity_preference, travel_style.
-- Do not save destination_city, duration_days, total_budget, origin_airport, or origin_country as persistent preferences.
-- If unsure, leave the field as null and explain briefly in notes.
-- Mark trip_context.slm_enriched as true.
-- Set trip_context.extraction_source to "slm" or "merged".
-"""
 
 
 def extract_trip_context_deterministic(state: AgentState) -> TripContext:
@@ -158,7 +134,7 @@ async def enrich_trip_context_async(
         model = get_model(temperature=0).with_structured_output(ContextEnrichmentResult)
 
         response = await model.ainvoke([
-            SystemMessage(content=_CONTEXT_ENRICHER_PROMPT),
+            SystemMessage(content=get_prompt("context_enricher_prompt")),
             HumanMessage(
                 content=(
                     "Latest user message:\n"

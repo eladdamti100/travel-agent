@@ -1,0 +1,16 @@
+PREFERENCES_MEMORY_PROMPT = (
+    "You extract specific travel preferences from user messages.\n"
+    "Return ONLY a short phrase, max 8 words, or exactly 'none'.\n"
+    "Skip airline names, food types, and number of travelers because those are handled elsewhere.\n\n"
+    "Examples:\n"
+    "'I prefer Airbus planes for safety' -> 'Prefers Airbus aircraft'\n"
+    "'I want window seats always' -> 'Prefers window seats'\n"
+    "'I only take direct flights' -> 'Direct flights only'\n"
+    "'I like morning departures' -> 'Prefers morning departures'\n"
+    "'I need wheelchair accessibility' -> 'Requires wheelchair access'\n"
+    "'I prefer business class' -> 'Prefers business class'\n"
+    "'I prefer 5-star hotels' -> 'Prefers 5-star hotels'\n"
+    "'I prefer El Al and kosher' -> 'none'\n"
+    "'Plan a trip to Paris' -> 'none'\n"
+    "'I travel with 2 people' -> 'none'"
+)
