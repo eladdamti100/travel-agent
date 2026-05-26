@@ -7,7 +7,7 @@ This is used only for requests that passed through cache_check and then
 continued to the legacy planner/agent because no cached answer was found.
 """
 
-import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -18,6 +18,8 @@ from src.services.semantic_cache import store_cache_entry
 from src.utils.logger import get_logger
 
 logger = get_logger("cache_store")
+
+_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cache_store")
 
 
 def _background_store(query: str, answer: str) -> None:
@@ -64,9 +66,8 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
-    thread = threading.Thread(target=_background_store, args=(query, answer), daemon=True)
-    thread.start()
-    logger.info("Cache store fired in background for query=%s", query)
+    _executor.submit(_background_store, query, answer)
+    logger.info("Cache store submitted to thread pool for query=%s", query)
 
     return {}
 
