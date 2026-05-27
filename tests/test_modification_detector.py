@@ -12,7 +12,7 @@ class TestDetectModificationContext:
     def test_change_airport_detected(self):
         assert detect_modification_context("change the origin airport to TLV") is True
         assert detect_modification_context("change airport to TLV") is True
-        assert detect_modification_context("switch to TLV") is False  # No airport keyword
+        assert detect_modification_context("switch to TLV") is True  # "switch" + airport code
 
     def test_different_airport_detected(self):
         assert detect_modification_context("different airport please") is True

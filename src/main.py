@@ -7,6 +7,9 @@ import os
 import re
 from pathlib import Path
 
+# Suppress tqdm progress bars globally (embedding model loading)
+os.environ["TQDM_DISABLE"] = "1"
+
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from rich.panel import Panel

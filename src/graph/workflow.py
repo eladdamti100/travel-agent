@@ -42,8 +42,11 @@ Strict rule:
   Every user query must pass through validator before intent routing.
 """
 
+import logging
 import sqlite3
 from pathlib import Path
+
+logging.getLogger("langgraph").setLevel(logging.ERROR)
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph

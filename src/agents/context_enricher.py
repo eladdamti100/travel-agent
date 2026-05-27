@@ -156,7 +156,7 @@ async def enrich_trip_context_async(
         return result
 
     except Exception as error:
-        logger.error("Context enrichment failed: %s", error)
+        logger.warning("Context enrichment failed (non-critical, using deterministic context): %s", error)
 
         fallback_context = current_context.model_copy(
             update={

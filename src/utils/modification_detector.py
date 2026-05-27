@@ -59,8 +59,17 @@ def detect_modification_context(user_message: str) -> bool:
             if re.search(pattern, lower_msg):
                 return True
 
-    # Check for "instead of" patterns
+    # Check for "instead of" / "instead" patterns
     if "instead of" in lower_msg or "rather than" in lower_msg:
+        for param in TRIP_PARAMETERS:
+            if param in lower_msg:
+                return True
+        # "instead of JFK, TLV" — two airport codes with "instead of"
+        import re as _re
+        if _re.search(r"\b[A-Z]{3}\b", lower_msg.upper()):
+            return True
+
+    if "instead" in lower_msg:
         for param in TRIP_PARAMETERS:
             if param in lower_msg:
                 return True

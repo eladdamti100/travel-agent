@@ -141,9 +141,11 @@ def print_status(
         )
 
     if cache_status == "hit":
-        parts.append(Text("⚡ Cache hit — ~0 tokens used", style="bold green"))
-    elif tool_count:
+        parts.append(Text("Tools used: 0", style="dim"))
+        parts.append(Text("Cache: HIT ⚡", style="bold green"))
+    else:
         parts.append(Text(f"Tools used: {tool_count}", style="dim"))
+        parts.append(Text("Cache: MISS", style="dim yellow"))
 
     console.print(Rule(style="dim"))
     console.print(Columns(parts, padding=(0, 4)))

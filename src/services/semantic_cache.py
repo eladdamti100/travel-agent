@@ -29,6 +29,12 @@ os.environ["TORCH_COMPILE_DISABLE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+# Suppress all noisy loggers
+import logging as _logging
+_logging.getLogger("sentence_transformers").setLevel(_logging.ERROR)
+_logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
+# Disable tqdm progress bars used by sentence_transformers
+os.environ["TQDM_DISABLE"] = "1"
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -57,9 +63,6 @@ def _get_embedding_model() -> SentenceTransformer:
     global _embedding_model
 
     if _embedding_model is None:
-        logger.info("Loading embedding model: %s", _EMBEDDING_MODEL_NAME)
-        import logging
-        logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
         _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
 
     return _embedding_model

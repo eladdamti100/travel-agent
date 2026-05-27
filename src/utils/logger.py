@@ -6,7 +6,7 @@ import logging
 import sys
 
 
-def get_logger(name: str, level: int = logging.WARNING) -> logging.Logger:
+def get_logger(name: str, level: int = logging.ERROR) -> logging.Logger:
     """
     Return a named logger with a consistent format.
     Avoids adding duplicate handlers if called multiple times with the same name.
