@@ -6,15 +6,15 @@ Stores successful full-trip answers in the semantic cache after a cache miss.
 This is used only for requests that passed through cache_check and then
 continued to the legacy planner/agent because no cached answer was found.
 """
-
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from src.agents.context_enricher import extract_trip_context_deterministic
 from src.graph.state import AgentState
 from src.models.cache import CacheStatus
 from src.services.cache_compression import compress_answer
-from src.services.semantic_cache import store_cache_entry
+from src.services.semantic_cache import build_trip_cache_key, store_cache_entry
 from src.utils.logger import get_logger
 
 logger = get_logger("cache_store")
@@ -31,6 +31,9 @@ def _background_store(query: str, answer: str) -> None:
     """
     try:
         compressed = compress_answer(answer)
+        
+        logger.info("Cache store writing entry. query=%s answer_chars=%d", query, len(answer))
+
         store_cache_entry(
             query=query,
             answer=answer,
@@ -66,29 +69,33 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
-    _executor.submit(_background_store, query, answer)
-    logger.info("Cache store submitted to thread pool for query=%s", query)
-
+    _background_store(query, answer)
+    logger.info("Cache store completed synchronously for query=%s", query)
+    
     return {}
 
 
 def _get_latest_user_query(state: AgentState) -> str:
     """
-    Returns the latest HumanMessage content from graph state or its canonical structured string.
+    Returns a deterministic structured cache key when possible, otherwise the latest user message.
     """
-    # --- START OF MINIMAL CHANGE: Canonical Trip Context Key ---
-    from src.agents.context_enricher import extract_trip_context_deterministic
+
     ctx = extract_trip_context_deterministic(state)
 
-    if ctx.destination_city and ctx.duration_days and ctx.origin_airport:
-        return (
-            f"origin_airport: {ctx.origin_airport} | "
-            f"origin_country: {ctx.origin_country or 'unknown'} | "
-            f"destination_city: {ctx.destination_city} | "
-            f"duration_days: {ctx.duration_days} | "
-            f"total_budget: {int(ctx.total_budget) if ctx.total_budget else 0}"
-        )
-    # --- END OF MINIMAL CHANGE ---
+    logger.info("Cache store TripContext: %s", ctx.model_dump())
+
+    cache_key = build_trip_cache_key(
+        origin_airport=ctx.origin_airport,
+        origin_country=ctx.origin_country,
+        destination_city=ctx.destination_city,
+        duration_days=ctx.duration_days,
+        total_budget=ctx.total_budget,
+    )
+
+    logger.info("Cache store query/key: %s", cache_key)
+
+    if cache_key:
+        return cache_key
 
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):

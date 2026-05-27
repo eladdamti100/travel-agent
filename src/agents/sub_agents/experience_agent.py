@@ -4,6 +4,7 @@ and local transport for the destination city.
 """
 
 import asyncio
+from time import time
 
 from src.agents.sub_agents.base import BaseSubAgent
 from src.models.planner import PlannerToolResults
@@ -84,11 +85,25 @@ class ExperienceAgent(BaseSubAgent):
             )
 
         keys = list(tasks.keys())
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
+        import time
+
+        start_time = time.perf_counter()
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        elapsed = time.perf_counter() - start_time
+
+        logger.info(
+            "ExperienceAgent parallel tasks completed in %.2fs",
+            elapsed,
+        )
         for key, value in zip(keys, results):
             if isinstance(value, Exception):
-                logger.error("ExperienceAgent task failed. key=%s error=%s", key, value)
+                logger.error(
+                "ExperienceAgent task failed. key=%s error_type=%s error=%s",
+                key,
+                type(value).__name__,
+                value,
+            )
                 continue
             result.raw_results[key] = value
 

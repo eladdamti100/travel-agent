@@ -203,6 +203,67 @@ def _fetch_row_by_id(row_id: int) -> Optional[Dict[str, Any]]:
 
     return dict(row) if row else None
 
+def find_exact_cached_answer(
+    query: str,
+    *,
+    route: str = "cache_check",
+) -> CacheCheckResult:
+    """
+    Finds an exact cache match by normalized_query before semantic similarity is used.
+    """
+    initialize_cache_db()
+
+    normalized_query = normalize_query(query)
+
+    logger.info(
+        "Exact cache lookup. route=%s normalized_query=%s",
+        route,
+        normalized_query,
+    )
+
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT query, answer, compressed_answer
+            FROM semantic_cache
+            WHERE route = ? AND normalized_query = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (route, normalized_query),
+        ).fetchone()
+
+    if not row:
+        logger.info(
+            "Exact cache MISS. route=%s normalized_query=%s",
+            route,
+            normalized_query,
+        )
+
+        return CacheCheckResult(
+            status=CacheStatus.MISS,
+            similarity_score=0.0,
+            matched_query=None,
+            cached_answer=None,
+            cached_compressed_answer=None,
+            reason="No exact structured cache match was found.",
+        )
+
+    logger.info(
+        "Exact cache HIT. route=%s matched_query=%s",
+        route,
+        row["query"],
+    )
+
+    return CacheCheckResult(
+        status=CacheStatus.HIT,
+        similarity_score=1.0,
+        matched_query=row["query"],
+        cached_answer=row["answer"],
+        cached_compressed_answer=row["compressed_answer"] or None,
+        reason="Found an exact structured cache match.",
+    )
 
 def find_cached_answer(
     query: str,
@@ -222,7 +283,18 @@ def find_cached_answer(
     """
     initialize_cache_db()
 
+    exact_result = find_exact_cached_answer(query=query, route=route)
+    if exact_result.status == CacheStatus.HIT:
+        return exact_result
+
     normalized_query = normalize_query(query)
+
+    logger.info(
+        "Storing cache entry. route=%s normalized_query=%s",
+        route,
+        normalized_query,
+    )
+
     query_embedding = embed_text(normalized_query)
 
     index_rows = _load_embedding_index(route=route)
@@ -344,12 +416,66 @@ def store_cache_entry(
 
         conn.commit()
 
+        logger.info(
+        "Cache entry committed. route=%s query=%s",
+        route,
+        query,
+        )
+
     _cleanup_cache(route=route)
 
     logger.info("Stored semantic cache entry for route=%s query=%s confidence=%.4f", route, query, confidence)
 
     return entry
 
+def normalize_budget_bucket(total_budget: float | None) -> str:
+    """
+    Normalizes budget into stable buckets to avoid cache misses caused by tiny differences.
+    """
+    if total_budget is None:
+        return "unknown"
+
+    try:
+        budget = float(total_budget)
+    except (TypeError, ValueError):
+        return "unknown"
+
+    if budget <= 0:
+        return "unknown"
+
+    rounded = round(budget / 100) * 100
+    return str(int(rounded))
+
+
+def build_trip_cache_key(
+    *,
+    origin_airport: str | None,
+    origin_country: str | None,
+    destination_city: str | None,
+    duration_days: int | None,
+    total_budget: float | None,
+) -> str | None:
+    """
+    Builds a deterministic structured cache key for full trip-planning requests.
+
+    Returns None when the key does not have enough required planning fields.
+    """
+    if not origin_airport or not origin_country or not destination_city or not duration_days:
+        return None
+
+    budget_key = normalize_budget_bucket(total_budget)
+
+    return normalize_query(
+        " | ".join(
+            [
+                f"origin_airport:{origin_airport.strip().upper()}",
+                f"origin_country:{origin_country.strip().title()}",
+                f"destination_city:{destination_city.strip().title()}",
+                f"duration_days:{int(duration_days)}",
+                f"budget_bucket:{budget_key}",
+            ]
+        )
+    )
 
 def _cleanup_cache(route: str) -> None:
     """

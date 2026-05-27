@@ -123,6 +123,24 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
     scheduler_result = build_scheduler_result(dependency_graph)
 
+    logger.info(
+        "Planner dependency graph ready=%s blocked=%s completed=%s",
+        [task.value for task in dependency_graph.ready_tasks],
+        [task.value for task in dependency_graph.blocked_tasks],
+        [task.value for task in dependency_graph.completed_tasks],
+    )
+
+    logger.info(
+        "Planner scheduler waves=%s",
+        [
+            {
+                "wave": wave.wave_number,
+                "tasks": [task.value for task in wave.tasks],
+            }
+            for wave in scheduler_result.waves
+        ],
+    )
+
     updates = _build_preference_state_updates(
         state,
         enrichment_result.preference_updates,
@@ -182,6 +200,24 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
     scheduler_result = build_scheduler_result(dependency_graph)
 
+    logger.info(
+        "Planner dependency graph ready=%s blocked=%s completed=%s",
+        [task.value for task in dependency_graph.ready_tasks],
+        [task.value for task in dependency_graph.blocked_tasks],
+        [task.value for task in dependency_graph.completed_tasks],
+    )
+
+    logger.info(
+        "Planner scheduler waves=%s",
+        [
+            {
+                "wave": wave.wave_number,
+                "tasks": [task.value for task in wave.tasks],
+            }
+            for wave in scheduler_result.waves
+        ],
+    )
+    
     structured_results = build_structured_tool_results(
         context=merged_context,
         raw_results=task_results,
@@ -228,10 +264,24 @@ async def run_sub_agents_async(
         if not all(key in covered for key in agent.result_keys)
     ]
 
+    logger.info(
+        "Planner selected sub-agents: %s",
+        [
+            getattr(agent, "agent_name", agent.__class__.__name__)
+            for agent in agents
+        ],
+    )
+
     merged_raw_results: Dict[str, str] = {**(existing_results or {})}
 
     if not agents:
+        logger.info("Planner skipped all sub-agents — all results already cached.")
         return merged_raw_results
+
+    logger.info(
+        "Planner running sub-agents in parallel. count=%d",
+        len(agents),
+    )
 
     results = await asyncio.gather(
         *[agent.run(context=context) for agent in agents],
@@ -247,10 +297,15 @@ async def run_sub_agents_async(
             )
             continue
 
+        logger.info(
+            "Sub-agent completed. agent=%s result_keys=%s",
+            getattr(agent, "agent_name", agent.__class__.__name__),
+            list(result.raw_results.keys()),
+        )
+
         merged_raw_results.update(result.raw_results)
 
     return merged_raw_results
-
 
 async def _calculate_cost_if_possible(
     context: TripContext,

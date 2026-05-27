@@ -14,6 +14,19 @@ TOOL_LABELS = {
     "web_search": "🌐  Searching the web",
 }
 
+PLANNER_TASK_LABELS = {
+    "fetch_flights": "✈ Flights",
+    "fetch_hotels": "🏨 Hotels",
+    "fetch_activities": "🎭 Activities",
+    "check_visa": "🛂 Visa",
+    "calculate_trip_cost": "💰 Cost",
+    "fetch_restaurants": "🍽 Restaurants",
+    "local_transport_guide": "🚇 Local Transport",
+    "fetch_weather": "🌦 Weather",
+    "events_finder": "🎉 Events",
+    "airport_transfer_info": "🚖 Airport Transfer",
+}
+
 
 def update_status_for_node(node_name: str, node_data: dict, status) -> None:
     """
@@ -38,7 +51,30 @@ def update_status_for_node(node_name: str, node_data: dict, status) -> None:
         status.update("[tool.call]Checking cache...[/tool.call]")
 
     elif node_name == "master_planner":
-        status.update("[tool.call]Planning your trip...[/tool.call]")
+        planner_status = node_data.get("planner_status")
+        scheduler = node_data.get("planner_scheduler_result") or {}
+
+        waves = scheduler.get("waves", [])
+
+        if waves:
+            current_wave = waves[0]
+
+            labels = [
+                PLANNER_TASK_LABELS.get(task, task)
+                for task in current_wave.get("tasks", [])
+            ]
+
+            status.update(
+                "[tool.call]Planner Wave "
+                f"{current_wave.get('wave_number', 1)}: "
+                f"{' · '.join(labels)}[/tool.call]"
+            )
+
+        elif planner_status == "missing_required_info":
+            status.update("[tool.call]Waiting for missing trip information...[/tool.call]")
+
+        else:
+            status.update("[tool.call]Planning your trip...[/tool.call]")
 
     elif node_name == "cache_store":
         status.update("[tool.call]Saving answer to cache...[/tool.call]")

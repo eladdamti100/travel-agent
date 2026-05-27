@@ -31,20 +31,30 @@ def build_scheduler_result(
             SchedulerWave(
                 wave_number=1,
                 tasks=dependency_graph.ready_tasks,
-                reason="Tasks with all required context and completed dependencies.",
+                reason=(
+                    "Tasks with all required context fields "
+                    "and completed dependencies."
+                ),
             )
         )
+
+    wave_debug = [
+        {
+            "wave": wave.wave_number,
+            "tasks": [task.value for task in wave.tasks],
+        }
+        for wave in waves
+    ]
 
     return SchedulerResult(
         waves=waves,
         completed_tasks=dependency_graph.completed_tasks,
         blocked_tasks=dependency_graph.blocked_tasks,
         reason=(
-            "Scheduler built from current dependency graph. "
-            "Ready tasks can run concurrently in the first wave."
+            "Scheduler grouped dependency-ready planner tasks "
+            f"into async execution waves: {wave_debug}"
         ),
     )
-
 
 def completed_tasks_from(task_results: Dict[str, str]) -> List[PlannerTaskType]:
     """Returns PlannerTaskType values for every key present in task_results."""

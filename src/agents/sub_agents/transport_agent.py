@@ -3,6 +3,7 @@ Transport sub-agent — fetches flights and checks visa requirements.
 """
 
 import asyncio
+from datetime import time
 
 from src.agents.sub_agents.base import BaseSubAgent
 from src.models.planner import PlannerToolResults, VisaResult
@@ -35,6 +36,9 @@ class TransportAgent(BaseSubAgent):
         Runs transport-related tasks and returns independent results.
         """
         result = PlannerToolResults()
+        import time
+
+        start_time = time.perf_counter()
 
         await asyncio.gather(
             self._handle_flights(
@@ -46,6 +50,9 @@ class TransportAgent(BaseSubAgent):
                 result=result,
             ),
         )
+
+        elapsed = time.perf_counter() - start_time
+        logger.info("TransportAgent parallel tasks completed in %.2fs", elapsed)
 
         return result
 

@@ -5,6 +5,7 @@ AI Travel Planner interactive terminal entrypoint.
 import concurrent.futures
 import os
 import re
+import time
 from pathlib import Path
 
 # Suppress tqdm progress bars globally (embedding model loading)
@@ -101,16 +102,13 @@ def is_rate_limit_error(error: str) -> bool:
 
 def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
     """
-    Runs the plan reviewer in a background thread so it never blocks the user.
+    Runs the plan reviewer in a background thread so it never blocks regular users.
 
-    Admin sessions: displays the review in a yellow panel once it finishes.
-    Regular sessions: logs the review internally only (not shown to user).
-
-    The thread is daemonised so it does not prevent process exit.
+    Admin sessions display the review. Regular sessions only log the review internally.
     """
     from src.agents.reviewer import review_plan
 
-    def _do_review():
+    def _do_review() -> None:
         try:
             review = review_plan(plan_text)
             if is_admin:
@@ -126,7 +124,6 @@ def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
             logger.warning("Reviewer failed: %s", err)
 
     if is_admin:
-        # For admin: block briefly with a spinner so the review appears immediately.
         with console.status("[dim]Reviewing plan...[/dim]", spinner="dots"):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_do_review)
@@ -135,10 +132,9 @@ def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
                 except concurrent.futures.TimeoutError:
                     console.print("[dim]Plan review timed out.[/dim]")
     else:
-        # For regular users: fire-and-forget daemon thread (no UI impact).
-        t = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        t.submit(_do_review)
-        t.shutdown(wait=False)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        executor.submit(_do_review)
+        executor.shutdown(wait=False)
 
 
 def run() -> None:
@@ -179,6 +175,9 @@ def run() -> None:
 
         console.print()
 
+        turn_start_time = time.perf_counter()
+        node_timings: dict[str, float] = {}
+
         seen_contents: set[str] = set()
         accumulated: dict = {
             "current_city": None,
@@ -186,9 +185,9 @@ def run() -> None:
             "tool_call_count": 0,
             "cache_status": None,
         }
-        # Track the final plan text for the async reviewer (admin sessions only).
+
         final_plan_text: str | None = None
-        _PLAN_NODES = {"master_planner", "cache_check"}
+        plan_nodes = {"master_planner", "cache_check"}
 
         try:
             with console.status("[tool.call]Starting...[/tool.call]", spinner="dots") as status:
@@ -197,10 +196,15 @@ def run() -> None:
                     config,
                     stream_mode="updates",
                 ):
+                    node_start_time = time.perf_counter()
+
                     node_name = next(iter(event))
                     node_data = event[node_name]
 
                     if node_data is None:
+                        node_timings[node_name] = node_timings.get(node_name, 0.0) + (
+                            time.perf_counter() - node_start_time
+                        )
                         continue
 
                     for key in ("current_city", "total_budget", "tool_call_count", "cache_status"):
@@ -226,16 +230,16 @@ def run() -> None:
                                 print_agent(text)
                                 status.start()
 
-                            # Capture the final plan for post-stream review.
-                            # Skip when master_planner stopped to ask a HITL question
-                            # (planner_status == "missing_required_info") — that is
-                            # not a complete plan, so the reviewer should not fire.
-                            if node_name in _PLAN_NODES and text:
+                            if node_name in plan_nodes and text:
                                 is_hitl_stop = (
                                     node_data.get("planner_status") == "missing_required_info"
                                 )
                                 if not is_hitl_stop:
                                     final_plan_text = text
+
+                    node_timings[node_name] = node_timings.get(node_name, 0.0) + (
+                        time.perf_counter() - node_start_time
+                    )
 
             print_status(
                 city=accumulated.get("current_city"),
@@ -244,7 +248,16 @@ def run() -> None:
                 cache_status=accumulated.get("cache_status"),
             )
 
-            # ── Async reviewer (runs AFTER the answer is shown) ───────────────
+            turn_elapsed = time.perf_counter() - turn_start_time
+            logger.info(
+                "turn performance | total=%.2fs | nodes=%s",
+                turn_elapsed,
+                {
+                    node: round(seconds, 2)
+                    for node, seconds in node_timings.items()
+                },
+            )
+
             if final_plan_text:
                 _run_reviewer_async(final_plan_text, is_admin=is_admin)
 
@@ -261,10 +274,11 @@ def run() -> None:
                 ))
 
         logger.info(
-            "turn complete | city=%s | budget=%s | tools=%d",
+            "turn complete | city=%s | budget=%s | tools=%d | cache=%s",
             accumulated.get("current_city", "—"),
             accumulated.get("total_budget", "—"),
             accumulated.get("tool_call_count", 0),
+            accumulated.get("cache_status", "—"),
         )
 
 

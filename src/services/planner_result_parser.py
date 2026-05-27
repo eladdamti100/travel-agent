@@ -16,7 +16,21 @@ from src.models.planner import (
 )
 from src.models.trip_context import TripContext
 
+def clean_money_value(value) -> Optional[float]:
+    """
+    Converts money-like values such as "$1,200.00" into float.
+    """
+    if value in (None, ""):
+        return None
 
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").strip()
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+    
 def extract_lowest_price_from_json(
     raw_json: str,
     *,
@@ -270,9 +284,10 @@ def parse_cost_result(
         return None
 
     total_cost = (
-        as_float(data.get("total_cost"))
-        or as_float(data.get("total"))
-        or as_float(data.get("estimated_total"))
+        clean_money_value(data.get("total_cost"))
+        or clean_money_value(data.get("total"))
+        or clean_money_value(data.get("estimated_total"))
+        or clean_money_value(data.get("total_estimate"))
     )
 
     within_budget = None
@@ -280,8 +295,8 @@ def parse_cost_result(
         within_budget = total_cost <= context.total_budget
 
     return CostResult(
-        flight_price=as_float(data.get("flight_price")),
-        hotel_price_per_night=as_float(data.get("hotel_price_per_night")),
+        flight_price=clean_money_value(data.get("flight_price")),
+        hotel_price_per_night=clean_money_value(data.get("hotel_price_per_night")),
         duration_days=as_int(data.get("duration_days")) or context.duration_days,
         total_cost=total_cost,
         within_budget=within_budget,
