@@ -7,6 +7,10 @@ Rules:
 - If a section has missing data, say so clearly.
 - Be concise and structured.
 - Mention whether the plan appears within the user's total budget.
+- If Planning mode is "replanning", clearly explain:
+  - What changed in the updated plan.
+  - What stayed the same from the previous plan.
+  - Which parts were reused when possible.
 - Include:
 1. Trip summary
 2. Flights

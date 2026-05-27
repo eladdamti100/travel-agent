@@ -123,6 +123,7 @@ def print_status(
     budget: Optional[float],
     tool_count: int,
     cache_status: Optional[str] = None,
+    planning_mode: Optional[str] = None,
 ) -> None:
     """
     Prints a compact turn summary after graph execution.
@@ -139,6 +140,9 @@ def print_status(
         parts.append(
             Text.assemble(("Budget: $", "dim"), (f"{budget:,.0f}", "status.budget"))
         )
+    
+    if planning_mode:
+        parts.append(Text.assemble(("Planning Mode: ", "dim"), (planning_mode, "status.city")))
 
     if cache_status == "hit":
         parts.append(Text("Tools used: 0", style="dim"))

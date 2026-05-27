@@ -87,3 +87,4 @@ class AgentState(TypedDict):
     pending_missing_fields: List[str]
     pending_hitl_question: str
     pending_planner_task_results: dict
+    planning_mode: str

@@ -184,6 +184,7 @@ def run() -> None:
             "total_budget": None,
             "tool_call_count": 0,
             "cache_status": None,
+            "planning_mode": None,
         }
 
         final_plan_text: str | None = None
@@ -207,7 +208,7 @@ def run() -> None:
                         )
                         continue
 
-                    for key in ("current_city", "total_budget", "tool_call_count", "cache_status"):
+                    for key in ("current_city", "total_budget", "tool_call_count", "cache_status", "planning_mode"):
                         if key in node_data:
                             accumulated[key] = node_data[key]
 
@@ -246,6 +247,7 @@ def run() -> None:
                 budget=accumulated.get("total_budget"),
                 tool_count=accumulated.get("tool_call_count", 0),
                 cache_status=accumulated.get("cache_status"),
+                planning_mode=accumulated.get("planning_mode"),
             )
 
             turn_elapsed = time.perf_counter() - turn_start_time

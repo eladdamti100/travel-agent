@@ -116,6 +116,7 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
     return context
 
 
+
 async def enrich_trip_context_async(
     state: AgentState,
     current_context: TripContext,
@@ -200,6 +201,35 @@ def merge_trip_context(
     merged_data["slm_enriched"] = enrichment_result.confidence > 0
 
     return TripContext(**merged_data)
+
+def merge_modified_trip_context(
+    *,
+    old_context: TripContext,
+    modified_context: TripContext,
+) -> TripContext:
+    """
+    Merges a modified TripContext into an existing trip context.
+
+    Only non-empty modified fields overwrite existing values.
+    """
+    merged = old_context.model_dump()
+
+    for field_name, value in modified_context.model_dump().items():
+        if value in (None, "", []):
+            continue
+
+        merged[field_name] = value
+
+    merged["extraction_source"] = "replanned"
+
+    logger.info(
+        "Merged modified TripContext. old=%s modified=%s merged=%s",
+        old_context.model_dump(),
+        modified_context.model_dump(),
+        merged,
+    )
+
+    return TripContext(**merged)
 
 
 def _sanitize_enrichment_result(
@@ -356,7 +386,10 @@ def _extract_duration_days(text: str) -> Optional[int]:
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
-            return int(match.group(1))
+            value = int(match.group(1))
+            if value <= 0:
+                return None
+            return value
 
     return None
 

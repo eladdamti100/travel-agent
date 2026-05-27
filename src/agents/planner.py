@@ -7,10 +7,11 @@ Architecture:
 cache_miss
 → run_master_planner(...)
 → deterministic context extraction
+→ optional replanning merge
 → async SLM context enrichment
-→ dependency check
-→ async ready task execution
+→ async sub-agent execution
 → merge enriched context
+→ dependency check
 → run newly-ready tasks
 → HITL question if critical info is still missing
 → final plan generation
@@ -18,7 +19,7 @@ cache_miss
 
 import asyncio
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -26,6 +27,7 @@ from src.agents.base import get_model
 from src.agents.context_enricher import (
     enrich_trip_context_async,
     extract_trip_context_deterministic,
+    merge_modified_trip_context,
     merge_trip_context,
 )
 from src.agents.planner_dependencies import (
@@ -34,6 +36,7 @@ from src.agents.planner_dependencies import (
 )
 from src.agents.planner_scheduler import build_scheduler_result, completed_tasks_from
 from src.agents.sub_agents.experience_agent import ExperienceAgent
+from src.agents.sub_agents.replanning_agent import analyze_replanning
 from src.agents.sub_agents.stay_agent import StayAgent
 from src.agents.sub_agents.transport_agent import TransportAgent
 from src.graph.state import AgentState
@@ -67,12 +70,15 @@ def run_master_planner(state: AgentState) -> dict:
 
 async def _run_master_planner_async(state: AgentState) -> dict:
     """
-    Runs the master planner after semantic cache miss or HITL resume.
+    Runs the master planner after semantic cache miss, HITL resume, or replanning.
     """
     is_hitl_resume = bool(
         state.get("pending_trip_context")
         or state.get("awaiting_user_clarification")
     )
+
+    planning_mode = "replanning" if state.get("force_replan") else "full_planning"
+    allowed_tasks: Optional[Set[str]] = None
 
     if is_hitl_resume and state.get("trip_context"):
         deterministic_context = TripContext(**state["trip_context"])
@@ -96,9 +102,58 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         else {}
     )
 
+    if state.get("force_replan") and state.get("trip_context"):
+        old_context = TripContext(**state["trip_context"])
+        modified_context = deterministic_context
+
+        deterministic_context = merge_modified_trip_context(
+            old_context=old_context,
+            modified_context=modified_context,
+        )
+
+        replanning_result = analyze_replanning(
+            old_context=old_context,
+            new_context=deterministic_context,
+            existing_results=state.get("planner_task_results", {}) or {},
+        )
+
+        existing_task_results = replanning_result.preserved_results
+        allowed_tasks = {task.value for task in replanning_result.changed_tasks}
+
+        total_results = (
+            len(replanning_result.preserved_results)
+            + len(replanning_result.invalidated_results)
+        )
+        reuse_ratio = (
+            len(replanning_result.preserved_results) / total_results
+            if total_results > 0
+            else 1.0
+        )
+
+        logger.info(
+            "Planner entered replanning mode. changed_tasks=%s preserved_results=%s",
+            [task.value for task in replanning_result.changed_tasks],
+            list(existing_task_results.keys()),
+        )
+        logger.info(
+            "Planner preserved existing results during replanning: %s",
+            list(replanning_result.preserved_results.keys()),
+        )
+        logger.info(
+            "Planner invalidated results during replanning: %s",
+            list(replanning_result.invalidated_results.keys()),
+        )
+        logger.info("Planner reuse ratio during replanning: %.2f", reuse_ratio)
+
+    elif state.get("force_replan"):
+        logger.info(
+            "force_replan=True but no previous trip_context was found; running full planning flow."
+        )
+
     initial_task_results = await run_sub_agents_async(
         context=deterministic_context,
         existing_results=existing_task_results,
+        allowed_tasks=allowed_tasks,
     )
 
     enrichment_result = await enrichment_task
@@ -106,12 +161,20 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
     final_dependency_result = check_planner_dependencies(merged_context)
 
+    combined_existing_results = {
+        **existing_task_results,
+        **initial_task_results,
+    }
+
+    logger.info(
+        "Planner existing reusable results=%s",
+        list(combined_existing_results.keys()),
+    )
+
     task_results = await run_sub_agents_async(
         context=merged_context,
-        existing_results={
-            **existing_task_results,
-            **initial_task_results,
-        },
+        existing_results=combined_existing_results,
+        allowed_tasks=allowed_tasks,
     )
 
     completed_tasks = completed_tasks_from(task_results)
@@ -122,24 +185,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     )
 
     scheduler_result = build_scheduler_result(dependency_graph)
-
-    logger.info(
-        "Planner dependency graph ready=%s blocked=%s completed=%s",
-        [task.value for task in dependency_graph.ready_tasks],
-        [task.value for task in dependency_graph.blocked_tasks],
-        [task.value for task in dependency_graph.completed_tasks],
-    )
-
-    logger.info(
-        "Planner scheduler waves=%s",
-        [
-            {
-                "wave": wave.wave_number,
-                "tasks": [task.value for task in wave.tasks],
-            }
-            for wave in scheduler_result.waves
-        ],
-    )
+    _log_dependency_state(dependency_graph, scheduler_result)
 
     updates = _build_preference_state_updates(
         state,
@@ -156,6 +202,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         "completed" if enrichment_result.confidence > 0 else "failed"
     )
     updates["planner_status"] = final_dependency_result.status.value
+    updates["planning_mode"] = planning_mode
     updates["planner_task_results"] = task_results
     updates["planner_structured_results"] = structured_results.model_dump()
     updates["planner_dependency_graph"] = dependency_graph.model_dump()
@@ -199,25 +246,8 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     )
 
     scheduler_result = build_scheduler_result(dependency_graph)
+    _log_dependency_state(dependency_graph, scheduler_result)
 
-    logger.info(
-        "Planner dependency graph ready=%s blocked=%s completed=%s",
-        [task.value for task in dependency_graph.ready_tasks],
-        [task.value for task in dependency_graph.blocked_tasks],
-        [task.value for task in dependency_graph.completed_tasks],
-    )
-
-    logger.info(
-        "Planner scheduler waves=%s",
-        [
-            {
-                "wave": wave.wave_number,
-                "tasks": [task.value for task in wave.tasks],
-            }
-            for wave in scheduler_result.waves
-        ],
-    )
-    
     structured_results = build_structured_tool_results(
         context=merged_context,
         raw_results=task_results,
@@ -231,6 +261,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         context=merged_context,
         dependency_result=final_dependency_result,
         task_results=task_results,
+        planning_mode=planning_mode,
     )
 
     updates["planner_status"] = PlannerStatus.READY.value
@@ -242,26 +273,33 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     updates["pending_missing_fields"] = []
     updates["pending_hitl_question"] = ""
     updates["pending_planner_task_results"] = {}
-
-    logger.info("Master planner completed final plan.")
+    updates["force_replan"] = False
+    
+    logger.info("Master planner completed final plan. planning_mode=%s", planning_mode)
     return updates
 
 
 async def run_sub_agents_async(
     context: TripContext,
     existing_results: Optional[Dict[str, str]] = None,
+    allowed_tasks: Optional[Set[str]] = None,
 ) -> Dict[str, str]:
     """
     Runs planner sub-agents in parallel and safely merges their independent results.
 
-    Agents whose result keys are all already present in existing_results are skipped
-    entirely — avoids redundant DB calls on the second enrichment pass.
+    Agents whose result keys are all already present in existing_results are skipped.
+    When allowed_tasks is provided, only agents that can produce one of those tasks run.
     """
     covered = set(existing_results or {})
 
     agents = [
-        agent for agent in [TransportAgent(), StayAgent(), ExperienceAgent()]
+        agent
+        for agent in [TransportAgent(), StayAgent(), ExperienceAgent()]
         if not all(key in covered for key in agent.result_keys)
+        and (
+            allowed_tasks is None
+            or any(key in allowed_tasks for key in agent.result_keys)
+        )
     ]
 
     logger.info(
@@ -272,10 +310,18 @@ async def run_sub_agents_async(
         ],
     )
 
+    logger.info(
+        "Planner sub-agent selection context. covered=%s allowed_tasks=%s",
+        sorted(covered),
+        sorted(allowed_tasks) if allowed_tasks is not None else None,
+    )
+
     merged_raw_results: Dict[str, str] = {**(existing_results or {})}
 
     if not agents:
-        logger.info("Planner skipped all sub-agents — all results already cached.")
+        logger.info(
+            "Planner skipped all sub-agents — all required results already preserved."
+        )
         return merged_raw_results
 
     logger.info(
@@ -291,8 +337,9 @@ async def run_sub_agents_async(
     for agent, result in zip(agents, results):
         if isinstance(result, Exception):
             logger.error(
-                "Sub-agent failed. agent=%s error=%s",
+                "Sub-agent failed. agent=%s error_type=%s error=%s",
                 getattr(agent, "agent_name", agent.__class__.__name__),
+                type(result).__name__,
                 result,
             )
             continue
@@ -307,10 +354,14 @@ async def run_sub_agents_async(
 
     return merged_raw_results
 
+
 async def _calculate_cost_if_possible(
     context: TripContext,
     task_results: Dict[str, str],
 ) -> Optional[str]:
+    """
+    Calculates total trip cost when flight, hotel, and duration are available.
+    """
     if context.duration_days is None:
         return None
 
@@ -324,7 +375,20 @@ async def _calculate_cost_if_possible(
     )
 
     if flight_price is None or hotel_price is None:
+        logger.info(
+            "Cost calculation skipped. flight_price=%s hotel_price=%s duration_days=%s",
+            flight_price,
+            hotel_price,
+            context.duration_days,
+        )
         return None
+
+    logger.info(
+        "Calculating trip cost. flight_price=%s hotel_price=%s duration_days=%s",
+        flight_price,
+        hotel_price,
+        context.duration_days,
+    )
 
     return await asyncio.to_thread(
         calculate_trip_cost.invoke,
@@ -340,13 +404,18 @@ async def _generate_final_plan(
     context: TripContext,
     dependency_result: DependencyCheckResult,
     task_results: Dict[str, str],
+    planning_mode: str = "full_planning",
 ) -> str:
+    """
+    Generates the final user-facing travel plan.
+    """
     model = get_model(temperature=0)
 
     response = await model.ainvoke([
         SystemMessage(content=get_prompt("final_answer_prompt")),
         HumanMessage(
             content=(
+                f"Planning mode: {planning_mode}\n\n"
                 "TripContext:\n"
                 f"{context.model_dump()}\n\n"
                 "DependencyCheckResult:\n"
@@ -382,6 +451,29 @@ def _build_preference_state_updates(
         updates[update.field_name] = update.value
 
     return updates
+
+
+def _log_dependency_state(dependency_graph, scheduler_result) -> None:
+    """
+    Logs dependency graph and scheduler status for observability.
+    """
+    logger.info(
+        "Planner dependency graph ready=%s blocked=%s completed=%s",
+        [task.value for task in dependency_graph.ready_tasks],
+        [task.value for task in dependency_graph.blocked_tasks],
+        [task.value for task in dependency_graph.completed_tasks],
+    )
+
+    logger.info(
+        "Planner scheduler waves=%s",
+        [
+            {
+                "wave": wave.wave_number,
+                "tasks": [task.value for task in wave.tasks],
+            }
+            for wave in scheduler_result.waves
+        ],
+    )
 
 
 def _build_default_hitl_question() -> str:
