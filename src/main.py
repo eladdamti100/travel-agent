@@ -181,6 +181,7 @@ def run() -> None:
             "current_city": None,
             "total_budget": None,
             "tool_call_count": 0,
+            "cache_status": None,
         }
         # Track the final plan text for the async reviewer (admin sessions only).
         final_plan_text: str | None = None
@@ -199,7 +200,7 @@ def run() -> None:
                     if node_data is None:
                         continue
 
-                    for key in ("current_city", "total_budget", "tool_call_count"):
+                    for key in ("current_city", "total_budget", "tool_call_count", "cache_status"):
                         if key in node_data:
                             accumulated[key] = node_data[key]
 
@@ -237,6 +238,7 @@ def run() -> None:
                 city=accumulated.get("current_city"),
                 budget=accumulated.get("total_budget"),
                 tool_count=accumulated.get("tool_call_count", 0),
+                cache_status=accumulated.get("cache_status"),
             )
 
             # ── Async reviewer (runs AFTER the answer is shown) ───────────────

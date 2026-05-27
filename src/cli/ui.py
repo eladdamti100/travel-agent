@@ -118,7 +118,12 @@ def print_agent(text: str) -> None:
     ))
 
 
-def print_status(city: Optional[str], budget: Optional[float], tool_count: int) -> None:
+def print_status(
+    city: Optional[str],
+    budget: Optional[float],
+    tool_count: int,
+    cache_status: Optional[str] = None,
+) -> None:
     """
     Prints a compact turn summary after graph execution.
     """
@@ -135,7 +140,9 @@ def print_status(city: Optional[str], budget: Optional[float], tool_count: int) 
             Text.assemble(("Budget: $", "dim"), (f"{budget:,.0f}", "status.budget"))
         )
 
-    if tool_count:
+    if cache_status == "hit":
+        parts.append(Text("⚡ Cache hit — ~0 tokens used", style="bold green"))
+    elif tool_count:
         parts.append(Text(f"Tools used: {tool_count}", style="dim"))
 
     console.print(Rule(style="dim"))

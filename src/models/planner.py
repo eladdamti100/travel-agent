@@ -28,6 +28,11 @@ class PlannerTaskType(str, Enum):
     FETCH_ACTIVITIES = "fetch_activities"
     CHECK_VISA = "check_visa"
     CALCULATE_TRIP_COST = "calculate_trip_cost"
+    FETCH_RESTAURANTS = "fetch_restaurants"
+    LOCAL_TRANSPORT_GUIDE = "local_transport_guide"
+    FETCH_WEATHER = "fetch_weather"
+    EVENTS_FINDER = "events_finder"
+    AIRPORT_TRANSFER_INFO = "airport_transfer_info"
 
 
 class PlannerTaskStatus(str, Enum):

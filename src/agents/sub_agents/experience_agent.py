@@ -9,6 +9,7 @@ from src.agents.sub_agents.base import BaseSubAgent
 from src.models.planner import PlannerToolResults
 from src.models.trip_context import TripContext
 from src.tools.db_tools import (
+    airport_transfer_info,
     events_finder,
     fetch_activities,
     fetch_restaurants,
@@ -37,6 +38,7 @@ class ExperienceAgent(BaseSubAgent):
         "local_transport_guide",
         "fetch_weather",
         "events_finder",
+        "airport_transfer_info",
     )
 
     async def run(
@@ -63,6 +65,10 @@ class ExperienceAgent(BaseSubAgent):
             ),
             "local_transport_guide": asyncio.to_thread(
                 local_transport_guide.invoke,
+                {"city": context.destination_city},
+            ),
+            "airport_transfer_info": asyncio.to_thread(
+                airport_transfer_info.invoke,
                 {"city": context.destination_city},
             ),
         }

@@ -32,6 +32,12 @@ _TASK_REQUIREMENTS: Dict[PlannerTaskType, Tuple[str, ...]] = {
     # from fetch_flights and fetch_hotels. Those are checked later in
     # _calculate_cost_if_possible().
     PlannerTaskType.CALCULATE_TRIP_COST: ("duration_days",),
+
+    PlannerTaskType.FETCH_RESTAURANTS: ("destination_city",),
+    PlannerTaskType.LOCAL_TRANSPORT_GUIDE: ("destination_city",),
+    PlannerTaskType.FETCH_WEATHER: ("destination_city", "travel_month"),
+    PlannerTaskType.EVENTS_FINDER: ("destination_city", "travel_month"),
+    PlannerTaskType.AIRPORT_TRANSFER_INFO: ("destination_city",),
 }
 
 
@@ -227,6 +233,76 @@ def _build_planner_task(
             else f"Task is missing required fields: {', '.join(missing_fields)}."
         ),
     )
+
+
+def diff_changed_tasks(
+    old_context: TripContext,
+    new_context: TripContext,
+) -> List[PlannerTaskType]:
+    """
+    Returns every task that must be re-run when context changes, including
+    cascade invalidation through the dependency graph.
+
+    Two reasons a task is invalidated:
+      1. Direct  — one of its own required context fields changed.
+      2. Cascade — it depends on another task that was directly invalidated
+                   (e.g. CALCULATE_TRIP_COST depends on FETCH_FLIGHTS, so if
+                   FETCH_FLIGHTS is re-run its downstream tasks must also re-run).
+
+    Fields that did not change → their tasks stay cached (no re-run).
+
+    Examples:
+        origin_airport changed   → FETCH_FLIGHTS (direct)
+                                 → CALCULATE_TRIP_COST (cascade: needs new flight price)
+
+        destination_city changed → FETCH_FLIGHTS, FETCH_HOTELS, FETCH_ACTIVITIES (direct)
+                                 → CALCULATE_TRIP_COST (cascade)
+
+        total_budget changed     → no task has total_budget as a required field,
+                                   so nothing is re-run (budget is used only in
+                                   the final answer prompt, not in tool calls)
+    """
+    # Step 1 — find which context fields actually changed
+    all_tracked_fields: set = set()
+    for fields in _TASK_REQUIREMENTS.values():
+        all_tracked_fields.update(fields)
+
+    changed_fields = {
+        field
+        for field in all_tracked_fields
+        if getattr(old_context, field, None) != getattr(new_context, field, None)
+    }
+
+    if not changed_fields:
+        return []
+
+    # Step 2 — find tasks directly invalidated by changed fields
+    directly_invalidated: set = {
+        task_type
+        for task_type, required_fields in _TASK_REQUIREMENTS.items()
+        if any(f in changed_fields for f in required_fields)
+    }
+
+    # Step 3 — cascade: any task that depends_on an invalidated task is also
+    # invalidated, regardless of whether its own context fields changed.
+    # Build a map: task → list of tasks it depends on (from _TASK_DEPENDENCIES).
+    _TASK_DEPENDENCIES: Dict[PlannerTaskType, List[PlannerTaskType]] = {
+        PlannerTaskType.CALCULATE_TRIP_COST: [
+            PlannerTaskType.FETCH_FLIGHTS,
+            PlannerTaskType.FETCH_HOTELS,
+        ],
+    }
+
+    cascaded: set = set(directly_invalidated)
+    changed = True
+    while changed:
+        changed = False
+        for task, deps in _TASK_DEPENDENCIES.items():
+            if task not in cascaded and any(d in cascaded for d in deps):
+                cascaded.add(task)
+                changed = True
+
+    return list(cascaded)
 
 
 def _build_hitl_question(missing_requirements: List[MissingRequirement]) -> str:
