@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 def _make_state(**overrides) -> dict:
     base = {
-        "messages": [HumanMessage(content="Plan a trip to Paris for 5 days")],
+        "messages": [HumanMessage(content="Plan a trip to Paris for 5 days, origin airport TLV, Israeli passport, budget $2000")],
         "cache_status": None,
         "cache_similarity_score": 0.0,
         "cache_matched_query": None,

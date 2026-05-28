@@ -98,6 +98,8 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         enrich_trip_context_async(state, deterministic_context)
     )
 
+    allowed_tasks: Optional[Set[str]] = None
+
     existing_task_results = (
         state.get("pending_planner_task_results", {}) or {}
         if is_hitl_resume

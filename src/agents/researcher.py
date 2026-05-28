@@ -70,12 +70,7 @@ def run_researcher(state: AgentState) -> dict:
             tool_call_id = tool_call.get("id")
 
             signature = (tool_name or "", str(tool_args))
-            
-            if isinstance(tool_result, str) and "No flights found" in tool_result:
-                tool_result += (
-                    "\nSupported origins in the local database currently include TLV."
-                )
-            
+
             if signature in used_signatures:
                 logger.warning(
                     "Researcher stopped repeated tool call: %s %s",
@@ -107,6 +102,11 @@ def run_researcher(state: AgentState) -> dict:
                 except Exception as error:
                     logger.error("Researcher tool failed: %s", error)
                     tool_result = f"Tool error: {error}"
+
+            if isinstance(tool_result, str) and "No flights found" in tool_result:
+                tool_result += (
+                    "\nSupported origins in the local database currently include TLV."
+                )
 
             conversation.append(
                 ToolMessage(
