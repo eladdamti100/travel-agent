@@ -16,6 +16,8 @@ Default hit threshold:
     0.85
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -288,6 +290,17 @@ def find_cached_answer(
         return exact_result
 
     normalized_query = normalize_query(query)
+
+    # Structured trip keys must match exactly — semantic fuzzy matching would
+    # give false positives because keys share all fields except the city name.
+    if "origin_airport:" in normalized_query and "destination_city:" in normalized_query:
+        return CacheCheckResult(
+            status=CacheStatus.MISS,
+            similarity_score=0.0,
+            matched_query=None,
+            cached_answer=None,
+            reason="Structured key requires exact match only.",
+        )
 
     logger.info(
         "Storing cache entry. route=%s normalized_query=%s",
