@@ -63,17 +63,30 @@ def run_cache_check(state: AgentState) -> dict:
             "cache_answer": "",
         }
 
-    # --- START OF MINIMAL CHANGE: Canonical Trip Context Key ---
+    # --- Canonical Trip Context Key ---
     ctx = extract_trip_context_deterministic(state)
+    
+    # Build structured cache key ONLY. Do not fall back to raw text.
     query = build_trip_cache_key(
         origin_airport=ctx.origin_airport,
         origin_country=ctx.origin_country,
         destination_city=ctx.destination_city,
         duration_days=ctx.duration_days,
         total_budget=ctx.total_budget,
-    ) or getattr(messages[-1], "content", "")
+    )
 
     logger.info("Cache checker TripContext: %s", ctx.model_dump())
+    
+    # If the context is incomplete, the query will be None. We must bypass the cache.
+    if not query:
+        logger.info("Cache checker: Context incomplete, bypassing cache.")
+        return {
+            "cache_status": CacheStatus.MISS.value,
+            "cache_similarity_score": 0.0,
+            "cache_matched_query": "",
+            "cache_answer": "",
+        }
+
     logger.info("Cache checker query/key: %s", query)
 
     result = find_cached_answer(
@@ -83,11 +96,11 @@ def run_cache_check(state: AgentState) -> dict:
     )
 
     logger.info(
-    "Cache checker result: status=%s score=%.4f matched=%s reason=%s",
-    result.status.value,
-    result.similarity_score,
-    result.matched_query,
-    result.reason,
+        "Cache checker result: status=%s score=%.4f matched=%s reason=%s",
+        result.status.value,
+        result.similarity_score,
+        result.matched_query,
+        result.reason,
     )
 
     if result.status == CacheStatus.HIT:
