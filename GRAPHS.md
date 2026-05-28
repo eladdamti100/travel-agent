@@ -29,7 +29,6 @@ graph TD
     CACHE_ROUTE{Cache Result}:::router
 
     PLANNER[Master Planner]:::process
-    REPLAN[Replanning Analysis]:::process
     SUBAGENTS[Async Subagents Execution]:::async
 
     FINAL[Final Answer Generation]:::process
@@ -62,8 +61,7 @@ graph TD
     CACHE_ROUTE -- HIT --> END
     CACHE_ROUTE -- MISS --> PLANNER
 
-    PLANNER --> REPLAN
-    REPLAN --> SUBAGENTS
+    PLANNER --> SUBAGENTS
     SUBAGENTS --> FINAL
 
     FINAL --> CACHE_STORE
