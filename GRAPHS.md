@@ -45,7 +45,6 @@ graph TD
     VALIDATOR --> VALID_ROUTE
 
     VALID_ROUTE -- Blocked --> END
-    VALID_ROUTE -- HITL Resume --> RESUME
     VALID_ROUTE -- Approved --> ORCH
 
     ORCH --> ORCH_ROUTE
