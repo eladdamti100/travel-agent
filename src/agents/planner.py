@@ -77,9 +77,11 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         or state.get("awaiting_user_clarification")
     )
 
-    planning_mode = "replanning" if state.get("force_replan") else "full_planning"
-    allowed_tasks: Optional[Set[str]] = None
+    # Check if a previous trip context actually exists in the state
+    has_previous_context = bool(state.get("trip_context"))
 
+    # Set replanning ONLY if forced AND we actually have something to re-plan
+    planning_mode = "replanning" if (state.get("force_replan") and has_previous_context) else "full_planning"
     if is_hitl_resume and state.get("trip_context"):
         deterministic_context = TripContext(**state["trip_context"])
         logger.info("Master planner resumed from HITL trip_context.")

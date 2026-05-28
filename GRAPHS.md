@@ -5,71 +5,74 @@
 
 ```mermaid
 graph TD
-    %% Styling Configuration
+
     classDef startEnd fill:#A2C2E8,stroke:#333,stroke-width:2px,rx:10px,ry:10px;
-    classDef coreProcess fill:#F0F4F8,stroke:#4A6B82,stroke-width:2px;
-    classDef routerStyle fill:#FFEAA7,stroke:#D6A2E8,stroke-width:2px,shape:diamond;
-    classDef cacheStyle fill:#D4EDDA,stroke:#28A745,stroke-width:2px;
-    classDef hitlStyle fill:#FFF3CD,stroke:#FFC107,stroke-width:2px;
+    classDef process fill:#F0F4F8,stroke:#4A6B82,stroke-width:2px;
+    classDef router fill:#FFEAA7,stroke:#D6A2E8,stroke-width:2px;
+    classDef cache fill:#D4EDDA,stroke:#28A745,stroke-width:2px;
+    classDef async fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px;
+    classDef hitl fill:#FFF3CD,stroke:#FFC107,stroke-width:2px;
 
-    %% Subgraphs for visual clarity
-    subgraph Guardrails [Layer 1: Security & Metadata]
-        START((START)):::startEnd
-        EXTRACT_META[Extract Metadata]:::coreProcess
-        VALIDATOR[Validator]:::coreProcess
-        ROUTE_VAL{Valid?}:::routerStyle
-    end
+    START((START)):::startEnd
 
-    subgraph Orchestration [Layer 2: Intent Routing]
-        MASTER_ORCH[Master Orchestrator]:::coreProcess
-        ROUTE_ORCH{Intent Routing}:::routerStyle
-    end
+    EXTRACT[Extract Metadata + Modification Detection]:::process
+    VALIDATOR[3-Stage Validator]:::process
+    VALID_ROUTE{Approved?}:::router
 
-    subgraph Execution [Layer 3: Cache & Planning]
-        PREFS_MEM[Preferences Memory]:::coreProcess
-        RESEARCHER[Researcher Agent]:::coreProcess
-        CACHE_CHECK[Semantic Cache]:::cacheStyle
-        RESUME_HITL[Resume HITL Context]:::hitlStyle
-        MASTER_PLANNER[Master Planner]:::coreProcess
-        CACHE_STORE[Cache Store]:::cacheStyle
-    end
+    ORCH[Master Orchestrator]:::process
+    ORCH_ROUTE{Route}:::router
 
-    SUMMARIZER[Summarizer]:::coreProcess
-    END_NODE((END)):::startEnd
+    PREFS[Preferences Memory Agent]:::process
+    RESEARCHER[Researcher ReAct Agent]:::process
 
-    %% Flow Paths
-    START --> EXTRACT_META
-    EXTRACT_META --> VALIDATOR
-    VALIDATOR --> ROUTE_VAL
-    
-    ROUTE_VAL -- Blocked --> END_NODE
-    ROUTE_VAL -- HITL --> RESUME_HITL
-    ROUTE_VAL -- Approved --> MASTER_ORCH
-    
-    RESUME_HITL --> MASTER_PLANNER
-    MASTER_ORCH --> ROUTE_ORCH
-    
-    ROUTE_ORCH -- "Profile" --> PREFS_MEM
-    ROUTE_ORCH -- "Research" --> RESEARCHER
-    ROUTE_ORCH -- "Trip Plan" --> CACHE_CHECK
-    
-    PREFS_MEM --> SUMMARIZER
-    RESEARCHER --> END_NODE
-    
-    CACHE_CHECK --> ROUTE_CACHE{Cache Result}:::routerStyle
-    ROUTE_CACHE -- "Hit" --> END_NODE
-    ROUTE_CACHE -- "Miss" --> MASTER_PLANNER
-    
-    MASTER_PLANNER --> ROUTE_PLAN{Planner Result}:::routerStyle
-    ROUTE_PLAN -- "Missing Info" --> END_NODE
-    ROUTE_PLAN -- "Final Plan" --> CACHE_STORE
-    
+    CACHE_CHECK[Exact + Semantic Cache Check]:::cache
+    CACHE_ROUTE{Cache Result}:::router
+
+    PLANNER[Master Planner]:::process
+    REPLAN[Replanning Analysis]:::process
+    SUBAGENTS[Async Subagents Execution]:::async
+
+    FINAL[Final Answer Generation]:::process
+
+    CACHE_STORE[Cache Store]:::cache
+    SUMMARIZER[Conversation Summarizer]:::async
+    REVIEWER[Async Reviewer]:::async
+
+    END((END)):::startEnd
+
+    START --> EXTRACT
+    EXTRACT --> VALIDATOR
+    VALIDATOR --> VALID_ROUTE
+
+    VALID_ROUTE -- Blocked --> END
+    VALID_ROUTE -- HITL Resume --> RESUME
+    VALID_ROUTE -- Approved --> ORCH
+
+    ORCH --> ORCH_ROUTE
+
+    ORCH_ROUTE -- preferences_memory --> PREFS
+    ORCH_ROUTE -- research --> RESEARCHER
+    ORCH_ROUTE -- cache_check --> CACHE_CHECK
+
+    PREFS --> SUMMARIZER --> END
+
+    RESEARCHER --> END
+
+    CACHE_CHECK --> CACHE_ROUTE
+
+    CACHE_ROUTE -- HIT --> END
+    CACHE_ROUTE -- MISS --> PLANNER
+
+    PLANNER --> REPLAN
+    REPLAN --> SUBAGENTS
+    SUBAGENTS --> FINAL
+
+    FINAL --> CACHE_STORE
+    FINAL --> REVIEWER
     CACHE_STORE --> SUMMARIZER
-    SUMMARIZER --> END_NODE
+
+    SUMMARIZER --> END
 ```
-
----
-
 ## 2. Async Task Dependency DAG (Master Planner Scheduling)
 
 ```mermaid
