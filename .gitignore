@@ -16,6 +16,9 @@ build/
 data/*
 data/travel_agency.db
 data/checkpoints.db
+# Logs
+logs/
+
 # Test artifacts
 .pytest_cache/
 test_results.txt
