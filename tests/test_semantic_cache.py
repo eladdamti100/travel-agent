@@ -298,7 +298,7 @@ def test_cache_key_required_and_bucketing():
 
 def test_cache_key_currency_and_properties():
     from src.services.semantic_cache import (
-        build_trip_cache_key, build_trip_cache_key_from_context, _CACHE_KEY_VERSION,
+        build_trip_cache_key, build_trip_cache_key_from_context,
         find_cached_answer, _CACHE_KEY_VERSION,
     )
     from src.models.cache import CacheStatus
@@ -405,3 +405,35 @@ def test_db_initialized_guard():
         mock_conn.assert_not_called()
     finally:
         mod._db_initialized = original
+
+
+def test_stale_key_version_purged_on_init(tmp_path):
+    """Entries with old key_version: prefix must be deleted when initialize_cache_db() runs."""
+    import src.services.semantic_cache as mod
+    from src.services.semantic_cache import find_exact_cached_answer
+    from src.models.cache import CacheStatus
+
+    orig_path, orig_init = mod._CACHE_DB_PATH, mod._db_initialized
+    mod._CACHE_DB_PATH = tmp_path / "test_cache.db"
+    mod._db_initialized = False
+    mod.initialize_cache_db()
+
+    try:
+        old_key = "key_version:v0 | destination_city:paris | duration:week"
+        with sqlite3.connect(tmp_path / "test_cache.db") as conn:
+            conn.execute(
+                "INSERT INTO semantic_cache "
+                "(query, normalized_query, answer, route, embedding_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (old_key, old_key, "old answer", "cache_check", "[1.0]"),
+            )
+            conn.commit()
+
+        # Re-init must purge the old-version row
+        mod._db_initialized = False
+        mod.initialize_cache_db()
+
+        assert find_exact_cached_answer(old_key).status == CacheStatus.MISS
+    finally:
+        mod._CACHE_DB_PATH = orig_path
+        mod._db_initialized = orig_init

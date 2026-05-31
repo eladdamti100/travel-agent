@@ -48,7 +48,12 @@ class TripContext(BaseModel):
 
     total_budget: Optional[float] = Field(
         default=None,
-        description="Total trip budget in USD.",
+        description="Total trip budget in the user's stated currency.",
+    )
+
+    currency: Optional[str] = Field(
+        default=None,
+        description="ISO-4217 budget currency code, e.g. USD, EUR, GBP. Defaults to USD when unspecified.",
     )
 
     travel_month: Optional[str] = Field(

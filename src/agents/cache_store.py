@@ -72,7 +72,11 @@ def run_cache_store(state: AgentState) -> dict:
         return {}
 
     trip_ctx = state.get("trip_context") or {}
-    _executor.submit(_background_store, query, answer, trip_ctx)
+    future = _executor.submit(_background_store, query, answer, trip_ctx)
+    future.add_done_callback(
+        lambda f: logger.error("Cache store future raised unexpectedly: %s", f.exception())
+        if f.exception() else None
+    )
     logger.info("Cache store submitted to background thread for query=%s", query)
     
     return {}
@@ -87,12 +91,11 @@ def _get_latest_user_query(state: AgentState) -> str:
 
     logger.info("Cache store TripContext: %s", ctx.model_dump())
 
-    # TODO(Student 4): add currency field to TripContext so non-USD budgets
-    # produce distinct cache keys (e.g. €2000 ≠ $2000).
     cache_key = build_trip_cache_key({
         "destination_city": ctx.destination_city,
         "duration_days":    ctx.duration_days,
         "total_budget":     ctx.total_budget,
+        "currency":         ctx.currency,
         "num_travelers":    ctx.num_travelers,
         "origin_airport":   ctx.origin_airport,
         "origin_country":   ctx.origin_country,

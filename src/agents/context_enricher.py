@@ -100,6 +100,7 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
         destination_country=destination_country,
         duration_days=_extract_duration_days(text),
         total_budget=_extract_total_budget(text) or state.get("total_budget"),
+        currency=_extract_currency(latest_message) or state.get("currency"),
         num_travelers=_extract_num_travelers(text) or state.get("num_travelers"),
         preferred_airline=state.get("preferred_airline"),
         food_preference=state.get("food_preference"),
@@ -396,22 +397,53 @@ def _extract_duration_days(text: str) -> Optional[int]:
 
 def _extract_total_budget(text: str) -> Optional[float]:
     """
-    Extracts total budget in USD from common formats.
+    Extracts total budget amount from common formats (currency-agnostic).
     """
     patterns = [
         r"\$(\d[\d,]*(?:\.\d+)?)",
         r"(\d[\d,]*(?:\.\d+)?)\s*\$",
-        r"\b(?:budget|under|up to|max|maximum)(?:\s+is)?\s+\$?(\d[\d,]*(?:\.\d+)?)\b",
-        r"\b(\d[\d,]*(?:\.\d+)?)\s*(?:usd|dollars)\b",
+        r"[€£₪¥](\d[\d,]*(?:\.\d+)?)",
+        r"(\d[\d,]*(?:\.\d+)?)\s*[€£₪¥]",
+        r"\b(?:budget|under|up to|max|maximum)(?:\s+is)?\s+[\$€£₪¥]?(\d[\d,]*(?:\.\d+)?)\b",
+        r"\b(\d[\d,]*(?:\.\d+)?)\s*(?:usd|eur|gbp|ils|jpy|aud|cad|dollars?|euros?|pounds?|shekels?|yen)\b",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, text)
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
             try:
                 return float(match.group(1).replace(",", ""))
             except (ValueError, TypeError):
                 continue
+
+    return None
+
+
+def _extract_currency(text: str) -> Optional[str]:
+    """
+    Extracts ISO-4217 currency code from budget-related phrases.
+    Returns None when USD (the default) so callers only get a value for non-USD.
+    """
+    t = text.lower()
+
+    # Symbol and keyword detection — ordered most-specific first.
+    if "€" in text or " eur" in t or "euro" in t:
+        return "EUR"
+    if "£" in text or " gbp" in t or "pound" in t:
+        return "GBP"
+    if "₪" in text or " ils" in t or "shekel" in t or " nis" in t:
+        return "ILS"
+    if "¥" in text or " jpy" in t or " yen" in t:
+        return "JPY"
+    if " aud" in t or "australian dollar" in t:
+        return "AUD"
+    if " cad" in t or "canadian dollar" in t:
+        return "CAD"
+
+    # Explicit 3-letter code after a number, e.g. "2000 GBP"
+    match = re.search(r"\b\d[\d,]*\s+([A-Z]{3})\b", text)
+    if match:
+        return match.group(1).upper()
 
     return None
 

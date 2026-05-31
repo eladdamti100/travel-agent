@@ -195,6 +195,21 @@ def initialize_cache_db() -> None:
 
             conn.commit()
 
+        # Purge entries built with an old key version — they can never be hit
+        # by exact match (wrong version prefix) and are dead weight in the DB.
+        with sqlite3.connect(_CACHE_DB_PATH) as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM semantic_cache
+                WHERE normalized_query LIKE 'key_version:%'
+                  AND normalized_query NOT LIKE ?
+                """,
+                (f"key_version:{_CACHE_KEY_VERSION}%",),
+            ).rowcount
+            conn.commit()
+        if deleted:
+            logger.info("Purged %d stale cache entries with outdated key version.", deleted)
+
         _db_initialized = True
 
 
