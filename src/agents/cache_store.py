@@ -14,7 +14,7 @@ from src.agents.context_enricher import extract_trip_context_deterministic
 from src.graph.state import AgentState
 from src.models.cache import CacheStatus
 from src.services.cache_compression import compress_answer
-from src.services.semantic_cache import build_trip_cache_key, store_cache_entry
+from src.services.semantic_cache import TTL_DAYS_DB, build_trip_cache_key, store_cache_entry
 from src.utils.logger import get_logger
 
 logger = get_logger("cache_store")
@@ -39,6 +39,8 @@ def _background_store(query: str, answer: str) -> None:
             answer=answer,
             route="cache_check",
             compressed_answer=compressed,
+            source="db",
+            ttl_days=TTL_DAYS_DB,
         )
         logger.info("Background cache store completed for query=%s", query)
     except Exception as error:

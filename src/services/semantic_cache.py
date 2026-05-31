@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,10 +52,18 @@ _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_HIT_THRESHOLD = 0.85
 _MAX_ROWS_PER_ROUTE = 200
-_MAX_AGE_DAYS = 30
+
+TTL_DAYS_DB = 30
+TTL_DAYS_WEB = 3
 
 _embedding_model: Optional[SentenceTransformer] = None
 _db_initialized: bool = False
+_db_init_lock = threading.Lock()
+
+# 5% chance of running expired-entry cleanup on each lookup call.
+_CLEANUP_ON_LOOKUP_PROBABILITY = 0.05
+
+_VALID_SOURCES = ("db", "web")
 
 
 def _get_embedding_model() -> SentenceTransformer:
@@ -80,45 +90,60 @@ def initialize_cache_db() -> None:
     if _db_initialized:
         return
 
-    _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _db_init_lock:
+        if _db_initialized:  # re-check after acquiring lock (double-checked locking)
+            return
 
-    with sqlite3.connect(_CACHE_DB_PATH) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS semantic_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                query TEXT NOT NULL,
-                normalized_query TEXT NOT NULL,
-                answer TEXT NOT NULL,
-                route TEXT NOT NULL,
-                embedding_json TEXT NOT NULL,
-                confidence REAL NOT NULL DEFAULT 1.0,
-                compressed_answer TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
+        _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        with sqlite3.connect(_CACHE_DB_PATH) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS semantic_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    normalized_query TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    route TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    compressed_answer TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'db',
+                    ttl_days INTEGER NOT NULL DEFAULT 30,
+                    created_at TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
 
-        # Migrate existing databases that predate these columns.
-        for migration in (
-            "ALTER TABLE semantic_cache ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
-            "ALTER TABLE semantic_cache ADD COLUMN compressed_answer TEXT NOT NULL DEFAULT ''",
-        ):
-            try:
-                conn.execute(migration)
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            # Migrate existing databases that predate these columns.
+            for migration in (
+                "ALTER TABLE semantic_cache ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+                "ALTER TABLE semantic_cache ADD COLUMN compressed_answer TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE semantic_cache ADD COLUMN source TEXT NOT NULL DEFAULT 'db'",
+                "ALTER TABLE semantic_cache ADD COLUMN ttl_days INTEGER NOT NULL DEFAULT 30",
+            ):
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
 
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_semantic_cache_route
-            ON semantic_cache(route)
-            """
-        )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_semantic_cache_route
+                ON semantic_cache(route)
+                """
+            )
 
-        conn.commit()
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_semantic_cache_route_created
+                ON semantic_cache(route, created_at)
+                """
+            )
 
-    _db_initialized = True
+            conn.commit()
+
+        _db_initialized = True
 
 
 def normalize_query(query: str) -> str:
@@ -180,6 +205,7 @@ def _load_embedding_index(route: str) -> List[Dict[str, Any]]:
             SELECT id, query, embedding_json
             FROM semantic_cache
             WHERE route = ?
+              AND created_at >= datetime('now', '-' || ttl_days || ' days')
             ORDER BY id DESC
             """,
             (route,),
@@ -196,7 +222,7 @@ def _fetch_row_by_id(row_id: int) -> Optional[Dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT query, answer, compressed_answer
+            SELECT query, answer, compressed_answer, source, ttl_days
             FROM semantic_cache
             WHERE id = ?
             """,
@@ -227,9 +253,10 @@ def find_exact_cached_answer(
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT query, answer, compressed_answer
+            SELECT query, answer, compressed_answer, source, ttl_days
             FROM semantic_cache
             WHERE route = ? AND normalized_query = ?
+              AND created_at >= datetime('now', '-' || ttl_days || ' days')
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -253,9 +280,11 @@ def find_exact_cached_answer(
         )
 
     logger.info(
-        "Exact cache HIT. route=%s matched_query=%s",
+        "Exact cache HIT. route=%s matched_query=%s source=%s ttl_days=%s",
         route,
         row["query"],
+        row["source"],
+        row["ttl_days"],
     )
 
     return CacheCheckResult(
@@ -265,6 +294,8 @@ def find_exact_cached_answer(
         cached_answer=row["answer"],
         cached_compressed_answer=row["compressed_answer"] or None,
         reason="Found an exact structured cache match.",
+        source=row["source"],
+        ttl_days=row["ttl_days"],
     )
 
 def find_cached_answer(
@@ -285,6 +316,11 @@ def find_cached_answer(
     """
     initialize_cache_db()
 
+    # Probabilistic background cleanup — fires on every lookup path (exact or semantic)
+    # so expired rows are purged even in read-heavy workloads with no new stores.
+    if random.random() < _CLEANUP_ON_LOOKUP_PROBABILITY:
+        _cleanup_cache(route=route)
+
     exact_result = find_exact_cached_answer(query=query, route=route)
     if exact_result.status == CacheStatus.HIT:
         return exact_result
@@ -303,7 +339,7 @@ def find_cached_answer(
         )
 
     logger.info(
-        "Storing cache entry. route=%s normalized_query=%s",
+        "Semantic cache lookup. route=%s normalized_query=%s",
         route,
         normalized_query,
     )
@@ -342,9 +378,11 @@ def find_cached_answer(
         full_row = _fetch_row_by_id(best_id)
 
         logger.info(
-            "Semantic cache hit. score=%.4f matched_query=%s",
+            "Semantic cache hit. score=%.4f matched_query=%s source=%s ttl_days=%s",
             best_score,
             best_query,
+            full_row.get("source") if full_row else None,
+            full_row.get("ttl_days") if full_row else None,
         )
 
         return CacheCheckResult(
@@ -356,6 +394,8 @@ def find_cached_answer(
                 full_row.get("compressed_answer") or None if full_row else None
             ),
             reason="Found a sufficiently similar cached answer.",
+            source=full_row.get("source") if full_row else None,
+            ttl_days=full_row.get("ttl_days") if full_row else None,
         )
 
     logger.info("Semantic cache miss. best_score=%.4f threshold=%.4f", best_score, threshold)
@@ -376,6 +416,8 @@ def store_cache_entry(
     route: str = "cache_check",
     confidence: float = 1.0,
     compressed_answer: str = "",
+    source: str = "db",
+    ttl_days: int = 30,
 ) -> CacheEntry:
     """
     Stores a new semantic cache entry.
@@ -383,9 +425,29 @@ def store_cache_entry(
     This should be called only after a successful final answer was produced
     for a full trip-planning request.
     """
+    if source not in _VALID_SOURCES:
+        raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
+
     initialize_cache_db()
 
     normalized_query = normalize_query(query)
+
+    # Warn when the same cache key already exists under a different source —
+    # the new entry will shadow the old one on the next exact lookup.
+    with sqlite3.connect(_CACHE_DB_PATH) as _check_conn:
+        _check_conn.row_factory = sqlite3.Row
+        _existing = _check_conn.execute(
+            "SELECT source FROM semantic_cache WHERE normalized_query = ? ORDER BY id DESC LIMIT 1",
+            (normalize_query(query),),
+        ).fetchone()
+        if _existing and _existing["source"] != source:
+            logger.warning(
+                "Cache key already stored with source=%s, overwriting with source=%s. query=%s",
+                _existing["source"],
+                source,
+                query,
+            )
+
     embedding = embed_text(normalized_query)
     now = datetime.now(timezone.utc)
 
@@ -398,6 +460,8 @@ def store_cache_entry(
         confidence=confidence,
         timestamp=now,
         compressed_answer=compressed_answer,
+        source=source,
+        ttl_days=ttl_days,
     )
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
@@ -411,9 +475,11 @@ def store_cache_entry(
                 embedding_json,
                 confidence,
                 compressed_answer,
+                source,
+                ttl_days,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.query,
@@ -423,6 +489,8 @@ def store_cache_entry(
                 json.dumps(entry.embedding),
                 entry.confidence,
                 entry.compressed_answer,
+                entry.source,
+                entry.ttl_days,
                 entry.timestamp.isoformat(),
             ),
         )
@@ -500,9 +568,9 @@ def _cleanup_cache(route: str) -> None:
             """
             DELETE FROM semantic_cache
             WHERE route = ?
-              AND created_at < datetime('now', ? || ' days')
+              AND created_at < datetime('now', '-' || ttl_days || ' days')
             """,
-            (route, f"-{_MAX_AGE_DAYS}"),
+            (route,),
         )
 
         conn.execute(
@@ -521,4 +589,4 @@ def _cleanup_cache(route: str) -> None:
 
         conn.commit()
 
-    logger.debug("Cache cleanup done for route=%s (max_rows=%d, max_age_days=%d)", route, _MAX_ROWS_PER_ROUTE, _MAX_AGE_DAYS)
+    logger.debug("Cache cleanup done for route=%s (max_rows=%d)", route, _MAX_ROWS_PER_ROUTE)

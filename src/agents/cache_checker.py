@@ -105,11 +105,15 @@ def run_cache_check(state: AgentState) -> dict:
 
     if result.status == CacheStatus.HIT:
         logger.info(
-            "Cache checker hit. score=%.4f matched_query=%s",
+            "Cache checker hit. score=%.4f matched_query=%s source=%s ttl_days=%s",
             result.similarity_score,
             result.matched_query,
+            result.source,
+            result.ttl_days,
         )
 
+        # TODO(Student 4): add cache_source: str and cache_ttl_days: int to state.py
+        # so these values are accessible to the rest of the graph and the UI.
         return {
             "cache_status": CacheStatus.HIT.value,
             "cache_similarity_score": result.similarity_score,
