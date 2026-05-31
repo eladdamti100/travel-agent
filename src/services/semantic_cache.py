@@ -264,10 +264,28 @@ def find_exact_cached_answer(
         ).fetchone()
 
     if not row:
+        # Distinguish between "never stored" and "stored but expired" for better debugging.
+        with sqlite3.connect(_CACHE_DB_PATH) as _any_conn:
+            _any_conn.row_factory = sqlite3.Row
+            _any = _any_conn.execute(
+                """
+                SELECT id FROM semantic_cache
+                WHERE route = ? AND normalized_query = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (route, normalized_query),
+            ).fetchone()
+        miss_reason = (
+            "Cache entry expired (TTL exceeded)."
+            if _any
+            else "No cache entry found for this query."
+        )
+
         logger.info(
-            "Exact cache MISS. route=%s normalized_query=%s",
+            "Exact cache MISS. route=%s normalized_query=%s reason=%s",
             route,
             normalized_query,
+            miss_reason,
         )
 
         return CacheCheckResult(
@@ -276,7 +294,7 @@ def find_exact_cached_answer(
             matched_query=None,
             cached_answer=None,
             cached_compressed_answer=None,
-            reason="No exact structured cache match was found.",
+            reason=miss_reason,
         )
 
     logger.info(
