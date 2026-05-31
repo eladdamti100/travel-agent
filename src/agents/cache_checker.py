@@ -67,13 +67,15 @@ def run_cache_check(state: AgentState) -> dict:
     ctx = extract_trip_context_deterministic(state)
     
     # Build structured cache key ONLY. Do not fall back to raw text.
-    query = build_trip_cache_key(
-        origin_airport=ctx.origin_airport,
-        origin_country=ctx.origin_country,
-        destination_city=ctx.destination_city,
-        duration_days=ctx.duration_days,
-        total_budget=ctx.total_budget,
-    )
+    query = build_trip_cache_key({
+        "destination_city": ctx.destination_city,
+        "duration_days":    ctx.duration_days,
+        "total_budget":     ctx.total_budget,
+        "currency":         ctx.currency,
+        "num_travelers":    ctx.num_travelers,
+        "origin_airport":   ctx.origin_airport,
+        "origin_country":   ctx.origin_country,
+    })
 
     logger.info("Cache checker TripContext: %s", ctx.model_dump())
     
@@ -93,6 +95,7 @@ def run_cache_check(state: AgentState) -> dict:
         query=query,
         route="cache_check",
         threshold=DEFAULT_HIT_THRESHOLD,
+        trip_context=ctx.model_dump(),
     )
 
     logger.info(
@@ -105,9 +108,11 @@ def run_cache_check(state: AgentState) -> dict:
 
     if result.status == CacheStatus.HIT:
         logger.info(
-            "Cache checker hit. score=%.4f matched_query=%s",
+            "Cache checker hit. score=%.4f matched_query=%s source=%s ttl_days=%s",
             result.similarity_score,
             result.matched_query,
+            result.source,
+            result.ttl_days,
         )
 
         return {

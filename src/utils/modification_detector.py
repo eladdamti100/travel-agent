@@ -81,12 +81,16 @@ def detect_modification_context(user_message: str) -> bool:
             if param in lower_msg:
                 return True
 
-    # Check for "to" with airport/destination keywords
+    # Check for "from X to Y" with two IATA airport codes — indicates a route swap.
+    # Requires explicit modification verbs ("change", "switch") OR two airport codes
+    # in a from→to pattern to avoid false-positives on "flying from TLV to Paris".
     if " to " in lower_msg:
-        # Only match if it looks like a modification (has airport code or known airport)
-        airport_pattern = r"\b[A-Z]{3}\b"  # 3-letter IATA code
-        if re.search(airport_pattern, user_message):
-            if any(word in lower_msg for word in ["change", "from", "different", "instead", "switch"]):
+        airport_codes = re.findall(r"\b([A-Z]{3})\b", user_message)
+        has_two_airports = len(set(airport_codes)) >= 2
+        has_mod_verb = any(w in lower_msg for w in ["change", "switch", "different", "instead"])
+        from_to_swap = re.search(r"\bfrom\s+[A-Z]{3}\b.*\bto\s+[A-Z]{3}\b", user_message)
+        if (has_two_airports and from_to_swap) or has_mod_verb:
+            if re.search(r"\b[A-Z]{3}\b", user_message):
                 return True
 
     # Check for "different" + parameter

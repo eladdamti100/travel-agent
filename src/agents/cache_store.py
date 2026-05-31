@@ -6,6 +6,7 @@ Stores successful full-trip answers in the semantic cache after a cache miss.
 This is used only for requests that passed through cache_check and then
 continued to the legacy planner/agent because no cached answer was found.
 """
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -20,9 +21,10 @@ from src.utils.logger import get_logger
 logger = get_logger("cache_store")
 
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cache_store")
+atexit.register(_executor.shutdown, wait=True)  # flush pending writes on clean exit
 
 
-def _background_store(query: str, answer: str) -> None:
+def _background_store(query: str, answer: str, trip_context: dict) -> None:
     """
     Compresses and stores a cache entry in the background.
 
@@ -31,7 +33,7 @@ def _background_store(query: str, answer: str) -> None:
     """
     try:
         compressed = compress_answer(answer)
-        
+
         logger.info("Cache store writing entry. query=%s answer_chars=%d", query, len(answer))
 
         store_cache_entry(
@@ -39,6 +41,8 @@ def _background_store(query: str, answer: str) -> None:
             answer=answer,
             route="cache_check",
             compressed_answer=compressed,
+            source="db",
+            trip_context=trip_context or None,
         )
         logger.info("Background cache store completed for query=%s", query)
     except Exception as error:
@@ -69,8 +73,13 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
-    _background_store(query, answer)
-    logger.info("Cache store completed synchronously for query=%s", query)
+    trip_ctx = state.get("trip_context") or {}
+    future = _executor.submit(_background_store, query, answer, trip_ctx)
+    future.add_done_callback(
+        lambda f: logger.error("Cache store future raised unexpectedly: %s", f.exception())
+        if f.exception() else None
+    )
+    logger.info("Cache store submitted to background thread for query=%s", query)
     
     return {}
 
@@ -84,13 +93,15 @@ def _get_latest_user_query(state: AgentState) -> str:
 
     logger.info("Cache store TripContext: %s", ctx.model_dump())
 
-    cache_key = build_trip_cache_key(
-        origin_airport=ctx.origin_airport,
-        origin_country=ctx.origin_country,
-        destination_city=ctx.destination_city,
-        duration_days=ctx.duration_days,
-        total_budget=ctx.total_budget,
-    )
+    cache_key = build_trip_cache_key({
+        "destination_city": ctx.destination_city,
+        "duration_days":    ctx.duration_days,
+        "total_budget":     ctx.total_budget,
+        "currency":         ctx.currency,
+        "num_travelers":    ctx.num_travelers,
+        "origin_airport":   ctx.origin_airport,
+        "origin_country":   ctx.origin_country,
+    })
 
     logger.info("Cache store query/key: %s", cache_key)
 

@@ -51,6 +51,16 @@ class CacheCheckResult(BaseModel):
         description="Short explanation of why the lookup was a cache hit or cache miss."
     )
 
+    source: Optional[str] = Field(
+        default=None,
+        description="Where the cached answer came from: 'db' or 'web'. None on cache miss.",
+    )
+
+    ttl_days: Optional[int] = Field(
+        default=None,
+        description="TTL of the matched cache entry in days. None on cache miss.",
+    )
+
 
 class CacheEntry(BaseModel):
     """
@@ -92,4 +102,14 @@ class CacheEntry(BaseModel):
     compressed_answer: str = Field(
         default="",
         description="LLM-generated bullet-point summary of the full answer.",
+    )
+
+    source: str = Field(
+        default="db",
+        description="Where the underlying data came from: 'db' for local DB, 'web' for Tavily web search.",
+    )
+
+    ttl_days: int = Field(
+        default=30,
+        description="How many days this cache entry is valid. Web entries use 3 days, DB entries use 30.",
     )
