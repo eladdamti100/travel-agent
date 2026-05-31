@@ -617,3 +617,198 @@ def _cleanup_cache(route: str) -> None:
         conn.commit()
 
     logger.debug("Cache cleanup done for route=%s (max_rows=%d)", route, _MAX_ROWS_PER_ROUTE)
+
+
+# ── Cache invalidation engine ────────────────────────────────────────────────
+
+def invalidate_cache_by_fields(
+    filters: Dict[str, str],
+    *,
+    route: str = "cache_check",
+    include_freetext: bool = True,
+) -> int:
+    """
+    Deletes all cache entries whose structured key matches every field in filters.
+
+    filters is a dict of {field_name: value}, e.g.:
+        {"destination_city": "paris"}
+        {"destination_city": "paris", "duration_days": "7"}
+        {"origin_airport": "tlv"}
+
+    Any field that appears in build_trip_cache_key works here automatically —
+    destination_city, origin_airport, origin_country, duration_days, budget_bucket —
+    as well as any future fields added to the key format.
+
+    When include_freetext=True, also deletes free-text (non-structured) entries
+    that contain any of the filter values as plain substrings.
+
+    Returns the total number of deleted rows.
+    """
+    initialize_cache_db()
+
+    if not filters:
+        logger.warning("invalidate_cache_by_fields called with empty filters — no-op.")
+        return 0
+
+    # Build LIKE conditions for structured keys: "field:value" pattern per filter.
+    structured_conditions = " AND ".join(
+        f"normalized_query LIKE ?"
+        for _ in filters
+    )
+    structured_params = [
+        f"%{field}:{value.strip().lower()}%"
+        for field, value in filters.items()
+    ]
+
+    deleted = 0
+
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        # Phase 1: structured key entries — identified by the ' | ' field separator,
+        # not '%:%' which would match any colon in free-text queries.
+        cursor = conn.execute(
+            f"""
+            DELETE FROM semantic_cache
+            WHERE route = ?
+              AND normalized_query LIKE '% | %'
+              AND {structured_conditions}
+            """,
+            [route] + structured_params,
+        )
+        deleted += cursor.rowcount
+
+        # Phase 2: free-text entries — no ' | ' separator — that contain
+        # any of the raw values as plain substrings.
+        if include_freetext:
+            freetext_conditions = " OR ".join(
+                "normalized_query LIKE ?" for _ in filters
+            )
+            freetext_params = [
+                f"%{value.strip().lower()}%"
+                for value in filters.values()
+            ]
+            cursor = conn.execute(
+                f"""
+                DELETE FROM semantic_cache
+                WHERE route = ?
+                  AND normalized_query NOT LIKE '% | %'
+                  AND ({freetext_conditions})
+                """,
+                [route] + freetext_params,
+            )
+            deleted += cursor.rowcount
+
+        conn.commit()
+
+    logger.info(
+        "Cache invalidation complete. filters=%s route=%s deleted=%d",
+        filters,
+        route,
+        deleted,
+    )
+
+    return deleted
+
+
+# ── Convenience wrappers ─────────────────────────────────────────────────────
+
+def invalidate_cache_by_destination(destination_city: str, **kwargs) -> int:
+    """Invalidate all cache entries for a given destination city."""
+    return invalidate_cache_by_fields(
+        {"destination_city": destination_city.strip().lower()},
+        **kwargs,
+    )
+
+
+def invalidate_cache_by_airline(airline: str, **kwargs) -> int:
+    """Invalidate all cache entries that mention a specific airline."""
+    return invalidate_cache_by_fields(
+        {"airline": airline.strip().lower()},
+        **kwargs,
+    )
+
+
+def invalidate_cache_by_budget_bucket(budget_bucket: str, **kwargs) -> int:
+    """Invalidate all cache entries for a given budget bucket."""
+    return invalidate_cache_by_fields(
+        {"budget_bucket": str(budget_bucket).strip().lower()},
+        **kwargs,
+    )
+
+
+# ── DB-change notification registry ─────────────────────────────────────────
+
+# Maps each DB table name to the cache key fields it affects.
+# A table can affect multiple fields (e.g. flights affects both destination
+# and origin). Add new tables here as the project grows — no other code changes
+# needed for invalidation to work automatically.
+_DB_TABLE_CACHE_FIELD_MAP: Dict[str, List[str]] = {
+    "flights":     ["destination_city", "origin_airport"],
+    "hotels":      ["destination_city"],
+    "activities":  ["destination_city"],
+    "restaurants": ["destination_city"],
+    "weather":     ["destination_city"],
+    "visa":        ["destination_city", "origin_country"],
+}
+
+
+def notify_db_changed(
+    table: str,
+    values: Dict[str, str],
+    *,
+    route: str = "cache_check",
+) -> int:
+    """
+    Call this whenever a DB table is updated to automatically invalidate
+    all stale cache entries related to the change.
+
+    table  — the DB table that changed (e.g. "hotels", "flights")
+    values — the affected field values (e.g. {"destination_city": "paris"})
+
+    The registry (_DB_TABLE_CACHE_FIELD_MAP) decides which cache fields to
+    invalidate based on the table. Only fields present in both the registry
+    AND the provided values dict are used as filters — unspecified fields
+    are ignored, so partial updates are safe.
+
+    Returns the number of deleted cache entries.
+
+    Example:
+        notify_db_changed("hotels", {"destination_city": "Paris"})
+        notify_db_changed("flights", {"destination_city": "Tokyo", "origin_airport": "TLV"})
+    """
+    cache_fields = _DB_TABLE_CACHE_FIELD_MAP.get(table.lower())
+
+    if not cache_fields:
+        logger.warning(
+            "notify_db_changed: table=%s not in registry — add it to "
+            "_DB_TABLE_CACHE_FIELD_MAP to enable auto-invalidation.",
+            table,
+        )
+        return 0
+
+    # Normalise values and keep only fields the registry cares about.
+    filters = {
+        field: values[field].strip().lower()
+        for field in cache_fields
+        if field in values
+    }
+
+    if not filters:
+        logger.warning(
+            "notify_db_changed: table=%s — none of the registry fields %s "
+            "were present in values=%s. No entries invalidated.",
+            table,
+            cache_fields,
+            values,
+        )
+        return 0
+
+    deleted = invalidate_cache_by_fields(filters, route=route)
+
+    logger.info(
+        "notify_db_changed: table=%s filters=%s deleted=%d",
+        table,
+        filters,
+        deleted,
+    )
+
+    return deleted

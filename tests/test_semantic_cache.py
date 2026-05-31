@@ -309,6 +309,225 @@ class TestTTLEnforcement:
             self._teardown_temp_db()
 
 
+class TestCacheInvalidation:
+    """
+    Tests for the scalable field-based cache invalidation engine.
+    Uses a real temporary SQLite DB so SQL logic is fully exercised.
+    """
+
+    def _setup(self, tmp_path):
+        import src.services.semantic_cache as mod
+        self._orig_path = mod._CACHE_DB_PATH
+        self._orig_init = mod._db_initialized
+        mod._CACHE_DB_PATH = tmp_path / "test_cache.db"
+        mod._db_initialized = False
+        mod.initialize_cache_db()
+
+    def _teardown(self):
+        import src.services.semantic_cache as mod
+        mod._CACHE_DB_PATH = self._orig_path
+        mod._db_initialized = self._orig_init
+
+    def _store(self, query, answer="answer", source="db"):
+        from src.services.semantic_cache import store_cache_entry
+        with patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+             patch("src.services.semantic_cache._cleanup_cache"):
+            store_cache_entry(query, answer, source=source)
+
+    def test_invalidate_by_destination_removes_paris_entries(self, tmp_path):
+        from src.services.semantic_cache import invalidate_cache_by_destination, find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            self._store("destination_city:paris | origin_airport:jfk | duration_days:5 | budget_bucket:1500")
+            self._store("destination_city:london | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+
+            deleted = invalidate_cache_by_destination("paris")
+            assert deleted == 2
+
+            r_paris = find_exact_cached_answer("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            assert r_paris.status == CacheStatus.MISS
+
+            r_london = find_exact_cached_answer("destination_city:london | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            assert r_london.status == CacheStatus.HIT
+        finally:
+            self._teardown()
+
+    def test_invalidate_by_multiple_fields_is_precise(self, tmp_path):
+        from src.services.semantic_cache import invalidate_cache_by_fields, find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            self._store("destination_city:paris | origin_airport:jfk | duration_days:7 | budget_bucket:2000")
+
+            # Only invalidate paris + tlv origin — jfk entry should survive
+            deleted = invalidate_cache_by_fields({"destination_city": "paris", "origin_airport": "tlv"})
+            assert deleted == 1
+
+            r_tlv = find_exact_cached_answer("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            assert r_tlv.status == CacheStatus.MISS
+
+            r_jfk = find_exact_cached_answer("destination_city:paris | origin_airport:jfk | duration_days:7 | budget_bucket:2000")
+            assert r_jfk.status == CacheStatus.HIT
+        finally:
+            self._teardown()
+
+    def test_invalidate_future_field_works_without_code_changes(self, tmp_path):
+        from src.services.semantic_cache import invalidate_cache_by_fields, find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        self._setup(tmp_path)
+        try:
+            # Simulate a future key that includes a 'weather:sunny' field
+            self._store("destination_city:paris | weather:sunny | duration_days:7")
+            self._store("destination_city:paris | weather:rainy | duration_days:7")
+
+            deleted = invalidate_cache_by_fields({"weather": "sunny"})
+            assert deleted == 1
+
+            r_sunny = find_exact_cached_answer("destination_city:paris | weather:sunny | duration_days:7")
+            assert r_sunny.status == CacheStatus.MISS
+
+            r_rainy = find_exact_cached_answer("destination_city:paris | weather:rainy | duration_days:7")
+            assert r_rainy.status == CacheStatus.HIT
+        finally:
+            self._teardown()
+
+    def test_empty_filters_is_noop(self, tmp_path):
+        from src.services.semantic_cache import invalidate_cache_by_fields
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | duration_days:7")
+            deleted = invalidate_cache_by_fields({})
+            assert deleted == 0
+        finally:
+            self._teardown()
+
+    def test_returns_count_of_deleted_entries(self, tmp_path):
+        from src.services.semantic_cache import invalidate_cache_by_destination
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:tokyo | duration_days:5")
+            self._store("destination_city:tokyo | duration_days:10")
+            self._store("destination_city:tokyo | duration_days:14")
+            deleted = invalidate_cache_by_destination("tokyo")
+            assert deleted == 3
+        finally:
+            self._teardown()
+
+    def test_freetext_with_colon_not_misidentified_as_structured(self, tmp_path):
+        """Free-text queries containing a colon must NOT be treated as structured keys."""
+        from src.services.semantic_cache import invalidate_cache_by_destination, find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        self._setup(tmp_path)
+        try:
+            # Free-text query with a colon — NOT a structured key
+            self._store("paris: best hotels and flights?")
+            # Structured key — IS a structured key
+            self._store("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+
+            deleted = invalidate_cache_by_destination("paris")
+            # Both should be deleted — structured via phase 1, freetext via phase 2
+            assert deleted == 2
+        finally:
+            self._teardown()
+
+    def test_structured_key_not_matched_by_freetext_phase(self, tmp_path):
+        """Structured entries must never be double-counted by the freetext phase."""
+        from src.services.semantic_cache import invalidate_cache_by_fields
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            # include_freetext=False — only structured phase runs
+            deleted = invalidate_cache_by_fields({"destination_city": "paris"}, include_freetext=False)
+            assert deleted == 1  # not 2 — no double counting
+        finally:
+            self._teardown()
+
+
+class TestNotifyDbChanged:
+    """Tests for the DB-change notification registry."""
+
+    def _setup(self, tmp_path):
+        import src.services.semantic_cache as mod
+        self._orig_path = mod._CACHE_DB_PATH
+        self._orig_init = mod._db_initialized
+        mod._CACHE_DB_PATH = tmp_path / "test_cache.db"
+        mod._db_initialized = False
+        mod.initialize_cache_db()
+
+    def _teardown(self):
+        import src.services.semantic_cache as mod
+        mod._CACHE_DB_PATH = self._orig_path
+        mod._db_initialized = self._orig_init
+
+    def _store(self, query, source="db"):
+        from src.services.semantic_cache import store_cache_entry
+        with patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+             patch("src.services.semantic_cache._cleanup_cache"):
+            store_cache_entry(query, "answer", source=source)
+
+    def test_hotels_change_invalidates_destination(self, tmp_path):
+        from src.services.semantic_cache import notify_db_changed, find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            deleted = notify_db_changed("hotels", {"destination_city": "Paris"})
+            assert deleted == 1
+            r = find_exact_cached_answer("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            assert r.status == CacheStatus.MISS
+        finally:
+            self._teardown()
+
+    def test_flights_change_invalidates_destination_and_origin(self, tmp_path):
+        from src.services.semantic_cache import notify_db_changed
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | origin_airport:tlv | duration_days:7 | budget_bucket:2000")
+            self._store("destination_city:london | origin_airport:tlv | duration_days:5 | budget_bucket:1500")
+            self._store("destination_city:paris | origin_airport:jfk | duration_days:7 | budget_bucket:2000")
+
+            # flights change for TLV origin → should hit both paris+tlv and london+tlv
+            deleted = notify_db_changed("flights", {"destination_city": "paris", "origin_airport": "tlv"})
+            assert deleted == 1  # only paris+tlv, not london+tlv (different destination)
+        finally:
+            self._teardown()
+
+    def test_unknown_table_returns_zero(self, tmp_path):
+        from src.services.semantic_cache import notify_db_changed
+        self._setup(tmp_path)
+        try:
+            deleted = notify_db_changed("unknown_table", {"destination_city": "paris"})
+            assert deleted == 0
+        finally:
+            self._teardown()
+
+    def test_missing_values_returns_zero(self, tmp_path):
+        from src.services.semantic_cache import notify_db_changed
+        self._setup(tmp_path)
+        try:
+            # hotels registry expects destination_city — not provided
+            deleted = notify_db_changed("hotels", {"some_other_field": "value"})
+            assert deleted == 0
+        finally:
+            self._teardown()
+
+    def test_new_table_in_registry_works_without_code_changes(self, tmp_path):
+        """Adding a new table to the registry is all that's needed."""
+        import src.services.semantic_cache as mod
+        from src.services.semantic_cache import notify_db_changed
+        self._setup(tmp_path)
+        try:
+            self._store("destination_city:paris | weather:sunny | duration_days:7")
+            # weather table is already in the registry
+            deleted = notify_db_changed("weather", {"destination_city": "paris"})
+            assert deleted == 1
+        finally:
+            self._teardown()
+
+
 class TestDbInitializedGuard:
 
     def test_initialize_cache_db_runs_only_once(self):
