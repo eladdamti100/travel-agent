@@ -411,6 +411,7 @@ def find_cached_answer(
     query_embedding = embed_text(normalized_query)
 
     # Build hybrid trip vector for the query when TripContext is available.
+    # All trip_vector imports are lazy to avoid circular import at module level.
     query_trip_vec: Optional[np.ndarray] = None
     query_coverage: float = 0.0
     effective_threshold = threshold
@@ -419,7 +420,7 @@ def find_cached_answer(
             from src.services.trip_vector import (
                 adjusted_threshold,
                 build_trip_vector,
-                check_hard_filters,
+                check_hard_filters,  # imported once here; reused in hybrid path below
             )
             query_trip_vec, query_coverage = build_trip_vector(query_embedding, trip_context)
             effective_threshold = adjusted_threshold(threshold, query_coverage)
@@ -469,7 +470,6 @@ def find_cached_answer(
 
     # -- Hybrid path --
     if hybrid_rows and query_trip_vec is not None:
-        from src.services.trip_vector import check_hard_filters
         for row in hybrid_rows:
             try:
                 cached_ctx = json.loads(row["trip_context_json"] or "{}")
@@ -512,6 +512,10 @@ def find_cached_answer(
             best_id = textonly_rows[text_best_idx]["id"]
             best_query = textonly_rows[text_best_idx]["query"]
 
+    # Clamp to [0, 1] — floating point dot products on unit vectors can
+    # produce values like 1.0000001 which would fail Pydantic's le=1.0 check.
+    best_score = max(0.0, min(float(best_score), 1.0))
+
     if best_id is not None and best_score >= effective_threshold:
         full_row = _fetch_row_by_id(best_id)
 
@@ -536,7 +540,7 @@ def find_cached_answer(
             ttl_days=full_row.get("ttl_days") if full_row else None,
         )
 
-    logger.info("Semantic cache miss. best_score=%.4f threshold=%.4f", best_score, threshold)
+    logger.info("Semantic cache miss. best_score=%.4f effective_threshold=%.4f", best_score, effective_threshold)
 
     return CacheCheckResult(
         status=CacheStatus.MISS,

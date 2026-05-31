@@ -161,9 +161,12 @@ def _multi_hot(categories: List[str], value: Optional[str]) -> np.ndarray:
             found = True
     if not found:
         return np.zeros(len(categories), dtype=np.float32)
-    total = vec.sum()
-    if total > 0:
-        vec /= total
+    # Normalize by L2 norm (not sum) so multi-hot vectors have the same
+    # unit magnitude as one-hot vectors — prevents multiple-preference
+    # users from having less similarity influence than single-preference ones.
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec /= norm
     return vec
 
 

@@ -72,8 +72,8 @@ def run_cache_store(state: AgentState) -> dict:
         return {}
 
     trip_ctx = state.get("trip_context") or {}
-    _background_store(query, answer, trip_ctx)
-    logger.info("Cache store completed synchronously for query=%s", query)
+    _executor.submit(_background_store, query, answer, trip_ctx)
+    logger.info("Cache store submitted to background thread for query=%s", query)
     
     return {}
 
