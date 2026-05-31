@@ -417,8 +417,14 @@ def store_cache_entry(
     confidence: float = 1.0,
     compressed_answer: str = "",
     source: str = "db",
-    ttl_days: int = 30,
+    ttl_days: Optional[int] = None,
 ) -> CacheEntry:
+    """
+    ttl_days is auto-derived from source when not provided:
+      source="db"  → TTL_DAYS_DB (30)
+      source="web" → TTL_DAYS_WEB (3)
+    Pass ttl_days explicitly only to override the default policy.
+    """
     """
     Stores a new semantic cache entry.
 
@@ -427,6 +433,9 @@ def store_cache_entry(
     """
     if source not in _VALID_SOURCES:
         raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
+
+    if ttl_days is None:
+        ttl_days = TTL_DAYS_DB if source == "db" else TTL_DAYS_WEB
 
     initialize_cache_db()
 
