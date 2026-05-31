@@ -67,13 +67,16 @@ def run_cache_check(state: AgentState) -> dict:
     ctx = extract_trip_context_deterministic(state)
     
     # Build structured cache key ONLY. Do not fall back to raw text.
-    query = build_trip_cache_key(
-        origin_airport=ctx.origin_airport,
-        origin_country=ctx.origin_country,
-        destination_city=ctx.destination_city,
-        duration_days=ctx.duration_days,
-        total_budget=ctx.total_budget,
-    )
+    # TODO(Student 4): add currency field to TripContext so non-USD budgets
+    # produce distinct cache keys (e.g. €2000 ≠ $2000).
+    query = build_trip_cache_key({
+        "destination_city": ctx.destination_city,
+        "duration_days":    ctx.duration_days,
+        "total_budget":     ctx.total_budget,
+        "num_travelers":    ctx.num_travelers,
+        "origin_airport":   ctx.origin_airport,
+        "origin_country":   ctx.origin_country,
+    })
 
     logger.info("Cache checker TripContext: %s", ctx.model_dump())
     

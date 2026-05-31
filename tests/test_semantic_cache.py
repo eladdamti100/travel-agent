@@ -528,6 +528,281 @@ class TestNotifyDbChanged:
             self._teardown()
 
 
+class TestBuildTripCacheKey:
+    """Tests for the scalable, versioned, currency-aware cache key builder."""
+
+    def _key(self, **kwargs):
+        from src.services.semantic_cache import build_trip_cache_key
+        return build_trip_cache_key(kwargs)
+
+    # ── Required fields ──────────────────────────────────────────────────────
+
+    def test_returns_none_without_destination(self):
+        assert self._key(duration_days=7) is None
+
+    def test_returns_none_without_duration(self):
+        assert self._key(destination_city="Paris") is None
+
+    def test_returns_key_with_only_required_fields(self):
+        key = self._key(destination_city="Paris", duration_days=7)
+        assert key is not None
+        assert "destination_city:paris" in key
+        assert "duration:week" in key
+
+    # ── Duration bucketing ───────────────────────────────────────────────────
+
+    def test_duration_buckets(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        cases = [
+            (1, "short"), (3, "short"),
+            (4, "week"),  (7, "week"),
+            (8, "extended"), (14, "extended"),
+            (15, "long"), (30, "long"),
+        ]
+        for days, expected_bucket in cases:
+            key = build_trip_cache_key({"destination_city": "Paris", "duration_days": days})
+            assert f"duration:{expected_bucket}" in key, f"days={days} expected bucket={expected_bucket}"
+
+    def test_same_duration_bucket_gives_same_key(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        k5 = build_trip_cache_key({"destination_city": "Paris", "duration_days": 5})
+        k6 = build_trip_cache_key({"destination_city": "Paris", "duration_days": 6})
+        assert k5 == k6  # both → "week"
+
+    # ── Currency-aware budget ────────────────────────────────────────────────
+
+    def test_usd_budget_bucketed(self):
+        key = self._key(destination_city="Paris", duration_days=7, total_budget=2000, currency="USD")
+        assert "budget_bucket:2000_usd" in key
+
+    def test_eur_budget_produces_different_key_than_usd(self):
+        k_usd = self._key(destination_city="Paris", duration_days=7, total_budget=2000, currency="USD")
+        k_eur = self._key(destination_city="Paris", duration_days=7, total_budget=2000, currency="EUR")
+        assert k_usd != k_eur
+        assert "budget_bucket:2000_usd" in k_usd
+        assert "budget_bucket:2000_eur" in k_eur
+
+    def test_near_budgets_same_bucket(self):
+        k1 = self._key(destination_city="Paris", duration_days=7, total_budget=1980, currency="USD")
+        k2 = self._key(destination_city="Paris", duration_days=7, total_budget=2020, currency="USD")
+        assert k1 == k2  # both round to 2000
+
+    def test_unknown_currency_defaults_to_usd(self):
+        key = self._key(destination_city="Paris", duration_days=7, total_budget=2000, currency="XYZ")
+        assert "budget_bucket:2000_usd" in key
+
+    # ── Traveler bucketing ───────────────────────────────────────────────────
+
+    def test_traveler_buckets(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        cases = [
+            (1, "solo"), (2, "couple"),
+            (3, "small_group"), (4, "small_group"),
+            (5, "large_group"), (10, "large_group"),
+        ]
+        for n, expected in cases:
+            key = build_trip_cache_key({"destination_city": "Paris", "duration_days": 7, "num_travelers": n})
+            assert f"travelers:{expected}" in key, f"n={n} expected={expected}"
+
+    def test_different_traveler_groups_different_keys(self):
+        k_solo = self._key(destination_city="Paris", duration_days=7, num_travelers=1)
+        k_couple = self._key(destination_city="Paris", duration_days=7, num_travelers=2)
+        assert k_solo != k_couple
+
+    # ── Key properties ───────────────────────────────────────────────────────
+
+    def test_key_is_versioned(self):
+        from src.services.semantic_cache import _CACHE_KEY_VERSION
+        key = self._key(destination_city="Paris", duration_days=7)
+        assert f"key_version:{_CACHE_KEY_VERSION}" in key
+
+    def test_key_is_deterministic_regardless_of_field_order(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        k1 = build_trip_cache_key({"destination_city": "Paris", "duration_days": 7, "num_travelers": 2, "total_budget": 2000})
+        k2 = build_trip_cache_key({"total_budget": 2000, "num_travelers": 2, "duration_days": 7, "destination_city": "Paris"})
+        assert k1 == k2
+
+    def test_unknown_fields_are_ignored(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        k1 = build_trip_cache_key({"destination_city": "Paris", "duration_days": 7})
+        k2 = build_trip_cache_key({"destination_city": "Paris", "duration_days": 7, "future_field": "value"})
+        assert k1 == k2
+
+    def test_backwards_compat_shim(self):
+        from src.services.semantic_cache import build_trip_cache_key, build_trip_cache_key_from_context
+        k1 = build_trip_cache_key({"destination_city": "Paris", "duration_days": 7})
+        k2 = build_trip_cache_key_from_context(destination_city="Paris", duration_days=7)
+        assert k1 == k2
+
+    def test_structured_key_bypass_uses_key_version(self):
+        """Structured keys must be bypassed by key_version: prefix, not origin_airport:."""
+        from src.services.semantic_cache import find_cached_answer, _CACHE_KEY_VERSION
+        from src.models.cache import CacheStatus
+        # A structured key without origin_airport should still bypass semantic search
+        query = f"key_version:{_CACHE_KEY_VERSION} | destination_city:paris | duration:week"
+        with patch("src.services.semantic_cache.initialize_cache_db"), \
+             patch("src.services.semantic_cache._cleanup_cache"), \
+             patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]):
+            result = find_cached_answer(query)
+        assert result.status == CacheStatus.MISS
+        assert "structured key" in result.reason.lower()
+
+    def test_register_cache_key_field(self):
+        """Registering a new field adds it to the key schema."""
+        import src.services.semantic_cache as mod
+        from src.services.semantic_cache import build_trip_cache_key, register_cache_key_field
+        # Use a unique name to avoid conflict with parallel tests
+        field_name = "_test_weather_pref"
+        try:
+            register_cache_key_field(field_name, lambda v: v.strip().lower(), key_name="weather")
+            key = build_trip_cache_key({
+                "destination_city": "Paris",
+                "duration_days": 7,
+                field_name: "Sunny",
+            })
+            assert "weather:sunny" in key
+        finally:
+            mod._CACHE_KEY_FIELDS.pop(field_name, None)
+
+    def test_register_duplicate_field_raises(self):
+        import pytest
+        from src.services.semantic_cache import register_cache_key_field
+        with pytest.raises(ValueError, match="already registered"):
+            register_cache_key_field("destination_city", lambda v: v)
+
+    def test_batch_cosine_same_result_as_loop(self):
+        """Batch numpy cosine must return the same best match as the old Python loop."""
+        import numpy as np
+        from src.services.semantic_cache import find_cached_answer
+        from src.models.cache import CacheStatus
+
+        query_vec = [1.0, 0.0, 0.0]
+        best_vec  = [0.99, 0.1, 0.0]   # closest
+        other_vec = [0.0, 1.0, 0.0]    # orthogonal
+
+        index = [
+            {"id": 1, "query": "best match",  "embedding_json": json.dumps(best_vec)},
+            {"id": 2, "query": "other match", "embedding_json": json.dumps(other_vec)},
+        ]
+        full_row = {"query": "best match", "answer": "the answer", "compressed_answer": "", "source": "db", "ttl_days": 30}
+
+        with patch("src.services.semantic_cache.initialize_cache_db"), \
+             patch("src.services.semantic_cache._cleanup_cache"), \
+             patch("src.services.semantic_cache.embed_text", return_value=query_vec), \
+             patch("src.services.semantic_cache._load_embedding_index", return_value=index), \
+             patch("src.services.semantic_cache._fetch_row_by_id", return_value=full_row):
+            result = find_cached_answer("any free text query", threshold=0.5)
+
+        assert result.status == CacheStatus.HIT
+        assert result.cached_answer == "the answer"
+
+
+class TestNewFixes:
+    """Tests for the 9-item bug/upgrade pass."""
+
+    def test_ttl_days_capped_at_max(self):
+        from src.services.semantic_cache import store_cache_entry, _MAX_TTL_DAYS
+        with patch("src.services.semantic_cache.initialize_cache_db"), \
+             patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+             patch("src.services.semantic_cache._cleanup_cache"), \
+             patch("src.services.semantic_cache.sqlite3.connect") as mock_conn:
+            ctx = mock_conn.return_value.__enter__.return_value
+            ctx.execute = MagicMock()
+            ctx.fetchone = MagicMock(return_value=None)
+            ctx.commit = MagicMock()
+            entry = store_cache_entry("test", "answer", source="db", ttl_days=99999)
+        assert entry.ttl_days == _MAX_TTL_DAYS
+
+    def test_invalid_iata_returns_none_from_key(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        # "New York" is not a valid IATA code — should be omitted from key
+        key = build_trip_cache_key({
+            "destination_city": "Paris",
+            "duration_days": 7,
+            "origin_airport": "New York",
+        })
+        assert key is not None
+        assert "new york" not in key
+        assert "origin_airport" not in key
+
+    def test_valid_iata_included_in_key(self):
+        from src.services.semantic_cache import build_trip_cache_key
+        key = build_trip_cache_key({
+            "destination_city": "Paris",
+            "duration_days": 7,
+            "origin_airport": "TLV",
+        })
+        assert "origin_airport:tlv" in key
+
+    def test_register_currency_valid(self):
+        from src.services.semantic_cache import register_currency, _REGISTERED_CURRENCIES
+        register_currency("COP")
+        assert "cop" in _REGISTERED_CURRENCIES
+        _REGISTERED_CURRENCIES.discard("cop")  # cleanup
+
+    def test_register_currency_invalid_raises(self):
+        import pytest
+        from src.services.semantic_cache import register_currency
+        with pytest.raises(ValueError, match="Invalid currency"):
+            register_currency("")
+        with pytest.raises(ValueError, match="Invalid currency"):
+            register_currency("bitcoin123")
+
+    def test_register_currency_used_in_key(self):
+        from src.services.semantic_cache import register_currency, build_trip_cache_key, _REGISTERED_CURRENCIES
+        register_currency("COP")
+        key = build_trip_cache_key({
+            "destination_city": "Bogota",
+            "duration_days": 5,
+            "total_budget": 3000000,
+            "currency": "COP",
+        })
+        assert "budget_bucket" in key
+        assert "_cop" in key
+        _REGISTERED_CURRENCIES.discard("cop")
+
+    def test_find_exact_single_connection_on_miss(self, tmp_path):
+        """find_exact_cached_answer uses one connection even on miss."""
+        import src.services.semantic_cache as mod
+        from src.services.semantic_cache import find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        orig_path, orig_init = mod._CACHE_DB_PATH, mod._db_initialized
+        mod._CACHE_DB_PATH = tmp_path / "test.db"
+        mod._db_initialized = False
+        mod.initialize_cache_db()
+        try:
+            result = find_exact_cached_answer("never stored query xyz")
+            assert result.status == CacheStatus.MISS
+            assert "no cache entry" in result.reason.lower()
+        finally:
+            mod._CACHE_DB_PATH = orig_path
+            mod._db_initialized = orig_init
+
+    def test_find_exact_single_connection_on_expired(self, tmp_path):
+        """Expired entry reason comes from single-connection query."""
+        import sqlite3 as _sqlite3
+        import src.services.semantic_cache as mod
+        from src.services.semantic_cache import store_cache_entry, find_exact_cached_answer
+        from src.models.cache import CacheStatus
+        orig_path, orig_init = mod._CACHE_DB_PATH, mod._db_initialized
+        mod._CACHE_DB_PATH = tmp_path / "test.db"
+        mod._db_initialized = False
+        mod.initialize_cache_db()
+        try:
+            with patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+                 patch("src.services.semantic_cache._cleanup_cache"):
+                store_cache_entry("expiring query", "answer", source="web")
+            with _sqlite3.connect(tmp_path / "test.db") as conn:
+                conn.execute("UPDATE semantic_cache SET created_at = datetime('now', '-10 days') WHERE normalized_query = 'expiring query'")
+                conn.commit()
+            result = find_exact_cached_answer("expiring query")
+            assert result.status == CacheStatus.MISS
+            assert "expired" in result.reason.lower()
+        finally:
+            mod._CACHE_DB_PATH = orig_path
+            mod._db_initialized = orig_init
+
+
 class TestDbInitializedGuard:
 
     def test_initialize_cache_db_runs_only_once(self):

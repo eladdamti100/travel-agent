@@ -24,9 +24,11 @@ import random
 import re
 import sqlite3
 import threading
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 os.environ["TORCHINDUCTOR_DISABLE"] = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
@@ -55,8 +57,44 @@ _MAX_ROWS_PER_ROUTE = 200
 
 TTL_DAYS_DB = 30
 TTL_DAYS_WEB = 3
+_MAX_TTL_DAYS = 365
+
+# Cache key versioning — bump when key format changes so old entries can be
+# bulk-invalidated via invalidate_cache_by_fields({"key_version": "<old>"}).
+_CACHE_KEY_VERSION = "v2"
+
+# Open currency registry — any ISO-4217 code can be registered at runtime.
+# Call register_currency("thb") to add Thai Baht, etc.
+# Unknown currencies fall back to _DEFAULT_CURRENCY rather than crashing.
+_REGISTERED_CURRENCIES: set = {"usd", "eur", "gbp", "ils", "jpy", "aud", "cad",
+                                "chf", "cny", "inr", "brl", "mxn", "sgd", "hkd",
+                                "nok", "sek", "dkk", "pln", "czk", "huf", "thb",
+                                "try", "zar", "nzd", "krw", "aed", "sar"}
+_DEFAULT_CURRENCY = "usd"
+
+
+_CURRENCY_RE = re.compile(r"^[A-Za-z]{2,4}$")
+
+
+def register_currency(currency_code: str) -> None:
+    """
+    Register a new currency code so it produces a distinct cache key bucket.
+
+    currency_code should be a 2–4 letter ISO-4217 alphabetic code (e.g. "thb", "cop").
+    Raises ValueError for empty or non-alphabetic codes.
+    Unknown currencies default to 'usd' until registered here.
+    """
+    code = currency_code.strip().lower()
+    if not code or not _CURRENCY_RE.match(code):
+        raise ValueError(
+            f"Invalid currency code {currency_code!r}. "
+            "Must be 2–4 alphabetic characters (e.g. 'thb', 'usd')."
+        )
+    _REGISTERED_CURRENCIES.add(code)
+    logger.info("Registered currency: %s", code)
 
 _embedding_model: Optional[SentenceTransformer] = None
+_embedding_model_lock = threading.Lock()
 _db_initialized: bool = False
 _db_init_lock = threading.Lock()
 
@@ -70,12 +108,15 @@ def _get_embedding_model() -> SentenceTransformer:
     """
     Lazily loads and returns the local sentence-transformers embedding model.
 
-    The model is cached in memory after the first load.
+    Thread-safe via double-checked locking — two concurrent first-callers
+    will not both load the model simultaneously.
     """
     global _embedding_model
 
     if _embedding_model is None:
-        _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+        with _embedding_model_lock:
+            if _embedding_model is None:
+                _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
 
     return _embedding_model
 
@@ -138,6 +179,13 @@ def initialize_cache_db() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_semantic_cache_route_created
                 ON semantic_cache(route, created_at)
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_semantic_cache_route_query
+                ON semantic_cache(route, normalized_query)
                 """
             )
 
@@ -249,14 +297,17 @@ def find_exact_cached_answer(
         normalized_query,
     )
 
+    # Single connection — fetch the latest row regardless of TTL, then check
+    # validity in Python. Avoids a second DB round-trip on miss.
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT query, answer, compressed_answer, source, ttl_days
+            SELECT query, answer, compressed_answer, source, ttl_days,
+                   CASE WHEN created_at >= datetime('now', '-' || ttl_days || ' days')
+                        THEN 1 ELSE 0 END AS is_valid
             FROM semantic_cache
             WHERE route = ? AND normalized_query = ?
-              AND created_at >= datetime('now', '-' || ttl_days || ' days')
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -264,23 +315,12 @@ def find_exact_cached_answer(
         ).fetchone()
 
     if not row:
-        # Distinguish between "never stored" and "stored but expired" for better debugging.
-        with sqlite3.connect(_CACHE_DB_PATH) as _any_conn:
-            _any_conn.row_factory = sqlite3.Row
-            _any = _any_conn.execute(
-                """
-                SELECT id FROM semantic_cache
-                WHERE route = ? AND normalized_query = ?
-                ORDER BY id DESC LIMIT 1
-                """,
-                (route, normalized_query),
-            ).fetchone()
-        miss_reason = (
-            "Cache entry expired (TTL exceeded)."
-            if _any
-            else "No cache entry found for this query."
-        )
+        miss_reason = "No cache entry found for this query."
+    elif not row["is_valid"]:
+        miss_reason = "Cache entry expired (TTL exceeded)."
+        row = None  # treat as miss
 
+    if row is None:
         logger.info(
             "Exact cache MISS. route=%s normalized_query=%s reason=%s",
             route,
@@ -345,9 +385,10 @@ def find_cached_answer(
 
     normalized_query = normalize_query(query)
 
-    # Structured trip keys must match exactly — semantic fuzzy matching would
-    # give false positives because keys share all fields except the city name.
-    if "origin_airport:" in normalized_query and "destination_city:" in normalized_query:
+    # Structured trip keys (identified by the key_version: prefix) must match
+    # exactly — semantic fuzzy matching would give false positives because two
+    # structured keys for different cities look textually similar.
+    if f"key_version:{_CACHE_KEY_VERSION}" in normalized_query:
         return CacheCheckResult(
             status=CacheStatus.MISS,
             similarity_score=0.0,
@@ -375,22 +416,49 @@ def find_cached_answer(
             reason="Semantic cache is empty for this route.",
         )
 
+    # Batch cosine similarity — build a (N, D) matrix from all cached embeddings
+    # and compute scores in one numpy dot product instead of N separate calls.
+    # Embeddings are already L2-normalised so dot product == cosine similarity.
+    valid_rows: List[Dict[str, Any]] = []
+    embedding_matrix_rows: List[List[float]] = []
+
+    for row in index_rows:
+        try:
+            vec = json.loads(row["embedding_json"])
+            embedding_matrix_rows.append(vec)
+            valid_rows.append(row)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            logger.warning("Skipping invalid cache embedding: %s", error)
+
     best_score = 0.0
     best_id: Optional[int] = None
     best_query: Optional[str] = None
 
-    for row in index_rows:
-        try:
-            cached_embedding = json.loads(row["embedding_json"])
-            score = cosine_similarity(query_embedding, cached_embedding)
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
-            logger.warning("Skipping invalid cache embedding: %s", error)
-            continue
+    if embedding_matrix_rows:
+        q_vec = np.array(query_embedding, dtype=np.float32)
+        matrix = np.array(embedding_matrix_rows, dtype=np.float32)  # (N, D)
 
-        if score > best_score:
-            best_score = score
-            best_id = row["id"]
-            best_query = row["query"]
+        if matrix.ndim == 2 and matrix.shape[1] == q_vec.shape[0]:
+            scores = matrix @ q_vec                                   # (N,) — one BLAS call
+        else:
+            # Dimension mismatch — embedding model changed since entries were stored.
+            # Fall back to per-row similarity so mismatched rows get score 0.
+            logger.warning(
+                "Embedding dimension mismatch: matrix=%s query_dim=%d — "
+                "falling back to per-row similarity.",
+                matrix.shape,
+                q_vec.shape[0],
+            )
+            scores = np.array([
+                float(np.dot(q_vec, np.array(r, dtype=np.float32)))
+                if len(r) == q_vec.shape[0] else 0.0
+                for r in embedding_matrix_rows
+            ])
+
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+        best_id = valid_rows[best_idx]["id"]
+        best_query = valid_rows[best_idx]["query"]
 
     if best_id is not None and best_score >= threshold:
         full_row = _fetch_row_by_id(best_id)
@@ -438,16 +506,13 @@ def store_cache_entry(
     ttl_days: Optional[int] = None,
 ) -> CacheEntry:
     """
-    ttl_days is auto-derived from source when not provided:
-      source="db"  → TTL_DAYS_DB (30)
-      source="web" → TTL_DAYS_WEB (3)
-    Pass ttl_days explicitly only to override the default policy.
-    """
-    """
     Stores a new semantic cache entry.
 
-    This should be called only after a successful final answer was produced
-    for a full trip-planning request.
+    ttl_days is auto-derived from source when not provided:
+      source="db"  → TTL_DAYS_DB (30 days)
+      source="web" → TTL_DAYS_WEB (3 days)
+    Pass ttl_days explicitly only to override the default policy.
+    Maximum ttl_days is capped at _MAX_TTL_DAYS (365 days).
     """
     if source not in _VALID_SOURCES:
         raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
@@ -455,26 +520,13 @@ def store_cache_entry(
     if ttl_days is None:
         ttl_days = TTL_DAYS_DB if source == "db" else TTL_DAYS_WEB
 
+    if ttl_days > _MAX_TTL_DAYS:
+        logger.warning("ttl_days=%d exceeds maximum %d — capping.", ttl_days, _MAX_TTL_DAYS)
+        ttl_days = _MAX_TTL_DAYS
+
     initialize_cache_db()
 
     normalized_query = normalize_query(query)
-
-    # Warn when the same cache key already exists under a different source —
-    # the new entry will shadow the old one on the next exact lookup.
-    with sqlite3.connect(_CACHE_DB_PATH) as _check_conn:
-        _check_conn.row_factory = sqlite3.Row
-        _existing = _check_conn.execute(
-            "SELECT source FROM semantic_cache WHERE normalized_query = ? ORDER BY id DESC LIMIT 1",
-            (normalize_query(query),),
-        ).fetchone()
-        if _existing and _existing["source"] != source:
-            logger.warning(
-                "Cache key already stored with source=%s, overwriting with source=%s. query=%s",
-                _existing["source"],
-                source,
-                query,
-            )
-
     embedding = embed_text(normalized_query)
     now = datetime.now(timezone.utc)
 
@@ -491,7 +543,22 @@ def store_cache_entry(
         ttl_days=ttl_days,
     )
 
+    # Single connection for conflict check + insert — prevents a race condition
+    # where another thread writes between two separate connection opens.
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        _existing = conn.execute(
+            "SELECT source FROM semantic_cache WHERE route = ? AND normalized_query = ? ORDER BY id DESC LIMIT 1",
+            (route, normalized_query),
+        ).fetchone()
+        if _existing and _existing["source"] != source:
+            logger.warning(
+                "Cache key already stored with source=%s, overwriting with source=%s. query=%s",
+                _existing["source"],
+                source,
+                query,
+            )
+
         conn.execute(
             """
             INSERT INTO semantic_cache (
@@ -524,11 +591,7 @@ def store_cache_entry(
 
         conn.commit()
 
-        logger.info(
-        "Cache entry committed. route=%s query=%s",
-        route,
-        query,
-        )
+    logger.info("Cache entry committed. route=%s query=%s", route, query)
 
     _cleanup_cache(route=route)
 
@@ -536,54 +599,225 @@ def store_cache_entry(
 
     return entry
 
-def normalize_budget_bucket(total_budget: float | None) -> str:
+# ── Cache key schema ─────────────────────────────────────────────────────────
+
+@dataclass
+class FieldDef:
     """
-    Normalizes budget into stable buckets to avoid cache misses caused by tiny differences.
+    Schema definition for a single cache key field.
+
+    required  — if True and the field is missing/None, build_trip_cache_key
+                returns None (the trip cannot be cached without this field).
+    normalize — callable that receives the raw value and returns a clean string
+                for use in the key.
+    key_name  — the label used inside the cache key string.
     """
-    if total_budget is None:
-        return "unknown"
-
-    try:
-        budget = float(total_budget)
-    except (TypeError, ValueError):
-        return "unknown"
-
-    if budget <= 0:
-        return "unknown"
-
-    rounded = round(budget / 100) * 100
-    return str(int(rounded))
+    required: bool
+    normalize: Callable[[Any], Optional[str]]
+    key_name: str
 
 
-def build_trip_cache_key(
-    *,
-    origin_airport: str | None,
-    origin_country: str | None,
-    destination_city: str | None,
-    duration_days: int | None,
-    total_budget: float | None,
-) -> str | None:
-    """
-    Builds a deterministic structured cache key for full trip-planning requests.
-
-    Returns None when the key does not have enough required planning fields.
-    """
-    if not origin_airport or not origin_country or not destination_city or not duration_days:
+def _normalize_city(v: Any) -> Optional[str]:
+    if not v:
         return None
+    return str(v).strip().lower()
 
-    budget_key = normalize_budget_bucket(total_budget)
 
-    return normalize_query(
-        " | ".join(
-            [
-                f"origin_airport:{origin_airport.strip().upper()}",
-                f"origin_country:{origin_country.strip().title()}",
-                f"destination_city:{destination_city.strip().title()}",
-                f"duration_days:{int(duration_days)}",
-                f"budget_bucket:{budget_key}",
-            ]
+_IATA_RE = re.compile(r"^[A-Za-z]{3}$")
+
+def _normalize_iata(v: Any) -> Optional[str]:
+    if not v:
+        return None
+    code = str(v).strip()
+    if not _IATA_RE.match(code):
+        logger.warning("Invalid IATA code ignored in cache key: %r", code)
+        return None
+    return code.lower()
+
+
+def _normalize_country(v: Any) -> Optional[str]:
+    if not v:
+        return None
+    return str(v).strip().lower()
+
+
+def _normalize_duration_bucket(v: Any) -> Optional[str]:
+    """
+    Buckets trip duration so nearby durations share a cache entry.
+    1–3  → short | 4–7 → week | 8–14 → extended | 15+ → long
+    """
+    try:
+        days = int(v)
+    except (TypeError, ValueError):
+        return None
+    if days <= 0:
+        return None
+    if days <= 3:
+        return "short"
+    if days <= 7:
+        return "week"
+    if days <= 14:
+        return "extended"
+    return "long"
+
+
+def _normalize_budget_with_currency(v: Any, currency: str = _DEFAULT_CURRENCY) -> Optional[str]:
+    """
+    Buckets budget into 250-unit bands and appends the currency code so that
+    $2000 and €2000 produce distinct keys.
+
+    Receives a (amount, currency_code) tuple pre-processed by build_trip_cache_key.
+    Unknown currencies fall back to _DEFAULT_CURRENCY with a warning.
+    """
+    if v is None:
+        return None
+    try:
+        amount, cur = v  # unpacked by _preprocess_budget below
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+    bucketed = round(amount / 250) * 250
+    cur = cur.strip().lower() if cur else _DEFAULT_CURRENCY
+    if cur not in _REGISTERED_CURRENCIES:
+        logger.warning("Unregistered currency %r — defaulting to %s. Call register_currency() to add it.", cur, _DEFAULT_CURRENCY)
+        cur = _DEFAULT_CURRENCY
+    return f"{int(bucketed)}_{cur}"
+
+
+def _normalize_traveler_bucket(v: Any) -> Optional[str]:
+    """
+    1 → solo | 2 → couple | 3-4 → small_group | 5+ → large_group
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    if n == 1:
+        return "solo"
+    if n == 2:
+        return "couple"
+    if n <= 4:
+        return "small_group"
+    return "large_group"
+
+
+# Ordered field registry — canonical field order ensures the key is
+# deterministic regardless of the order fields are passed by the caller.
+# Add new fields here; zero other code changes needed.
+_CACHE_KEY_FIELDS: OrderedDict[str, FieldDef] = OrderedDict([
+    ("destination_city", FieldDef(required=True,  normalize=_normalize_city,     key_name="destination_city")),
+    ("duration_days",    FieldDef(required=True,  normalize=_normalize_duration_bucket, key_name="duration")),
+    ("total_budget",     FieldDef(required=False, normalize=_normalize_budget_with_currency, key_name="budget_bucket")),
+    ("num_travelers",    FieldDef(required=False, normalize=_normalize_traveler_bucket, key_name="travelers")),
+    ("origin_airport",   FieldDef(required=False, normalize=_normalize_iata,     key_name="origin_airport")),
+    ("origin_country",   FieldDef(required=False, normalize=_normalize_country,  key_name="origin_country")),
+])
+
+
+def register_cache_key_field(
+    field_name: str,
+    normalize: Callable[[Any], Optional[str]],
+    *,
+    key_name: Optional[str] = None,
+    required: bool = False,
+) -> None:
+    """
+    Register a new field in the cache key schema at runtime.
+
+    Call this from any module to add a new trip dimension to the cache key
+    without editing semantic_cache.py.
+
+    Example (in Student 3's web_agent.py):
+        from src.services.semantic_cache import register_cache_key_field
+        register_cache_key_field("restaurant_type", lambda v: v.strip().lower(), key_name="restaurant")
+
+    After registration, build_trip_cache_key({"restaurant_type": "vegan", ...}) will
+    include restaurant:vegan in the key automatically.
+
+    Raises ValueError if the field_name is already registered.
+    """
+    if field_name in _CACHE_KEY_FIELDS:
+        raise ValueError(
+            f"Cache key field '{field_name}' is already registered. "
+            "Use a different name or update the existing entry directly."
         )
+    _CACHE_KEY_FIELDS[field_name] = FieldDef(
+        required=required,
+        normalize=normalize,
+        key_name=key_name or field_name,
     )
+    logger.info("Registered new cache key field: %s (key_name=%s)", field_name, key_name or field_name)
+
+
+def build_trip_cache_key(fields: Dict[str, Any]) -> Optional[str]:
+    """
+    Builds a deterministic, versioned, currency-aware structured cache key.
+
+    fields — dict of trip parameters. Known keys:
+        destination_city  (required)
+        duration_days     (required)
+        total_budget      (optional float)
+        currency          (optional str, default "usd") — paired with total_budget
+        num_travelers     (optional int)
+        origin_airport    (optional str, IATA)
+        origin_country    (optional str)
+
+    Returns None when any required field is missing or invalid.
+    Any unknown keys in fields are silently ignored, so future callers can
+    pass extra fields without breaking existing behaviour.
+    """
+    # Pre-process budget: pair it with the currency field before normalization.
+    processed = dict(fields)
+    if "total_budget" in processed and processed["total_budget"] is not None:
+        currency = str(processed.pop("currency", _DEFAULT_CURRENCY) or _DEFAULT_CURRENCY)
+        processed["total_budget"] = (processed["total_budget"], currency)
+    else:
+        processed.pop("currency", None)
+        processed["total_budget"] = None
+
+    segments: List[str] = [f"key_version:{_CACHE_KEY_VERSION}"]
+
+    for field_name, field_def in _CACHE_KEY_FIELDS.items():
+        raw = processed.get(field_name)
+        normalized = field_def.normalize(raw)
+
+        if normalized is None:
+            if field_def.required:
+                return None  # missing required field — key cannot be built
+            continue  # optional field absent — omit from key
+
+        segments.append(f"{field_def.key_name}:{normalized}")
+
+    return normalize_query(" | ".join(segments))
+
+
+def build_trip_cache_key_from_context(
+    *,
+    origin_airport: Optional[str] = None,
+    origin_country: Optional[str] = None,
+    destination_city: Optional[str] = None,
+    duration_days: Optional[int] = None,
+    total_budget: Optional[float] = None,
+    currency: Optional[str] = None,
+    num_travelers: Optional[int] = None,
+) -> Optional[str]:
+    """
+    Backwards-compatible shim for callers that still use keyword arguments.
+    Internally delegates to build_trip_cache_key(dict).
+    """
+    return build_trip_cache_key({
+        "destination_city": destination_city,
+        "duration_days":    duration_days,
+        "total_budget":     total_budget,
+        "currency":         currency,
+        "num_travelers":    num_travelers,
+        "origin_airport":   origin_airport,
+        "origin_country":   origin_country,
+    })
 
 def _cleanup_cache(route: str) -> None:
     """
