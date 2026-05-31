@@ -22,7 +22,7 @@ logger = get_logger("cache_store")
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cache_store")
 
 
-def _background_store(query: str, answer: str) -> None:
+def _background_store(query: str, answer: str, trip_context: dict) -> None:
     """
     Compresses and stores a cache entry in the background.
 
@@ -31,7 +31,7 @@ def _background_store(query: str, answer: str) -> None:
     """
     try:
         compressed = compress_answer(answer)
-        
+
         logger.info("Cache store writing entry. query=%s answer_chars=%d", query, len(answer))
 
         store_cache_entry(
@@ -40,6 +40,7 @@ def _background_store(query: str, answer: str) -> None:
             route="cache_check",
             compressed_answer=compressed,
             source="db",
+            trip_context=trip_context or None,
         )
         logger.info("Background cache store completed for query=%s", query)
     except Exception as error:
@@ -70,7 +71,8 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
-    _background_store(query, answer)
+    trip_ctx = state.get("trip_context") or {}
+    _background_store(query, answer, trip_ctx)
     logger.info("Cache store completed synchronously for query=%s", query)
     
     return {}

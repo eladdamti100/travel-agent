@@ -96,6 +96,7 @@ def run_cache_check(state: AgentState) -> dict:
         query=query,
         route="cache_check",
         threshold=DEFAULT_HIT_THRESHOLD,
+        trip_context=ctx.model_dump(),
     )
 
     logger.info(

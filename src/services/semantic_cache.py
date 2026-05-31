@@ -151,6 +151,8 @@ def initialize_cache_db() -> None:
                     compressed_answer TEXT NOT NULL DEFAULT '',
                     source TEXT NOT NULL DEFAULT 'db',
                     ttl_days INTEGER NOT NULL DEFAULT 30,
+                    trip_vector_json TEXT,
+                    trip_context_json TEXT,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -162,6 +164,8 @@ def initialize_cache_db() -> None:
                 "ALTER TABLE semantic_cache ADD COLUMN compressed_answer TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE semantic_cache ADD COLUMN source TEXT NOT NULL DEFAULT 'db'",
                 "ALTER TABLE semantic_cache ADD COLUMN ttl_days INTEGER NOT NULL DEFAULT 30",
+                "ALTER TABLE semantic_cache ADD COLUMN trip_vector_json TEXT",
+                "ALTER TABLE semantic_cache ADD COLUMN trip_context_json TEXT",
             ):
                 try:
                     conn.execute(migration)
@@ -250,7 +254,7 @@ def _load_embedding_index(route: str) -> List[Dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT id, query, embedding_json
+            SELECT id, query, embedding_json, trip_vector_json, trip_context_json
             FROM semantic_cache
             WHERE route = ?
               AND created_at >= datetime('now', '-' || ttl_days || ' days')
@@ -361,6 +365,7 @@ def find_cached_answer(
     *,
     route: str = "cache_check",
     threshold: float = DEFAULT_HIT_THRESHOLD,
+    trip_context: Optional[Dict[str, Any]] = None,
 ) -> CacheCheckResult:
     """
     Finds the best semantic cache match for the given query.
@@ -405,6 +410,26 @@ def find_cached_answer(
 
     query_embedding = embed_text(normalized_query)
 
+    # Build hybrid trip vector for the query when TripContext is available.
+    query_trip_vec: Optional[np.ndarray] = None
+    query_coverage: float = 0.0
+    effective_threshold = threshold
+    if trip_context:
+        try:
+            from src.services.trip_vector import (
+                adjusted_threshold,
+                build_trip_vector,
+                check_hard_filters,
+            )
+            query_trip_vec, query_coverage = build_trip_vector(query_embedding, trip_context)
+            effective_threshold = adjusted_threshold(threshold, query_coverage)
+            logger.info(
+                "Trip vector built. coverage=%.2f threshold %.2f→%.2f",
+                query_coverage, threshold, effective_threshold,
+            )
+        except Exception as exc:
+            logger.warning("Query trip vector build failed — using text-only: %s", exc)
+
     index_rows = _load_embedding_index(route=route)
 
     if not index_rows:
@@ -416,51 +441,78 @@ def find_cached_answer(
             reason="Semantic cache is empty for this route.",
         )
 
-    # Batch cosine similarity — build a (N, D) matrix from all cached embeddings
-    # and compute scores in one numpy dot product instead of N separate calls.
-    # Embeddings are already L2-normalised so dot product == cosine similarity.
-    valid_rows: List[Dict[str, Any]] = []
-    embedding_matrix_rows: List[List[float]] = []
-
-    for row in index_rows:
-        try:
-            vec = json.loads(row["embedding_json"])
-            embedding_matrix_rows.append(vec)
-            valid_rows.append(row)
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
-            logger.warning("Skipping invalid cache embedding: %s", error)
-
     best_score = 0.0
     best_id: Optional[int] = None
     best_query: Optional[str] = None
 
-    if embedding_matrix_rows:
+    # ── Hybrid similarity scan ────────────────────────────────────────────────
+    # For each row:
+    #   - If both query and row have trip vectors: apply hard filters first,
+    #     then use hybrid vector dot product.
+    #   - Otherwise: fall back to text-only batch cosine.
+    # We separate rows into two groups and batch each independently.
+
+    hybrid_rows:   List[Dict[str, Any]] = []
+    textonly_rows: List[Dict[str, Any]] = []
+    textonly_vecs: List[List[float]]    = []
+
+    for row in index_rows:
+        if query_trip_vec is not None and row.get("trip_vector_json"):
+            hybrid_rows.append(row)
+        else:
+            try:
+                vec = json.loads(row["embedding_json"])
+                textonly_vecs.append(vec)
+                textonly_rows.append(row)
+            except (json.JSONDecodeError, TypeError, ValueError) as err:
+                logger.warning("Skipping invalid cache embedding: %s", err)
+
+    # -- Hybrid path --
+    if hybrid_rows and query_trip_vec is not None:
+        from src.services.trip_vector import check_hard_filters
+        for row in hybrid_rows:
+            try:
+                cached_ctx = json.loads(row["trip_context_json"] or "{}")
+                passes, reason = check_hard_filters(trip_context, cached_ctx)
+                if not passes:
+                    logger.debug("Hard filter rejected row id=%s: %s", row["id"], reason)
+                    continue
+                row_vec = np.array(json.loads(row["trip_vector_json"]), dtype=np.float32)
+                score = float(np.dot(query_trip_vec, row_vec))
+            except (json.JSONDecodeError, TypeError, ValueError) as err:
+                logger.warning("Skipping invalid trip vector row id=%s: %s", row["id"], err)
+                continue
+            if score > best_score:
+                best_score = score
+                best_id = row["id"]
+                best_query = row["query"]
+
+    # -- Text-only batch path --
+    if textonly_vecs:
         q_vec = np.array(query_embedding, dtype=np.float32)
-        matrix = np.array(embedding_matrix_rows, dtype=np.float32)  # (N, D)
+        matrix = np.array(textonly_vecs, dtype=np.float32)
 
         if matrix.ndim == 2 and matrix.shape[1] == q_vec.shape[0]:
-            scores = matrix @ q_vec                                   # (N,) — one BLAS call
+            scores = matrix @ q_vec
         else:
-            # Dimension mismatch — embedding model changed since entries were stored.
-            # Fall back to per-row similarity so mismatched rows get score 0.
             logger.warning(
-                "Embedding dimension mismatch: matrix=%s query_dim=%d — "
-                "falling back to per-row similarity.",
-                matrix.shape,
-                q_vec.shape[0],
+                "Embedding dimension mismatch: matrix=%s query_dim=%d — per-row fallback.",
+                matrix.shape, q_vec.shape[0],
             )
             scores = np.array([
                 float(np.dot(q_vec, np.array(r, dtype=np.float32)))
                 if len(r) == q_vec.shape[0] else 0.0
-                for r in embedding_matrix_rows
+                for r in textonly_vecs
             ])
 
-        best_idx = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
-        best_id = valid_rows[best_idx]["id"]
-        best_query = valid_rows[best_idx]["query"]
+        text_best_idx = int(np.argmax(scores))
+        text_best_score = float(scores[text_best_idx])
+        if text_best_score > best_score:
+            best_score = text_best_score
+            best_id = textonly_rows[text_best_idx]["id"]
+            best_query = textonly_rows[text_best_idx]["query"]
 
-    if best_id is not None and best_score >= threshold:
+    if best_id is not None and best_score >= effective_threshold:
         full_row = _fetch_row_by_id(best_id)
 
         logger.info(
@@ -504,6 +556,7 @@ def store_cache_entry(
     compressed_answer: str = "",
     source: str = "db",
     ttl_days: Optional[int] = None,
+    trip_context: Optional[Dict[str, Any]] = None,
 ) -> CacheEntry:
     """
     Stores a new semantic cache entry.
@@ -513,6 +566,10 @@ def store_cache_entry(
       source="web" → TTL_DAYS_WEB (3 days)
     Pass ttl_days explicitly only to override the default policy.
     Maximum ttl_days is capped at _MAX_TTL_DAYS (365 days).
+
+    trip_context — optional TripContext dict. When provided, a multi-dimensional
+    travel vector is stored alongside the text embedding to enable hybrid
+    similarity lookup with hard budget/duration filters.
     """
     if source not in _VALID_SOURCES:
         raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
@@ -529,6 +586,19 @@ def store_cache_entry(
     normalized_query = normalize_query(query)
     embedding = embed_text(normalized_query)
     now = datetime.now(timezone.utc)
+
+    # Build multi-dimensional trip vector when TripContext is available.
+    trip_vector_json_str: Optional[str] = None
+    trip_context_json_str: Optional[str] = None
+    if trip_context:
+        try:
+            from src.services.trip_vector import build_trip_vector
+            trip_vec, coverage = build_trip_vector(embedding, trip_context)
+            trip_vector_json_str = json.dumps(trip_vec.tolist())
+            trip_context_json_str = json.dumps(trip_context)
+            logger.info("Trip vector stored. coverage=%.2f query=%s", coverage, query)
+        except Exception as exc:
+            logger.warning("Trip vector build failed — storing text-only: %s", exc)
 
     entry = CacheEntry(
         query=query,
@@ -571,9 +641,11 @@ def store_cache_entry(
                 compressed_answer,
                 source,
                 ttl_days,
+                trip_vector_json,
+                trip_context_json,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.query,
@@ -585,6 +657,8 @@ def store_cache_entry(
                 entry.compressed_answer,
                 entry.source,
                 entry.ttl_days,
+                trip_vector_json_str,
+                trip_context_json_str,
                 entry.timestamp.isoformat(),
             ),
         )
@@ -641,24 +715,9 @@ def _normalize_country(v: Any) -> Optional[str]:
     return str(v).strip().lower()
 
 
-def _normalize_duration_bucket(v: Any) -> Optional[str]:
-    """
-    Buckets trip duration so nearby durations share a cache entry.
-    1–3  → short | 4–7 → week | 8–14 → extended | 15+ → long
-    """
-    try:
-        days = int(v)
-    except (TypeError, ValueError):
-        return None
-    if days <= 0:
-        return None
-    if days <= 3:
-        return "short"
-    if days <= 7:
-        return "week"
-    if days <= 14:
-        return "extended"
-    return "long"
+# Imported from trip_vector to avoid circular dependency — trip_vector must not
+# import semantic_cache at module level, so the shared function lives there.
+from src.services.trip_vector import normalize_duration_bucket as _normalize_duration_bucket
 
 
 def _normalize_budget_with_currency(v: Any, currency: str = _DEFAULT_CURRENCY) -> Optional[str]:
