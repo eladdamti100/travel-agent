@@ -6,6 +6,7 @@ Stores successful full-trip answers in the semantic cache after a cache miss.
 This is used only for requests that passed through cache_check and then
 continued to the legacy planner/agent because no cached answer was found.
 """
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -20,6 +21,7 @@ from src.utils.logger import get_logger
 logger = get_logger("cache_store")
 
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cache_store")
+atexit.register(_executor.shutdown, wait=True)  # flush pending writes on clean exit
 
 
 def _background_store(query: str, answer: str, trip_context: dict) -> None:

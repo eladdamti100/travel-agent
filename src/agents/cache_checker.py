@@ -67,12 +67,11 @@ def run_cache_check(state: AgentState) -> dict:
     ctx = extract_trip_context_deterministic(state)
     
     # Build structured cache key ONLY. Do not fall back to raw text.
-    # TODO(Student 4): add currency field to TripContext so non-USD budgets
-    # produce distinct cache keys (e.g. €2000 ≠ $2000).
     query = build_trip_cache_key({
         "destination_city": ctx.destination_city,
         "duration_days":    ctx.duration_days,
         "total_budget":     ctx.total_budget,
+        "currency":         ctx.currency,
         "num_travelers":    ctx.num_travelers,
         "origin_airport":   ctx.origin_airport,
         "origin_country":   ctx.origin_country,
@@ -116,8 +115,6 @@ def run_cache_check(state: AgentState) -> dict:
             result.ttl_days,
         )
 
-        # TODO(Student 4): add cache_source: str and cache_ttl_days: int to state.py
-        # so these values are accessible to the rest of the graph and the UI.
         return {
             "cache_status": CacheStatus.HIT.value,
             "cache_similarity_score": result.similarity_score,
