@@ -142,11 +142,16 @@ def run_validator(state: AgentState) -> dict:
         return {"validation_status": "approved"}
 
     # Stage 2: travel keyword fast-approve — skip ~200ms Groq call.
+    # Bypassed when the vector guard detects semantic similarity to unsafe queries,
+    # so paraphrased injection attempts don't slip through on travel keywords.
     if InputValidator.is_clearly_travel(last_content):
-        logger.info("Validator: fast-approved (travel keyword present).")
-        return {"validation_status": "approved"}
+        from src.agents.vector_guard import is_vector_threat
+        if not is_vector_threat(last_content):
+            logger.info("Validator: fast-approved (travel keyword, vector clear).")
+            return {"validation_status": "approved"}
+        logger.info("Validator: travel keyword present but vector guard flagged — routing to LLM.")
 
-    # Stage 3: ambiguous message — consult Groq LLM.
+    # Stage 3: ambiguous message OR vector-flagged message — consult Groq LLM.
     result = ai_validate(last_content)
     if result is None:
         logger.info("Validator: LLM unavailable, regex approved.")
