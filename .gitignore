@@ -6,6 +6,8 @@ venv/
 .venv/
 env/
 
+CLAUDE.md
+
 # Python
 __pycache__/
 *.py[cod]
