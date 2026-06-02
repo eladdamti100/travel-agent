@@ -303,20 +303,31 @@ def _extract_origin_airport(text: str) -> Optional[str]:
     Extracts a departure airport code from the user message.
 
     Supported examples:
-      - from TLV
-      - flying from JFK
+      - from TLV / form TLV (typo)
+      - flying from JFK / fly from LHR / fly form TLV
       - depart from LHR
       - origin airport TLV
+      - TLV (bare code)
+      - TLV, Israeli passport (code-first)
+      - airport: TLV / airport is TLV / airport TLV
     """
     raw_text = text.upper()
 
     patterns = [
-        r"\bFROM\s+([A-Z]{3})\b",
-        r"\bFLYING\s+FROM\s+([A-Z]{3})\b",
-        r"\bDEPART(?:ING)?\s+FROM\s+([A-Z]{3})\b",
+        # "from TLV" or "form TLV" (common typo)
+        r"\b(?:FROM|FORM)\s+([A-Z]{3})\b",
+        # "flying from/form TLV" or "fly from/form TLV"
+        r"\bFLY(?:ING)?\s+(?:FROM|FORM)\s+([A-Z]{3})\b",
+        # "departing from TLV"
+        r"\bDEPART(?:ING)?\s+(?:FROM|FORM)\s+([A-Z]{3})\b",
+        # "origin airport TLV"
         r"\bORIGIN\s+AIRPORT\s+([A-Z]{3})\b",
-        r"^([A-Z]{3})$",                           # bare code: "TLV"
-        r"^([A-Z]{3})[,\s]",                       # code first: "TLV, Israeli passport"
+        # "airport: TLV" / "airport is TLV" / "airport TLV"
+        r"\bAIRPORT\s*(?:IS|:)?\s*([A-Z]{3})\b",
+        # bare code on its own line (HITL short reply: "TLV")
+        r"^([A-Z]{3})$",
+        # code-first with punctuation/space (HITL short reply: "TLV.")
+        r"^([A-Z]{3})[,\.\s]",
     ]
 
     for pattern in patterns:

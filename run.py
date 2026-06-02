@@ -5,6 +5,18 @@ Run:  python run.py
       ./travel.sh
 """
 
+# ── Silence all third-party noise BEFORE any library import ──────────────────
+# HuggingFace / sentence-transformers check these env-vars at import time, so
+# they must be set here — setting them inside semantic_cache.py is too late.
+import os
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TQDM_DISABLE"] = "1"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TORCHINDUCTOR_DISABLE"] = "1"
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+# ─────────────────────────────────────────────────────────────────────────────
+
 import logging
 import warnings
 

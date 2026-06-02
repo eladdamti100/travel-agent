@@ -6,7 +6,7 @@ import os
 from typing import Optional
 
 from rich.columns import Columns
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -90,6 +90,10 @@ def print_banner() -> None:
 def print_agent(text: str) -> None:
     """
     Prints an AI message using the appropriate terminal panel style.
+
+    When the text contains section separators (written by _generate_final_plan),
+    each section is rendered as Markdown and the gaps between sections are filled
+    with a green dashed Rule that matches Marco's border colour.
     """
     if is_review(text):
         clean = text.replace("\n---\n**Plan Review (auto):**\n", "").strip()
@@ -106,6 +110,22 @@ def print_agent(text: str) -> None:
             Markdown(text),
             title="[blue]⚡ Quick Lookup[/blue]",
             border_style="blue",
+            padding=(1, 2),
+        ))
+        return
+
+    sections = text.split("\n\n---\n\n")
+    if len(sections) > 1:
+        renderables = []
+        for i, section in enumerate(sections):
+            if section.strip():
+                renderables.append(Markdown(section))
+            if i < len(sections) - 1:
+                renderables.append(Rule(characters="─ ", style="green"))
+        console.print(Panel(
+            Group(*renderables),
+            title="[green]✈  Marco[/green]",
+            border_style="green",
             padding=(1, 2),
         ))
         return

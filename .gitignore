@@ -1,8 +1,12 @@
 # Environment
 .env
+.env.*
 taenv/
 venv/
 .venv/
+env/
+
+CLAUDE.md
 
 CLAUDE.md
 
@@ -13,16 +17,45 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.egg
+.eggs/
+*.spec
 
 # Generated databases (recreated by db_init)
-data/*
+data/
 data/travel_agency.db
 data/checkpoints.db
+data/semantic_cache.db
+
 # Logs
 logs/
+*.log
 
 # Test artifacts
 .pytest_cache/
 test_results.txt
-
+.coverage
 .early.coverage
+htmlcov/
+
+# AI assistant reference file
+CLAUDE.md
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sentence-transformers model cache
+.cache/
+models/
+
+# MyPy / type checkers
+.mypy_cache/
+.ruff_cache/
