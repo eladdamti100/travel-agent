@@ -145,21 +145,11 @@ def route_after_critic(state: AgentState) -> str:
     """
     Conditional edge after the critic node.
 
-    If the critic rejected the plan and we haven't hit the attempt cap,
-    route back to master_planner so it can replan with the suggestions.
-
-    Once the cap is reached (or the critic passes), proceed to hitl_approval
-    so the human can review the best plan we have.
+    Always routes to hitl_approval — the human decides what to do with
+    the plan (approve, edit, or cancel) regardless of critic result.
+    The critic score and suggestions are shown in the HITL panel so the
+    user can make an informed decision.
     """
-    from src.graph.nodes import MAX_CRITIC_ATTEMPTS
-
-    critique = state.get("critique_result") or {}
-    passed = critique.get("passed", True)
-    attempts = state.get("critic_attempts") or 0
-
-    if not passed and attempts < MAX_CRITIC_ATTEMPTS:
-        return "master_planner"
-
     return "hitl_approval"
 
 

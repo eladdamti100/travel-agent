@@ -75,7 +75,13 @@ def extract_metadata(state: AgentState) -> dict:
     from src.utils.modification_detector import detect_modification_context
 
     messages = state.get("messages", [])
-    updates: dict = {"tool_call_count": 0, "force_replan": False}
+    updates: dict = {
+        "tool_call_count": 0,
+        "force_replan": False,
+        "critic_attempts": 0,
+        "hitl_decision": "",
+        "hitl_feedback": "",
+    }
 
     if not messages:
         return updates

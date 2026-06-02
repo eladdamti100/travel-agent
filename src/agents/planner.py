@@ -127,9 +127,13 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
     allowed_tasks: Optional[Set[str]] = None
 
+    is_critic_replan = (state.get("critic_attempts") or 0) > 0 and not is_hitl_resume
+
     existing_task_results = (
         state.get("pending_planner_task_results", {}) or {}
         if is_hitl_resume
+        else state.get("planner_task_results", {}) or {}
+        if is_critic_replan
         else {}
     )
 
