@@ -11,6 +11,7 @@ from langgraph.prebuilt import ToolNode
 from src.agents.cache_checker import run_cache_check
 from src.agents.cache_store import run_cache_store
 from src.agents.context_enricher import extract_trip_context_deterministic
+from src.agents.critic import critique_plan
 from src.agents.master_orchestrator import run_master_orchestrator
 from src.agents.planner import run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
@@ -413,6 +414,87 @@ def reviewer_node(state: AgentState) -> dict:
         "messages": [
             AIMessage(content=f"\n---\n**Plan Review (auto):**\n{review}")
         ]
+    }
+
+
+# ── Node 11b: Critic ─────────────────────────────────────────────────────────
+
+MAX_CRITIC_ATTEMPTS = 2
+
+
+def critic_node(state: AgentState) -> dict:
+    """
+    Runs the deterministic plan critic and stores the result in state.
+
+    Pure logic wrapper — critique_plan() does all the work.
+    route_after_critic in router.py decides whether to replan or proceed.
+    """
+    result = critique_plan(state)
+
+    attempts = state.get("critic_attempts") or 0
+    attempts += 1
+
+    logger.info(
+        "Critic: passed=%s score=%d attempt=%d/%d",
+        result.passed,
+        result.score,
+        attempts,
+        MAX_CRITIC_ATTEMPTS,
+    )
+
+    return {
+        "critic_attempts": attempts,
+        "critique_result": {
+            "passed": result.passed,
+            "score": result.score,
+            "reason": result.reason,
+            "issues": result.issues,
+            "suggestions": result.suggestions,
+            "completeness": result.completeness,
+            "budget": {
+                "budget": result.budget.budget,
+                "flight_cost": result.budget.flight_cost,
+                "hotel_cost": result.budget.hotel_cost,
+                "activities_cost": result.budget.activities_cost,
+                "total_estimated": result.budget.total_estimated,
+                "overage": result.budget.overage,
+                "within_budget": result.budget.within_budget,
+            },
+        },
+    }
+
+
+# ── Node 11c: HITL Approval ───────────────────────────────────────────────────
+
+def hitl_approval_node(state: AgentState) -> dict:
+    """
+    Suspends the graph so the user can approve, edit, or cancel the plan.
+
+    LangGraph's interrupt() persists the entire state to SqliteSaver and raises
+    GraphInterrupt. main.py catches the interrupt, shows the plan with
+    Approve / Edit / Cancel options, then resumes the graph via
+    graph.invoke(Command(resume=decision), config).
+
+    The resume value is a dict: {"decision": "approved"|"edit"|"cancelled",
+                                  "feedback": "<user text>"}
+    """
+    from langgraph.types import interrupt
+
+    logger.info("HITL approval node: suspending graph for user review.")
+
+    user_response = interrupt({
+        "type": "plan_approval",
+        "critique": state.get("critique_result", {}),
+    })
+
+    decision = user_response.get("decision", "approved") if isinstance(user_response, dict) else "approved"
+    feedback = user_response.get("feedback", "") if isinstance(user_response, dict) else ""
+
+    logger.info("HITL approval: decision=%s", decision)
+
+    return {
+        "hitl_decision": decision,
+        "hitl_feedback": feedback,
     }
 
 

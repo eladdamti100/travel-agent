@@ -7,6 +7,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 # Suppress tqdm progress bars globally (embedding model loading)
 os.environ["TQDM_DISABLE"] = "1"
@@ -25,6 +26,7 @@ from src.cli.ui import (
     print_banner,
     print_status,
 )
+from langgraph.types import Command
 from src.graph.workflow import graph
 from src.utils.logger import get_logger
 
@@ -98,6 +100,56 @@ def is_rate_limit_error(error: str) -> bool:
         or "quota" in error.lower()
         or "rate limit" in error.lower()
     )
+
+
+def _prompt_plan_approval(critique: dict) -> dict:
+    """
+    Shows the critic summary and prompts the user to Approve, Edit, or Cancel.
+
+    Returns {"decision": "approved"|"edit"|"cancelled", "feedback": str}.
+    """
+    score = critique.get("score", "?")
+    reason = critique.get("reason", "")
+    issues = critique.get("issues", [])
+    suggestions = critique.get("suggestions", [])
+
+    console.print()
+    console.print(Panel(
+        f"[bold]Score:[/bold] {score}/10\n"
+        f"[bold]Summary:[/bold] {reason}\n"
+        + (
+            "\n[bold]Issues:[/bold]\n" + "\n".join(f"  • {i}" for i in issues)
+            if issues else ""
+        )
+        + (
+            "\n[bold]Suggestions:[/bold]\n" + "\n".join(f"  → {s}" for s in suggestions)
+            if suggestions else ""
+        ),
+        title="[cyan]Critic Review[/cyan]",
+        border_style="cyan",
+    ))
+    console.print()
+
+    while True:
+        choice = Prompt.ask(
+            "[bold cyan]What would you like to do?[/bold cyan] "
+            "[[green]A[/green]]pprove  [[yellow]E[/yellow]]dit  [[red]C[/red]]ancel",
+        ).strip().lower()
+
+        if choice in ("a", "approve", "approved"):
+            return {"decision": "approved", "feedback": ""}
+
+        if choice in ("c", "cancel", "cancelled"):
+            console.print("[dim]Trip planning cancelled.[/dim]")
+            return {"decision": "cancelled", "feedback": ""}
+
+        if choice in ("e", "edit"):
+            feedback = Prompt.ask(
+                "[bold cyan]Describe what you'd like changed[/bold cyan]"
+            ).strip()
+            return {"decision": "edit", "feedback": feedback}
+
+        console.print("[dim]Please enter A, E, or C.[/dim]")
 
 
 def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
@@ -208,18 +260,33 @@ def run() -> None:
 
         final_plan_text: str | None = None
         plan_nodes = {"master_planner", "cache_check"}
+        pending_interrupt: Optional[dict] = None
 
-        try:
+        def _stream_graph(input_payload):
+            """Stream one graph pass, return (final_plan_text, interrupt_payload)."""
+            nonlocal final_plan_text, pending_interrupt
+
             with console.status("[tool.call]Starting...[/tool.call]", spinner="dots") as status:
                 for event in graph.stream(
-                    {"messages": [("user", user_input)], "is_admin": is_admin},
+                    input_payload,
                     config,
                     stream_mode="updates",
                 ):
                     node_start_time = time.perf_counter()
-
                     node_name = next(iter(event))
                     node_data = event[node_name]
+
+                    # LangGraph surfaces interrupts as {"__interrupt__": [...]}
+                    if node_name == "__interrupt__":
+                        interrupts = node_data if isinstance(node_data, (list, tuple)) else [node_data]
+                        for intr in interrupts:
+                            value = getattr(intr, "value", intr) if not isinstance(intr, dict) else intr
+                            if isinstance(value, dict) and value.get("type") == "plan_approval":
+                                pending_interrupt = value
+                        node_timings[node_name] = node_timings.get(node_name, 0.0) + (
+                            time.perf_counter() - node_start_time
+                        )
+                        continue
 
                     if node_data is None:
                         node_timings[node_name] = node_timings.get(node_name, 0.0) + (
@@ -260,6 +327,22 @@ def run() -> None:
                     node_timings[node_name] = node_timings.get(node_name, 0.0) + (
                         time.perf_counter() - node_start_time
                     )
+
+        try:
+            _stream_graph({"messages": [("user", user_input)], "is_admin": is_admin})
+
+            # Handle plan-approval interrupt produced by hitl_approval_node.
+            while pending_interrupt is not None:
+                critique = pending_interrupt.get("critique", {})
+                pending_interrupt = None
+
+                user_response = _prompt_plan_approval(critique)
+
+                if user_response["decision"] == "cancelled":
+                    console.print("\n[dim]Trip planning cancelled. Safe travels![/dim]\n")
+                    break
+
+                _stream_graph(Command(resume=user_response))
 
             print_status(
                 city=accumulated.get("current_city"),

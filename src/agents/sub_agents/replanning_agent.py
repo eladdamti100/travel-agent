@@ -30,6 +30,7 @@ class ReplanningResult:
     changed_tasks: List[PlannerTaskType]
     preserved_results: Dict[str, str]
     invalidated_results: Dict[str, str]
+    hitl_feedback: str = ""
 
 
 def analyze_replanning(
@@ -37,6 +38,7 @@ def analyze_replanning(
     old_context: TripContext,
     new_context: TripContext,
     existing_results: Dict[str, str],
+    hitl_feedback: str = "",
 ) -> ReplanningResult:
     """
     Determines which planner tasks must rerun after user modifications.
@@ -61,6 +63,7 @@ def analyze_replanning(
             changed_tasks=[],
             preserved_results=dict(existing_results),
             invalidated_results={},
+            hitl_feedback=hitl_feedback,
         )
 
     invalidated_keys = {task.value for task in changed_tasks}
@@ -93,4 +96,5 @@ def analyze_replanning(
         changed_tasks=changed_tasks,
         preserved_results=preserved_results,
         invalidated_results=invalidated_results,
+        hitl_feedback=hitl_feedback,
     )

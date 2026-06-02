@@ -27,12 +27,26 @@ validator
                                                                                │
                                                                                ▼ route_after_master_planner
                                                                                ├─ [missing_required_info] → END
-                                                                               └─ [final_plan] → cache_store → summarizer → END
+                                                                               └─ [final_plan] → critic
+                                                                                                    │
+                                                                                                    ▼ route_after_critic
+                                                                                                    ├─ [rejected] → master_planner (replan, attempt++)
+                                                                                                    └─ [approved] → hitl_approval
+                                                                                                                        │
+                                                                                                                        ▼ route_after_hitl
+                                                                                                                        ├─ [approved]  → cache_store → summarizer → END
+                                                                                                                        ├─ [edit]      → master_planner (with hitl_feedback)
+                                                                                                                        └─ [cancelled] → END
 
 HITL Resume Flow:
   When a previous planner turn stopped to ask for missing trip details, the next
   user reply bypasses master_orchestrator, researcher, and semantic cache, and
   resumes planning directly from the saved pending TripContext.
+
+Plan-approval HITL:
+  After a complete plan is produced, the critic runs and then the graph suspends
+  for user approval. The user can approve (proceed to cache), edit (replan with
+  feedback), or cancel (end gracefully).
 
 Legacy path:
   The agent/tools loop remains registered for backward compatibility.
@@ -57,7 +71,9 @@ from src.graph.nodes import (
     cache_store_node,
     call_model,
     circuit_breaker,
+    critic_node,
     extract_metadata,
+    hitl_approval_node,
     master_orchestrator_node,
     master_planner_node,
     preferences_memory_node,
@@ -69,6 +85,8 @@ from src.graph.nodes import (
 )
 from src.graph.router import (
     route_after_cache_check,
+    route_after_critic,
+    route_after_hitl,
     route_after_master_planner,
     route_after_metadata,
     route_after_orchestrator,
@@ -103,6 +121,8 @@ def build_graph():
     builder.add_node("researcher", researcher_node)
     builder.add_node("cache_check", cache_check_node)
     builder.add_node("master_planner", master_planner_node)
+    builder.add_node("critic", critic_node)
+    builder.add_node("hitl_approval", hitl_approval_node)
     builder.add_node("cache_store", cache_store_node)
 
     # Legacy nodes kept for the agent/tools loop path.
@@ -157,8 +177,26 @@ def build_graph():
         "master_planner",
         route_after_master_planner,
         {
+            "critic": "critic",
+            END: END,
+        },
+    )
+
+    builder.add_conditional_edges(
+        "critic",
+        route_after_critic,
+        {
+            "master_planner": "master_planner",
+            "hitl_approval": "hitl_approval",
+        },
+    )
+
+    builder.add_conditional_edges(
+        "hitl_approval",
+        route_after_hitl,
+        {
             "cache_store": "cache_store",
-            "summarizer": "summarizer",
+            "master_planner": "master_planner",
             END: END,
         },
     )

@@ -130,16 +130,53 @@ def route_after_master_planner(state: AgentState) -> str:
     """
     Conditional edge after the new master planner.
 
-    If the planner produced a HITL question because required trip details are
-    missing, end the graph after showing that question.
+    HITL stop (missing trip details) ends the graph immediately — the question
+    was already added to messages by the planner.
 
-    If the planner produced a complete final answer after cache miss, store it
-    in semantic cache before summarizing.
+    A complete plan always proceeds to the critic before any caching.
     """
     if state.get("planner_status") == "missing_required_info":
         return END
 
-    if state.get("cache_status") == "miss":
-        return "cache_store"
+    return "critic"
 
-    return "summarizer"
+
+def route_after_critic(state: AgentState) -> str:
+    """
+    Conditional edge after the critic node.
+
+    If the critic rejected the plan and we haven't hit the attempt cap,
+    route back to master_planner so it can replan with the suggestions.
+
+    Once the cap is reached (or the critic passes), proceed to hitl_approval
+    so the human can review the best plan we have.
+    """
+    from src.graph.nodes import MAX_CRITIC_ATTEMPTS
+
+    critique = state.get("critique_result") or {}
+    passed = critique.get("passed", True)
+    attempts = state.get("critic_attempts") or 0
+
+    if not passed and attempts < MAX_CRITIC_ATTEMPTS:
+        return "master_planner"
+
+    return "hitl_approval"
+
+
+def route_after_hitl(state: AgentState) -> str:
+    """
+    Conditional edge after the hitl_approval node.
+
+    approved  → cache_store (then summarizer → END)
+    edit      → master_planner (hitl_feedback is in state for the replanner)
+    cancelled → END
+    """
+    decision = state.get("hitl_decision", "approved")
+
+    if decision == "cancelled":
+        return END
+
+    if decision == "edit":
+        return "master_planner"
+
+    return "cache_store"

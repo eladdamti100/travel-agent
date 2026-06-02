@@ -47,6 +47,11 @@ class AgentState(TypedDict):
     pending_missing_fields      — required TripContext fields still missing
     pending_hitl_question       — last HITL question shown to the user
     pending_planner_task_results — planner tool results already collected before HITL stop
+
+    critic_attempts             — number of times the critic has rejected the plan this turn
+    hitl_decision               — "approved" | "edit" | "cancelled" set by hitl_approval node
+    critique_result             — serialised CritiqueResult dict from critic.py
+    hitl_feedback               — free-text user feedback injected on the "edit" path
     """
 
     messages: Annotated[list, add_messages]
@@ -88,3 +93,8 @@ class AgentState(TypedDict):
     pending_hitl_question: str
     pending_planner_task_results: dict
     planning_mode: str
+
+    critic_attempts: int
+    hitl_decision: str
+    critique_result: dict
+    hitl_feedback: str

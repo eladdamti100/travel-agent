@@ -102,6 +102,8 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         or state.get("awaiting_user_clarification")
     )
 
+    hitl_feedback: str = state.get("hitl_feedback") or ""
+
     # Check if a previous trip context actually exists in the state
     has_previous_context = bool(state.get("trip_context"))
 
@@ -144,6 +146,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
             old_context=old_context,
             new_context=deterministic_context,
             existing_results=state.get("planner_task_results", {}) or {},
+            hitl_feedback=hitl_feedback,
         )
 
         existing_task_results = replanning_result.preserved_results
@@ -291,6 +294,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         dependency_result=final_dependency_result,
         task_results=task_results,
         planning_mode=planning_mode,
+        hitl_feedback=hitl_feedback,
     )
 
     updates["planner_status"] = PlannerStatus.READY.value
@@ -303,6 +307,9 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     updates["pending_hitl_question"] = ""
     updates["pending_planner_task_results"] = {}
     updates["force_replan"] = False
+    updates["hitl_feedback"] = ""
+    updates["hitl_decision"] = ""
+    updates["critic_attempts"] = 0
     
     logger.info("Master planner completed final plan. planning_mode=%s", planning_mode)
     return updates
@@ -434,6 +441,7 @@ async def _generate_final_plan(
     dependency_result: DependencyCheckResult,
     task_results: Dict[str, str],
     planning_mode: str = "full_planning",
+    hitl_feedback: str = "",
 ) -> str:
     """
     Builds the final plan in three guaranteed sections.
@@ -453,6 +461,7 @@ async def _generate_final_plan(
         db_results=db_results,
         web_results=web_results,
         planning_mode=planning_mode,
+        hitl_feedback=hitl_feedback,
     )
 
     _sep = "\n\n---\n\n"
@@ -804,6 +813,7 @@ async def _generate_notes_section(
     db_results: Dict[str, str],
     web_results: Dict[str, str],
     planning_mode: str,
+    hitl_feedback: str = "",
 ) -> str:
     """Asks the LLM for Section 3 (Notes and Assumptions) only — a focused, short call."""
     model = get_model(temperature=0)
@@ -811,11 +821,18 @@ async def _generate_notes_section(
     cost_raw = db_results.get("calculate_trip_cost", "")
     missing_fields = [r.field_name for r in dependency_result.missing_requirements]
 
+    feedback_line = (
+        f"User requested changes: {hitl_feedback}\n"
+        if hitl_feedback
+        else ""
+    )
+
     response = await model.ainvoke([
         SystemMessage(content=get_prompt("final_answer_prompt")),
         HumanMessage(
             content=(
                 f"Planning mode: {planning_mode}\n"
+                f"{feedback_line}"
                 f"Traveler budget: ${context.total_budget} {context.currency or 'USD'}\n"
                 f"Cost result: {cost_raw or 'not calculated'}\n"
                 f"Missing required fields: {missing_fields or 'none'}\n"
