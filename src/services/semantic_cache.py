@@ -121,6 +121,21 @@ def _get_embedding_model() -> SentenceTransformer:
     return _embedding_model
 
 
+def warm_embedding_model() -> bool:
+    """
+    Eagerly loads the embedding model so the first user turn is not delayed.
+
+    Returns True when the model had to be downloaded, False when it was already
+    cached locally — callers can use this to show a friendly first-run message.
+    """
+    model_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    already_cached = model_cache.exists() and any(
+        "all-MiniLM-L6-v2" in p.name for p in model_cache.iterdir()
+    )
+    _get_embedding_model()
+    return not already_cached
+
+
 def initialize_cache_db() -> None:
     """
     Creates the semantic cache SQLite database and table if they do not exist.

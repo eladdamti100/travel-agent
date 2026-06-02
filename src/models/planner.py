@@ -33,6 +33,13 @@ class PlannerTaskType(str, Enum):
     FETCH_WEATHER = "fetch_weather"
     EVENTS_FINDER = "events_finder"
     AIRPORT_TRANSFER_INFO = "airport_transfer_info"
+    
+    GEOCODE_LOCATION = "geocode_location"
+    FETCH_LIVE_EVENTS = "fetch_live_events"
+    LIVE_CURRENCY_CONVERSION = "live_currency_conversion"
+    FETCH_BREWERIES = "fetch_breweries"
+    FETCH_COUNTRY_METADATA = "fetch_country_metadata"
+    WEB_RESEARCH_TAVILY = "web_research_tavily"
 
 
 class PlannerTaskStatus(str, Enum):

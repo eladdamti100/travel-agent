@@ -38,6 +38,14 @@ _TASK_REQUIREMENTS: Dict[PlannerTaskType, Tuple[str, ...]] = {
     PlannerTaskType.FETCH_WEATHER: ("destination_city", "travel_month"),
     PlannerTaskType.EVENTS_FINDER: ("destination_city", "travel_month"),
     PlannerTaskType.AIRPORT_TRANSFER_INFO: ("destination_city",),
+
+    # Web intelligence tasks — executed by WebAgent
+    PlannerTaskType.GEOCODE_LOCATION: ("destination_city",),
+    PlannerTaskType.FETCH_LIVE_EVENTS: ("destination_city",),
+    PlannerTaskType.LIVE_CURRENCY_CONVERSION: (),
+    PlannerTaskType.FETCH_BREWERIES: ("destination_city",),
+    PlannerTaskType.FETCH_COUNTRY_METADATA: ("destination_city",),
+    PlannerTaskType.WEB_RESEARCH_TAVILY: ("destination_city",),
 }
 
 
@@ -206,7 +214,7 @@ def _build_planner_task(
     context: TripContext,
     task_type: PlannerTaskType,
 ) -> PlannerTask:
-    required_fields = _TASK_REQUIREMENTS[task_type]
+    required_fields = _TASK_REQUIREMENTS.get(task_type, ())
     missing_fields = [
         field_name
         for field_name in required_fields

@@ -137,12 +137,31 @@ def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
         executor.shutdown(wait=False)
 
 
+def _prewarm_cache_model() -> None:
+    """
+    Loads the sentence-transformers embedding model before the first user turn.
+
+    On first run this downloads ~91 MB from HuggingFace. Subsequent runs load
+    from the local disk cache in under a second.
+    """
+    from src.services.semantic_cache import warm_embedding_model
+
+    with console.status("[dim]Initializing semantic cache...[/dim]", spinner="dots"):
+        downloaded = warm_embedding_model()
+
+    if downloaded:
+        console.print(
+            "[dim]  Embedding model downloaded and ready.[/dim]\n"
+        )
+
+
 def run() -> None:
     """
     Starts the interactive terminal loop.
     """
     validate_provider_env()
     print_banner()
+    _prewarm_cache_model()
 
     session_id = ask_for_session_id()
     config = {"configurable": {"thread_id": session_id}}
