@@ -48,6 +48,16 @@ _SUPPORTED_CITY_KEYWORDS = {
 }
 
 
+_CITY_TO_AIRPORT = {
+    "new york": "JFK",
+    "london": "LHR",
+    "tokyo": "NRT",
+    "paris": "CDG",
+    "berlin": "BER",
+    "tel aviv": "TLV",
+    "telaviv": "TLV",
+}
+
 _COUNTRY_ALIASES = {
     "israel": "Israel",
     "israeli": "Israel",
@@ -311,6 +321,11 @@ def _extract_origin_airport(text: str) -> Optional[str]:
       - TLV, Israeli passport (code-first)
       - airport: TLV / airport is TLV / airport TLV
     """
+    lower_text = text.lower()
+    for city, code in _CITY_TO_AIRPORT.items():
+        if re.search(r"\b" + re.escape(city) + r"\b", lower_text):
+            return code
+
     raw_text = text.upper()
 
     patterns = [
