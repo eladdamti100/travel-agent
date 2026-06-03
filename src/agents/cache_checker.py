@@ -16,7 +16,7 @@ If cache miss:
     - router will continue to the master planner
 """
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from src.graph.state import AgentState
 from src.models.cache import CacheStatus
@@ -65,9 +65,10 @@ def run_cache_check(state: AgentState) -> dict:
 
     # --- Canonical Trip Context Key ---
     ctx = extract_trip_context_deterministic(state)
-    
-    # Build structured cache key ONLY. Do not fall back to raw text.
-    query = build_trip_cache_key({
+
+    logger.info("Cache checker TripContext: %s", ctx.model_dump())
+
+    structured_key = build_trip_cache_key({
         "destination_city": ctx.destination_city,
         "duration_days":    ctx.duration_days,
         "total_budget":     ctx.total_budget,
@@ -77,26 +78,34 @@ def run_cache_check(state: AgentState) -> dict:
         "origin_country":   ctx.origin_country,
     })
 
-    logger.info("Cache checker TripContext: %s", ctx.model_dump())
-    
-    # If the context is incomplete, the query will be None. We must bypass the cache.
-    if not query:
-        logger.info("Cache checker: Context incomplete, bypassing cache.")
-        return {
-            "cache_status": CacheStatus.MISS.value,
-            "cache_similarity_score": 0.0,
-            "cache_matched_query": "",
-            "cache_answer": "",
-        }
+    logger.info("Cache checker query/key: %s", structured_key)
 
-    logger.info("Cache checker query/key: %s", query)
-
-    result = find_cached_answer(
-        query=query,
-        route="cache_check",
-        threshold=DEFAULT_HIT_THRESHOLD,
-        trip_context=ctx.model_dump(),
+    raw_text = next(
+        (m.content for m in reversed(messages) if isinstance(m, HumanMessage)), ""
     )
+
+    # Phase 1: structured key exact match (fast path).
+    result = None
+    if structured_key:
+        result = find_cached_answer(
+            query=structured_key,
+            route="cache_check",
+            threshold=DEFAULT_HIT_THRESHOLD,
+            trip_context=ctx.model_dump(),
+        )
+
+    # Phase 2: semantic similarity on raw message text (paraphrase fallback).
+    # Runs when the structured key is incomplete or the exact match missed.
+    if (result is None or result.status != CacheStatus.HIT) and raw_text:
+        logger.info("Cache checker: trying semantic fallback on raw text.")
+        result = find_cached_answer(
+            query=raw_text,
+            route="cache_check",
+            threshold=DEFAULT_HIT_THRESHOLD,
+            trip_context=ctx.model_dump(),
+        )
+
+    query = structured_key or raw_text
 
     logger.info(
         "Cache checker result: status=%s score=%.4f matched=%s reason=%s",
