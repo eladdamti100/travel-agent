@@ -50,7 +50,9 @@ from src.utils.logger import get_logger
 
 logger = get_logger("semantic_cache")
 
-_CACHE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "semantic_cache.db"
+# Use ~/.cache to avoid iCloud Drive file-coordination interference with WAL mode.
+_CACHE_DB_PATH = Path.home() / ".cache" / "travel-agent" / "semantic_cache.db"
+_CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_HIT_THRESHOLD = 0.85
 _MAX_ROWS_PER_ROUTE = 200

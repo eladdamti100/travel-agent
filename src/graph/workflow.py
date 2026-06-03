@@ -96,7 +96,9 @@ from src.graph.router import (
 from src.graph.state import AgentState
 
 # SQLite connection created once at module level — stays open for app lifetime.
-_DB_PATH = Path(__file__).parent.parent.parent / "data" / "checkpoints.db"
+# Use ~/.cache to avoid iCloud Drive file-coordination interference with WAL mode.
+_DB_PATH = Path.home() / ".cache" / "travel-agent" / "checkpoints.db"
+_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
 _checkpointer = SqliteSaver(_conn)
 
