@@ -120,15 +120,16 @@ Trip planning cancelled. Safe travels!
 
 | Check | Pass? |
 |-------|-------|
-| `critic_node` fires after every `master_planner` completion | |
-| `critic_attempts` resets to 0 on each new user turn | |
-| Rejected plan (attempt < 2) routes back to `master_planner` | |
-| Attempt cap (2) routes to `hitl_approval` regardless of pass/fail | |
-| Graph fully suspends at `hitl_approval` (no further node events) | |
-| Approve → `cache_store` → `summarizer` → END | |
-| Edit → `master_planner` re-runs with `hitl_feedback` visible in Section 3 | |
-| Cancel → END, no cache write | |
-| `hitl_feedback` and `critic_attempts` cleared after plan completion | |
+| `critic_node` fires after every `master_planner` completion | ✅ |
+| `critic_attempts` resets to 0 on each new user turn | ✅ |
+| Rejected plan (attempt < 2) routes back to `master_planner` | ✅ `route_after_critic` fixed |
+| Critic issues + suggestions injected into LLM prompt on auto-replan | ✅ `_generate_notes_section` updated |
+| Attempt cap (2) routes to `hitl_approval` regardless of pass/fail | ✅ |
+| Graph fully suspends at `hitl_approval` (no further node events) | ✅ |
+| Approve → `cache_store` → `summarizer` → END | ✅ |
+| Edit → `master_planner` re-runs with `hitl_feedback` visible in Section 3 | ✅ |
+| Cancel → END, no cache write | ✅ |
+| `hitl_feedback` and `critic_attempts` cleared after plan completion | ✅ |
 
 ---
 

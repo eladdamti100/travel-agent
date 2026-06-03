@@ -129,6 +129,21 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
     is_critic_replan = (state.get("critic_attempts") or 0) > 0 and not is_hitl_resume
 
+    # On automatic critic replan, surface the critic's issues and suggestions so
+    # the LLM can address them in the new plan.  These are separate from the
+    # human-provided hitl_feedback (which is only set on the Edit path).
+    critic_issues: list = []
+    critic_suggestions: list = []
+    if is_critic_replan:
+        critique = state.get("critique_result") or {}
+        critic_issues = critique.get("issues") or []
+        critic_suggestions = critique.get("suggestions") or []
+        logger.info(
+            "Planner auto-replan triggered by critic. issues=%s suggestions=%s",
+            critic_issues,
+            critic_suggestions,
+        )
+
     existing_task_results = (
         state.get("pending_planner_task_results", {}) or {}
         if is_hitl_resume
@@ -324,6 +339,8 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         task_results=task_results,
         planning_mode=planning_mode,
         hitl_feedback=hitl_feedback,
+        critic_issues=critic_issues,
+        critic_suggestions=critic_suggestions,
     )
 
     updates["planner_status"] = PlannerStatus.READY.value
@@ -543,6 +560,8 @@ async def _generate_final_plan(
     task_results: Dict[str, str],
     planning_mode: str = "full_planning",
     hitl_feedback: str = "",
+    critic_issues: Optional[List[str]] = None,
+    critic_suggestions: Optional[List[str]] = None,
 ) -> str:
     """
     Builds the final plan in three guaranteed sections.
@@ -563,6 +582,8 @@ async def _generate_final_plan(
         web_results=web_results,
         planning_mode=planning_mode,
         hitl_feedback=hitl_feedback,
+        critic_issues=critic_issues or [],
+        critic_suggestions=critic_suggestions or [],
     )
 
     _sep = "\n\n---\n\n"
@@ -915,6 +936,8 @@ async def _generate_notes_section(
     web_results: Dict[str, str],
     planning_mode: str,
     hitl_feedback: str = "",
+    critic_issues: Optional[List[str]] = None,
+    critic_suggestions: Optional[List[str]] = None,
 ) -> str:
     """Asks the LLM for Section 3 (Notes and Assumptions) only — a focused, short call."""
     model = get_model(temperature=0)
@@ -927,6 +950,21 @@ async def _generate_notes_section(
         if hitl_feedback
         else ""
     )
+
+    # On automatic critic replan, surface issues and suggestions so the LLM
+    # knows what specifically went wrong and what it must fix.
+    critic_context_lines: list = []
+    if critic_issues:
+        critic_context_lines.append(
+            "CRITIC REJECTED THE PREVIOUS PLAN — you MUST address these issues:"
+        )
+        for issue in critic_issues:
+            critic_context_lines.append(f"  - {issue}")
+    if critic_suggestions:
+        critic_context_lines.append("Required fixes (apply all of them):")
+        for suggestion in critic_suggestions:
+            critic_context_lines.append(f"  → {suggestion}")
+    critic_context = "\n".join(critic_context_lines) + "\n" if critic_context_lines else ""
 
     def _result_status(raw: str) -> str:
         if not raw:
@@ -946,6 +984,7 @@ async def _generate_notes_section(
         HumanMessage(
             content=(
                 f"Planning mode: {planning_mode}\n"
+                f"{critic_context}"
                 f"{feedback_line}"
                 f"Traveler budget: ${context.total_budget} {context.currency or 'USD'}\n"
                 f"Cost result: {cost_raw or 'not calculated'}\n"

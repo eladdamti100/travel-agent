@@ -8,6 +8,10 @@ from langgraph.graph import END
 from src.graph.state import AgentState
 from src.utils.graph_guards import detect_repetition
 
+# Imported here to avoid a circular import (nodes.py → router.py is one-way).
+# MAX_CRITIC_ATTEMPTS is the single source of truth defined in nodes.py.
+from src.graph.nodes import MAX_CRITIC_ATTEMPTS
+
 
 def _current_turn_messages(messages: list) -> list:
     """
@@ -145,11 +149,19 @@ def route_after_critic(state: AgentState) -> str:
     """
     Conditional edge after the critic node.
 
-    Always routes to hitl_approval — the human decides what to do with
-    the plan (approve, edit, or cancel) regardless of critic result.
-    The critic score and suggestions are shown in the HITL panel so the
-    user can make an informed decision.
+    If the critic failed AND we haven't reached the attempt cap yet,
+    route back to master_planner so the graph auto-replans with the
+    critic's suggestions injected into the prompt.
+
+    Once the plan passes OR the attempt cap is reached, hand control
+    to the human via hitl_approval so they can approve, edit, or cancel.
     """
+    critique = state.get("critique_result") or {}
+    attempts = state.get("critic_attempts") or 0
+
+    if not critique.get("passed", True) and attempts < MAX_CRITIC_ATTEMPTS:
+        return "master_planner"
+
     return "hitl_approval"
 
 

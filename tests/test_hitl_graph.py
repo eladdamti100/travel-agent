@@ -245,12 +245,28 @@ class TestRoutingLogic:
         assert route_after_master_planner({"cache_status": "miss"}) == "critic"
 
 
-    def test_critic_always_routes_to_hitl(self):
+    def test_critic_routes_to_replan_when_failed_and_under_cap(self):
         from src.graph.router import route_after_critic
+        # Failed on attempt 1 of 2 → must replan automatically
+        state = {"critique_result": {"passed": False}, "critic_attempts": 1}
+        assert route_after_critic(state) == "master_planner"
+
+    def test_critic_routes_to_hitl_when_passed(self):
+        from src.graph.router import route_after_critic
+        # Plan passed → go to human approval regardless of attempt number
         assert route_after_critic({"critique_result": {"passed": True}, "critic_attempts": 1}) == "hitl_approval"
-        assert route_after_critic({"critique_result": {"passed": False}, "critic_attempts": 1}) == "hitl_approval"
+        assert route_after_critic({"critique_result": {"passed": True}, "critic_attempts": 2}) == "hitl_approval"
+
+    def test_critic_routes_to_hitl_when_cap_reached(self):
+        from src.graph.router import route_after_critic
+        # Attempt cap reached (2/2) → stop auto-replan, send to human
         assert route_after_critic({"critique_result": {"passed": False}, "critic_attempts": 2}) == "hitl_approval"
+
+    def test_critic_routes_to_hitl_when_no_critique_result(self):
+        from src.graph.router import route_after_critic
+        # No critique_result in state → treat as passed, go to hitl
         assert route_after_critic({}) == "hitl_approval"
+        assert route_after_critic({"critic_attempts": 0}) == "hitl_approval"
 
 
     def test_approved_routes_to_cache_store(self):
@@ -324,6 +340,40 @@ class TestTerminalFlow:
         assert "_stream_graph" in source
         assert "pending_interrupt" in source
         assert "Command" in source
+
+
+class TestCriticFeedbackInjection:
+    """Verify that critic suggestions reach the LLM prompt on auto-replan."""
+
+    def test_generate_notes_section_accepts_critic_params(self):
+        import inspect
+        from src.agents.planner import _generate_notes_section
+        sig = inspect.signature(_generate_notes_section)
+        assert "critic_issues" in sig.parameters
+        assert "critic_suggestions" in sig.parameters
+
+    def test_generate_final_plan_accepts_critic_params(self):
+        import inspect
+        from src.agents.planner import _generate_final_plan
+        sig = inspect.signature(_generate_final_plan)
+        assert "critic_issues" in sig.parameters
+        assert "critic_suggestions" in sig.parameters
+
+    def test_critic_context_appears_in_notes_source(self):
+        import inspect
+        from src.agents.planner import _generate_notes_section
+        source = inspect.getsource(_generate_notes_section)
+        assert "critic_issues" in source
+        assert "critic_suggestions" in source
+        assert "CRITIC REJECTED" in source
+
+    def test_planner_reads_critique_result_on_critic_replan(self):
+        import inspect
+        from src.agents.planner import _run_master_planner_async
+        source = inspect.getsource(_run_master_planner_async)
+        assert "critic_issues" in source
+        assert "critic_suggestions" in source
+        assert "critique_result" in source
 
 
 class TestReplanningOnEdit:
@@ -463,7 +513,9 @@ class TestFullRoutingChain:
         step1 = route_after_master_planner(state)
         assert step1 == "critic"
 
+        # Critic passes on first attempt → straight to hitl_approval
         state["critique_result"] = {"passed": True}
+        state["critic_attempts"] = 1
         step2 = route_after_critic(state)
         assert step2 == "hitl_approval"
 
@@ -477,7 +529,7 @@ class TestFullRoutingChain:
             route_after_critic,
             route_after_hitl,
         )
-        state = {"planner_status": "ready"}
+        state = {"planner_status": "ready", "critique_result": {"passed": True}, "critic_attempts": 1}
         assert route_after_master_planner(state) == "critic"
         assert route_after_critic(state) == "hitl_approval"
         state["hitl_decision"] = "cancelled"
@@ -489,11 +541,52 @@ class TestFullRoutingChain:
             route_after_critic,
             route_after_hitl,
         )
-        state = {"planner_status": "ready"}
+        state = {"planner_status": "ready", "critique_result": {"passed": True}, "critic_attempts": 1}
         assert route_after_master_planner(state) == "critic"
         assert route_after_critic(state) == "hitl_approval"
         state["hitl_decision"] = "edit"
         assert route_after_hitl(state) == "master_planner"
+
+    def test_full_replan_chain_critic_fails_then_passes(self):
+        """
+        Critic fails on attempt 1 → auto-replan → critic passes on attempt 2 → hitl_approval.
+        This is the core Session 6 loop that was previously broken.
+        """
+        from src.graph.router import (
+            route_after_master_planner,
+            route_after_critic,
+            route_after_hitl,
+        )
+        # --- First pass through planner ---
+        state = {"planner_status": "ready"}
+        assert route_after_master_planner(state) == "critic"
+
+        # Critic runs, fails, attempt counter is 1
+        state["critique_result"] = {"passed": False}
+        state["critic_attempts"] = 1
+        assert route_after_critic(state) == "master_planner"  # auto-replan
+
+        # --- Second pass through planner (replan) ---
+        assert route_after_master_planner(state) == "critic"
+
+        # Critic runs again, passes on attempt 2
+        state["critique_result"] = {"passed": True}
+        state["critic_attempts"] = 2
+        assert route_after_critic(state) == "hitl_approval"
+
+        state["hitl_decision"] = "approved"
+        assert route_after_hitl(state) == "cache_store"
+
+    def test_full_replan_chain_critic_fails_twice_hits_cap(self):
+        """
+        Critic fails on both attempts → cap reached → goes to hitl_approval anyway.
+        Human sees the critic issues and can decide to Edit or Cancel.
+        """
+        from src.graph.router import route_after_critic
+        # Attempt 1 fails → replan
+        assert route_after_critic({"critique_result": {"passed": False}, "critic_attempts": 1}) == "master_planner"
+        # Attempt 2 fails → cap reached, pass to human
+        assert route_after_critic({"critique_result": {"passed": False}, "critic_attempts": 2}) == "hitl_approval"
 
     def test_missing_info_never_reaches_critic(self):
         from src.graph.router import route_after_master_planner
