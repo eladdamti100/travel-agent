@@ -77,8 +77,14 @@ class WebAgent(BaseSubAgent):
     )
 
     async def run(self, *, context: TripContext) -> PlannerToolResults:
-        target_city    = context.destination_city    or "London"
-        target_country = context.destination_country or "United Kingdom"
+        target_city    = context.destination_city
+        target_country = context.destination_country
+
+        # If destination is unknown, skip all web calls — no fallback city.
+        if not target_city:
+            logger.info("WebAgent: destination_city is None — skipping all web tasks.")
+            return PlannerToolResults()
+
         dest_currency  = _CITY_CURRENCY.get(target_city.lower(), "EUR")
         origin_currency = _ORIGIN_CURRENCY.get(
             (context.origin_country or "").lower(), "USD"
@@ -96,7 +102,7 @@ class WebAgent(BaseSubAgent):
                 {"city": target_city}
             ),
             PlannerTaskType.FETCH_COUNTRY_METADATA.value: fetch_country_metadata.ainvoke(
-                {"country_name": target_country}
+                {"country_name": target_country or target_city}
             ),
             PlannerTaskType.WEB_RESEARCH_TAVILY.value: web_research_tavily.ainvoke({
                 "query": (

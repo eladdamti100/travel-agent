@@ -321,16 +321,14 @@ def _extract_origin_airport(text: str) -> Optional[str]:
       - TLV, Israeli passport (code-first)
       - airport: TLV / airport is TLV / airport TLV
     """
-    lower_text = text.lower()
-    for city, code in _CITY_TO_AIRPORT.items():
-        if re.search(r"\b" + re.escape(city) + r"\b", lower_text):
-            return code
-
     raw_text = text.upper()
 
     # Words that look like a 3-letter code but are really the start of a known
-    # city name (e.g. "from New York" → "NEW"). These must not be read as codes.
-    _NOT_AIRPORT_PREFIXES = {kw.upper()[:3] for kw in _SUPPORTED_CITY_KEYWORDS}
+    # city name (e.g. "from New York" → "NEW", "from Tel Aviv" → "TEL").
+    _NOT_AIRPORT_PREFIXES = (
+        {kw.upper()[:3] for kw in _SUPPORTED_CITY_KEYWORDS}
+        | {city.upper()[:3] for city in _CITY_TO_AIRPORT if " " in city}
+    )
 
     patterns = [
         # "from TLV" or "form TLV" (common typo)
@@ -356,6 +354,19 @@ def _extract_origin_airport(text: str) -> Optional[str]:
             # Skip false positives like "NEW" from "New York".
             if code in _NOT_AIRPORT_PREFIXES:
                 continue
+            return code
+
+    # Fallback: origin specified as city name after "from" (e.g. "from New York").
+    # Only match when the city follows an explicit origin marker — never match the
+    # destination city ("trip to Paris from JFK" must not return CDG here).
+    lower_text = text.lower()
+    _origin_prefix = (
+        r"\b(?:from|form|fly(?:ing)?\s+(?:from|form)"
+        r"|depart(?:ing)?\s+(?:from|form)"
+        r"|origin(?:\s+airport)?(?:\s+is)?)\s+"
+    )
+    for city, code in _CITY_TO_AIRPORT.items():
+        if re.search(_origin_prefix + re.escape(city) + r"\b", lower_text):
             return code
 
     return None
@@ -395,6 +406,17 @@ def _extract_origin_country(text: str) -> Optional[str]:
     return None
 
 
+_AIRPORT_TO_CITY = {code: city for city, code in _CITY_TO_AIRPORT.items() if len(city) > 3}
+_AIRPORT_TO_CITY.update({
+    "JFK": "New York",
+    "LHR": "London",
+    "NRT": "Tokyo",
+    "CDG": "Paris",
+    "BER": "Berlin",
+    "TLV": "Tel Aviv",
+})
+
+
 def _extract_destination_city(text: str) -> Optional[str]:
     """
     Extracts a supported destination city from the user message.
@@ -403,7 +425,17 @@ def _extract_destination_city(text: str) -> Optional[str]:
     "to Berlin from New York"), the city introduced by "to" is the destination
     and the city introduced by "from" is the origin. Falls back to the earliest
     mentioned city when no "to"/"from" markers are present.
+
+    Also handles IATA codes used as destination ("to TLV" → "Tel Aviv").
     """
+    # Check for "to [IATA]" pattern before city-name scan (text is already lowercase).
+    iata_dest = re.search(r"\bto\s+([a-zA-Z]{3})\b", text, re.IGNORECASE)
+    if iata_dest:
+        code = iata_dest.group(1).upper()
+        city = _AIRPORT_TO_CITY.get(code)
+        if city:
+            return city
+
     # Find every supported city and where it appears in the text.
     found = [
         (text.find(keyword), city)
@@ -620,7 +652,8 @@ def _extract_travel_style(text: str) -> Optional[str]:
     if "luxury" in text:
         return "luxury"
 
-    if "budget" in text:
+    # Exclude "budget $N" / "budget €N" patterns — that's a financial amount, not travel style.
+    if re.search(r"\bbudget\b(?!\s*[\$€£₪¥\d])", text):
         return "budget"
 
     if "relaxed" in text or "slow pace" in text:

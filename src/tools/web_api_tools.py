@@ -143,16 +143,24 @@ async def fetch_live_events(city: str) -> str:
             if not events:
                 return _MOCK_EVENTS.get(city_lower, f"- No live commercial matching found. Local historical routes open.")
 
+            from datetime import date as _date
+            _today = _date.today().isoformat()
+
             formatted_events = []
             for event in events:
                 name = event.get("name", "Live Event")
                 date = event.get("dates", {}).get("start", {}).get("localDate", "TBD")
+                # Skip events that have already passed.
+                if date != "TBD" and date < _today:
+                    continue
                 prices = event.get("priceRanges", [{}])[0]
                 min_p = prices.get("min")
                 curr = prices.get("currency", "USD")
                 price_part = f" | from {min_p} {curr}" if min_p is not None else ""
                 formatted_events.append(f"- {name} | {date}{price_part}")
-                
+
+            if not formatted_events:
+                return _MOCK_EVENTS.get(city_lower, f"- No upcoming events found in {sanitized_city}.")
             return "\n".join(formatted_events)
     except Exception as exc:
         logger.error("Ticketmaster internal failure wrapper captured: %s", str(exc))

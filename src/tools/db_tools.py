@@ -151,6 +151,19 @@ def fetch_activities(city: str) -> str:
     return json.dumps(results, indent=2)
 
 
+_COUNTRY_ALIASES_DB = {
+    "united states": "usa",
+    "united kingdom": "uk",
+    "united arab emirates": "uae",
+}
+
+
+def _normalize_country_for_db(name: str) -> str:
+    """Normalises a canonical country name to the short form stored in the DB."""
+    key = name.strip().lower()
+    return _COUNTRY_ALIASES_DB.get(key, key)
+
+
 @tool
 def get_visa_requirement(origin_country: str, destination_country: str) -> str:
     """
@@ -165,7 +178,10 @@ def get_visa_requirement(origin_country: str, destination_country: str) -> str:
     """
     results = _run_query(
         query,
-        (origin_country.strip().lower(), destination_country.strip().lower()),
+        (
+            _normalize_country_for_db(origin_country),
+            _normalize_country_for_db(destination_country),
+        ),
     )
     if isinstance(results, str):
         return results

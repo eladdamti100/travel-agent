@@ -195,6 +195,27 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     enrichment_result = await enrichment_task
     merged_context = merge_trip_context(deterministic_context, enrichment_result)
 
+    # Early-exit: destination not in supported list — no DB data exists for it.
+    _SUPPORTED_DESTINATIONS = set(
+        __import__("src.models.trip_context", fromlist=["DESTINATION_COUNTRY_BY_CITY"])
+        .DESTINATION_COUNTRY_BY_CITY.keys()
+    )
+    if merged_context.destination_city and merged_context.destination_city not in _SUPPORTED_DESTINATIONS:
+        _unsupported = merged_context.destination_city
+        _supported_list = ", ".join(sorted(_SUPPORTED_DESTINATIONS))
+        _msg = (
+            f"Sorry, **{_unsupported}** is not yet a supported destination.\n\n"
+            f"Please choose one of the available cities: {_supported_list}."
+        )
+        logger.info("Planner early-exit: unsupported destination=%s", _unsupported)
+        return {
+            "planner_status": PlannerStatus.MISSING_REQUIRED_INFO.value,
+            "awaiting_user_clarification": False,
+            "messages": [AIMessage(content=_msg)],
+            "trip_context": merged_context.model_dump(),
+            "planning_mode": planning_mode,
+        }
+
     final_dependency_result = check_planner_dependencies(merged_context)
 
     combined_existing_results = {
@@ -264,6 +285,10 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         logger.info("Master planner stopped for HITL: %s", hitl_question)
 
         return updates
+
+    # Web fallback: fill missing DB sections via Tavily search.
+    task_results = await _fill_missing_with_web(merged_context, task_results)
+    updates["planner_task_results"] = task_results
 
     cost_result = await _calculate_cost_if_possible(
         context=merged_context,
@@ -395,6 +420,73 @@ async def run_sub_agents_async(
     return merged_raw_results
 
 
+async def _fill_missing_with_web(
+    context: TripContext,
+    task_results: Dict[str, str],
+) -> Dict[str, str]:
+    """
+    For each DB section that returned no data, fires a targeted Tavily web search
+    and stores the result under the same task key so the final plan can surface it.
+
+    Runs all fallback queries concurrently. Failures are logged and silently skipped.
+    """
+    from src.tools.web_api_tools import web_research_tavily
+
+    city = context.destination_city or ""
+    origin = context.origin_airport or ""
+
+    def _is_empty(key: str) -> bool:
+        val = task_results.get(key, "")
+        if not val:
+            return True
+        # Tool returns "No X found …" style strings for empty results.
+        return val.strip().lower().startswith("no ")
+
+    queries: Dict[str, str] = {}
+
+    if _is_empty(PlannerTaskType.FETCH_FLIGHTS.value) and origin and city:
+        queries[PlannerTaskType.FETCH_FLIGHTS.value] = (
+            f"best flights from {origin} to {city} airlines prices schedule"
+        )
+
+    if _is_empty(PlannerTaskType.FETCH_HOTELS.value) and city:
+        queries[PlannerTaskType.FETCH_HOTELS.value] = (
+            f"best hotels to stay in {city} price per night budget"
+        )
+
+    if _is_empty(PlannerTaskType.FETCH_ACTIVITIES.value) and city:
+        queries[PlannerTaskType.FETCH_ACTIVITIES.value] = (
+            f"top tourist attractions and activities in {city} with prices"
+        )
+
+    if _is_empty(PlannerTaskType.CHECK_VISA.value) and context.origin_country and city:
+        queries[PlannerTaskType.CHECK_VISA.value] = (
+            f"visa requirements for {context.origin_country} passport to visit {city}"
+        )
+
+    if not queries:
+        return task_results
+
+    logger.info("Web fallback triggered for missing DB keys: %s", list(queries.keys()))
+
+    async def _fetch(key: str, query: str) -> tuple:
+        try:
+            result = await web_research_tavily.ainvoke({"query": query})
+            return key, str(result)
+        except Exception as exc:
+            logger.warning("Web fallback failed for key=%s: %s", key, exc)
+            return key, ""
+
+    pairs = await asyncio.gather(*[_fetch(k, q) for k, q in queries.items()])
+    updated = dict(task_results)
+    for key, result in pairs:
+        if result and not result.startswith("Search Engine"):
+            updated[key] = f"[Web source] {result}"
+            logger.info("Web fallback stored result for key=%s (%d chars)", key, len(result))
+
+    return updated
+
+
 async def _calculate_cost_if_possible(
     context: TripContext,
     task_results: Dict[str, str],
@@ -414,14 +506,19 @@ async def _calculate_cost_if_possible(
         price_key="price_per_night",
     )
 
-    if flight_price is None or hotel_price is None:
+    if hotel_price is None:
         logger.info(
-            "Cost calculation skipped. flight_price=%s hotel_price=%s duration_days=%s",
+            "Cost calculation skipped: no hotel data. flight_price=%s duration_days=%s",
             flight_price,
-            hotel_price,
             context.duration_days,
         )
         return None
+
+    if flight_price is None:
+        logger.info(
+            "Cost calculation: no flight data — using 0 as flight cost placeholder."
+        )
+        flight_price = 0.0
 
     logger.info(
         "Calculating trip cost. flight_price=%s hotel_price=%s duration_days=%s",
@@ -831,6 +928,19 @@ async def _generate_notes_section(
         else ""
     )
 
+    def _result_status(raw: str) -> str:
+        if not raw:
+            return "not_collected"
+        stripped = raw.strip().lower()
+        if stripped.startswith("no ") or stripped.startswith("error"):
+            return "not_found"
+        if stripped.startswith("[web source]"):
+            return "web_fallback"
+        return "found"
+
+    db_status = {k: _result_status(v) for k, v in db_results.items()}
+    web_status = {k: _result_status(v) for k, v in web_results.items()}
+
     response = await model.ainvoke([
         SystemMessage(content=get_prompt("final_answer_prompt")),
         HumanMessage(
@@ -840,8 +950,8 @@ async def _generate_notes_section(
                 f"Traveler budget: ${context.total_budget} {context.currency or 'USD'}\n"
                 f"Cost result: {cost_raw or 'not calculated'}\n"
                 f"Missing required fields: {missing_fields or 'none'}\n"
-                f"DB data collected: {sorted(db_results.keys())}\n"
-                f"Web data collected: {sorted(web_results.keys())}"
+                f"DB tool results (key: status): {db_status}\n"
+                f"Web tool results (key: status): {web_status}"
             )
         ),
     ])

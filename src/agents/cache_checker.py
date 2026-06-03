@@ -68,6 +68,8 @@ def run_cache_check(state: AgentState) -> dict:
 
     logger.info("Cache checker TripContext: %s", ctx.model_dump())
 
+    # origin_country intentionally excluded: must match cache_store's key exactly.
+    # The store omits it because country may arrive mid-HITL after cache_check ran.
     structured_key = build_trip_cache_key({
         "destination_city": ctx.destination_city,
         "duration_days":    ctx.duration_days,
@@ -75,7 +77,6 @@ def run_cache_check(state: AgentState) -> dict:
         "currency":         ctx.currency,
         "num_travelers":    ctx.num_travelers,
         "origin_airport":   ctx.origin_airport,
-        "origin_country":   ctx.origin_country,
     })
 
     logger.info("Cache checker query/key: %s", structured_key)

@@ -73,6 +73,14 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
+    # Don't cache plans for unsupported/unknown destinations — structured key
+    # would be None (required field missing), falling back to raw text which
+    # would store a broken plan and serve it as a future cache hit.
+    stored_ctx = state.get("trip_context") or {}
+    if not stored_ctx.get("destination_city"):
+        logger.info("Cache store skipped: destination_city is None/unsupported.")
+        return {}
+
     trip_ctx = state.get("trip_context") or {}
     future = _executor.submit(_background_store, query, answer, trip_ctx)
     future.add_done_callback(
