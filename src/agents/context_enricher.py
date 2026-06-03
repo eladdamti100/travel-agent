@@ -328,6 +328,10 @@ def _extract_origin_airport(text: str) -> Optional[str]:
 
     raw_text = text.upper()
 
+    # Words that look like a 3-letter code but are really the start of a known
+    # city name (e.g. "from New York" → "NEW"). These must not be read as codes.
+    _NOT_AIRPORT_PREFIXES = {kw.upper()[:3] for kw in _SUPPORTED_CITY_KEYWORDS}
+
     patterns = [
         # "from TLV" or "form TLV" (common typo)
         r"\b(?:FROM|FORM)\s+([A-Z]{3})\b",
@@ -348,7 +352,11 @@ def _extract_origin_airport(text: str) -> Optional[str]:
     for pattern in patterns:
         match = re.search(pattern, raw_text)
         if match:
-            return match.group(1)
+            code = match.group(1)
+            # Skip false positives like "NEW" from "New York".
+            if code in _NOT_AIRPORT_PREFIXES:
+                continue
+            return code
 
     return None
 
@@ -390,12 +398,68 @@ def _extract_origin_country(text: str) -> Optional[str]:
 def _extract_destination_city(text: str) -> Optional[str]:
     """
     Extracts a supported destination city from the user message.
+
+    Position-aware: when the message names several supported cities (e.g.
+    "to Berlin from New York"), the city introduced by "to" is the destination
+    and the city introduced by "from" is the origin. Falls back to the earliest
+    mentioned city when no "to"/"from" markers are present.
     """
-    for keyword, city in _SUPPORTED_CITY_KEYWORDS.items():
-        if keyword in text:
+    # Find every supported city and where it appears in the text.
+    found = [
+        (text.find(keyword), city)
+        for keyword, city in _SUPPORTED_CITY_KEYWORDS.items()
+        if keyword in text
+    ]
+    if not found:
+        return None
+
+    if len(found) == 1:
+        return found[0][1]
+
+    # Multiple cities — prefer the one that sits right after a "to " marker
+    # and is not the one sitting after a "from "/"form " marker.
+    to_pos = _last_marker_pos(text, ("to ",))
+    from_pos = _last_marker_pos(text, ("from ", "form "))
+
+    if to_pos is not None:
+        # Destination is the first supported city appearing after "to ".
+        after_to = sorted(
+            (pos, city) for pos, city in found if pos >= to_pos
+        )
+        if after_to:
+            dest_pos, dest_city = after_to[0]
+            # Guard: if that same city is what "from" points to, skip it.
+            if from_pos is None or dest_pos < from_pos or dest_pos != _city_pos_after(text, from_pos, found):
+                return dest_city
+
+    # No usable "to" marker — return the earliest mentioned city, but drop the
+    # one that clearly belongs to "from".
+    origin_city = _city_pos_after(text, from_pos, found) if from_pos is not None else None
+    for pos, city in sorted(found):
+        if city != origin_city:
             return city
 
-    return None
+    return found[0][1]
+
+
+def _last_marker_pos(text: str, markers: tuple) -> Optional[int]:
+    """Returns the position just after the last occurrence of any marker, or None."""
+    best = None
+    for marker in markers:
+        idx = text.rfind(marker)
+        if idx != -1:
+            end = idx + len(marker)
+            if best is None or end > best:
+                best = end
+    return best
+
+
+def _city_pos_after(text: str, marker_pos: Optional[int], found: list) -> Optional[str]:
+    """Returns the first supported city appearing at/after marker_pos."""
+    if marker_pos is None:
+        return None
+    candidates = sorted((pos, city) for pos, city in found if pos >= marker_pos)
+    return candidates[0][1] if candidates else None
 
 
 def _extract_duration_days(text: str) -> Optional[int]:

@@ -36,10 +36,12 @@ class TestRouterFunctions:
         assert route_after_cache_check({"cache_status": "miss"}) == "master_planner"
 
     def test_master_planner_routing(self):
+        # New HITL topology: a complete plan routes to the critic (Session 7),
+        # which then drives the critic → hitl_approval → cache_store chain.
         from src.graph.router import route_after_master_planner
         assert route_after_master_planner({"planner_status": "missing_required_info"}) == END
-        assert route_after_master_planner({"cache_status": "miss"}) == "cache_store"
-        assert route_after_master_planner({}) == "summarizer"
+        assert route_after_master_planner({"cache_status": "miss"}) == "critic"
+        assert route_after_master_planner({}) == "critic"
 
     def test_should_continue_all_branches(self):
         from src.graph.router import should_continue, MAX_TOOL_CALLS
