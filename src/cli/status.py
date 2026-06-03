@@ -97,5 +97,21 @@ def update_status_for_node(node_name: str, node_data: dict, status) -> None:
     elif node_name == "reviewer":
         status.update("[tool.call]Reviewing your plan...[/tool.call]")
 
+    elif node_name == "critic":
+        critique = node_data.get("critique_result") or {}
+        attempts = node_data.get("critic_attempts", "?")
+        passed = critique.get("passed", True)
+        score = critique.get("score", "?")
+        if passed:
+            status.update(f"[tool.call]Critic: PASSED (score {score}/10)[/tool.call]")
+        else:
+            status.update(
+                f"[tool.call]Critic: FAILED (score {score}/10, attempt {attempts}) "
+                f"— returning to planner...[/tool.call]"
+            )
+
+    elif node_name == "hitl_approval":
+        status.update("[tool.call]Waiting for your approval...[/tool.call]")
+
     elif node_name == "summarizer":
         status.update("[tool.call]Compressing conversation...[/tool.call]")

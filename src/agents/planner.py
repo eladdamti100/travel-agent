@@ -117,9 +117,122 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         deterministic_context = TripContext(**state["pending_trip_context"])
         logger.info("Master planner resumed from pending_trip_context.")
 
+    elif state.get("trip_context") and (state.get("critic_attempts") or 0) > 0:
+        # Critic auto-replan: keep the previously confirmed trip context so the
+        # planner does not re-ask for fields that were already provided.
+        deterministic_context = TripContext(**state["trip_context"])
+        logger.info("Master planner reusing existing trip_context for critic replan.")
+
     else:
         deterministic_context = extract_trip_context_deterministic(state)
         logger.info("Master planner created fresh deterministic context.")
+
+    # When replanning from HITL edit feedback, parse the feedback string for
+    # updated trip parameters (duration, budget, origin, destination) and apply
+    # them directly so the new plan reflects what the user asked to change.
+    if state.get("force_replan") and hitl_feedback:
+        import re as _re
+        fb_lower = hitl_feedback.lower()
+
+        _CITY_TO_AIRPORT_MAP = {
+            "paris": "CDG", "london": "LHR", "new york": "JFK",
+            "tokyo": "NRT", "berlin": "BER", "tel aviv": "TLV",
+        }
+
+        # Origin airport/city override — patterns like:
+        #   "from paris", "flight from paris", "origin is paris", "flight is from paris"
+        _origin_triggers = (
+            r"(?:flight(?:\s+is)?|fly(?:ing)?|depart(?:ing)?|origin)\s+(?:is\s+)?from\s+",
+            r"\bfrom\s+",
+            r"\borigin\s+(?:is\s+)?(?:city\s+)?(?:is\s+)?",
+            r"\bchange\s+(?:the\s+)?(?:flight\s+)?(?:origin|departure)\s+to\s+",
+        )
+        fb_origin_airport = None
+        fb_origin_city = None
+
+        # First try: bare IATA code in the feedback (e.g. "change to CDG")
+        _iata_match = _re.search(r"\b([A-Z]{3})\b", hitl_feedback.upper())
+        if _iata_match:
+            _iata = _iata_match.group(1)
+            _iata_to_city = {v: k.title() for k, v in _CITY_TO_AIRPORT_MAP.items()}
+            if _iata in _iata_to_city:
+                fb_origin_airport = _iata
+                fb_origin_city = _iata_to_city[_iata]
+
+        # Second try: city name after an origin-intent phrase
+        if not fb_origin_airport:
+            for _trigger in _origin_triggers:
+                for _city, _code in _CITY_TO_AIRPORT_MAP.items():
+                    if _re.search(_trigger + _re.escape(_city), fb_lower):
+                        fb_origin_airport = _code
+                        fb_origin_city = _city.title()
+                        break
+                if fb_origin_airport:
+                    break
+
+        if fb_origin_airport:
+            old_airport = deterministic_context.origin_airport or "?"
+            old_city = _AIRPORT_CITY.get(old_airport, old_airport)
+            print(
+                f"[HITL edit] origin change detected: {old_airport} ({old_city})"
+                f" → {fb_origin_airport} ({fb_origin_city})"
+            )
+            logger.info(
+                "HITL edit: origin override %s→%s", old_airport, fb_origin_airport
+            )
+            deterministic_context = deterministic_context.model_copy(
+                update={"origin_airport": fb_origin_airport}
+            )
+
+        # Destination city override — "change destination to Berlin", "fly to Berlin"
+        _dest_triggers = (
+            r"(?:change\s+)?(?:the\s+)?destination\s+to\s+",
+            r"\bfly\s+to\s+",
+            r"\btravel\s+to\s+",
+        )
+        for _trigger in _dest_triggers:
+            for _city, _code in _CITY_TO_AIRPORT_MAP.items():
+                if _re.search(_trigger + _re.escape(_city), fb_lower):
+                    from src.models.trip_context import DESTINATION_COUNTRY_BY_CITY
+                    _dest_country = DESTINATION_COUNTRY_BY_CITY.get(_city.title())
+                    deterministic_context = deterministic_context.model_copy(
+                        update={
+                            "destination_city": _city.title(),
+                            "destination_country": _dest_country,
+                        }
+                    )
+                    logger.info("HITL edit: destination override → %s", _city.title())
+                    break
+
+        # Duration override from feedback (e.g. "change to 14 days", "14-day trip")
+        _dur_patterns = [
+            r"\b(\d+)\s*-\s*day\b",
+            r"\b(\d+)\s+days?\b",
+            r"\b(\d+)\s+nights?\b",
+            r"\bfor\s+(\d+)\s+days?\b",
+            r"\bfor\s+(\d+)\s+nights?\b",
+        ]
+        fb_duration = None
+        for _pat in _dur_patterns:
+            _m = _re.search(_pat, fb_lower)
+            if _m:
+                fb_duration = int(_m.group(1))
+                break
+
+        if fb_duration:
+            deterministic_context = deterministic_context.model_copy(
+                update={"duration_days": fb_duration}
+            )
+            logger.info("Planner applied HITL feedback duration override: %d days", fb_duration)
+
+        # Budget override from feedback (e.g. "change budget to $2000")
+        budget_match = _re.search(r"\$(\d[\d,]*(?:\.\d+)?)", fb_lower)
+        if budget_match:
+            fb_budget = float(budget_match.group(1).replace(",", ""))
+            deterministic_context = deterministic_context.model_copy(
+                update={"total_budget": fb_budget}
+            )
+            logger.info("Planner applied HITL feedback budget override: $%.2f", fb_budget)
 
     enrichment_task = asyncio.create_task(
         enrich_trip_context_async(state, deterministic_context)
@@ -355,8 +468,10 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     updates["force_replan"] = False
     updates["hitl_feedback"] = ""
     updates["hitl_decision"] = ""
-    updates["critic_attempts"] = 0
-    
+    # Do NOT reset critic_attempts here — the critic node increments it and the
+    # router uses it to cap the replan loop. Resetting here would cause an
+    # infinite loop (planner always resets to 0, critic always sees attempt 1).
+
     logger.info("Master planner completed final plan. planning_mode=%s", planning_mode)
     return updates
 
@@ -573,6 +688,12 @@ async def _generate_final_plan(
     db_results = {k: v for k, v in task_results.items() if k in _DB_TASK_KEYS}
     web_results = {k: v for k, v in task_results.items() if k in _WEB_TASK_KEYS}
 
+    # Promote web-fallback DB results into web_results so Section 2 can display them
+    for key in (PlannerTaskType.FETCH_FLIGHTS.value, PlannerTaskType.CHECK_VISA.value):
+        val = db_results.get(key, "")
+        if val and val.startswith("[Web source]"):
+            web_results = {**web_results, key: val}
+
     section1 = _build_db_section(context, db_results)
     section2 = _build_web_section(web_results)
     section3 = await _generate_notes_section(
@@ -590,6 +711,16 @@ async def _generate_final_plan(
     return f"{section1}{_sep}{section2}{_sep}{section3}"
 
 
+_AIRPORT_CITY: Dict[str, str] = {
+    "JFK": "New York", "LGA": "New York", "EWR": "New York",
+    "LAX": "Los Angeles", "ORD": "Chicago", "ATL": "Atlanta",
+    "DFW": "Dallas", "SFO": "San Francisco", "MIA": "Miami",
+    "LHR": "London", "LGW": "London", "CDG": "Paris", "ORY": "Paris",
+    "TLV": "Tel Aviv", "NRT": "Tokyo", "HND": "Tokyo",
+    "TXL": "Berlin", "BER": "Berlin",
+}
+
+
 def _build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
     """Builds Section 1 (Database Data) deterministically from SQLite tool results."""
     parts: List[str] = ["# Section 1 — Database Data\n"]
@@ -599,8 +730,13 @@ def _build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
         f"${context.total_budget:,.2f} {context.currency or 'USD'}"
         if context.total_budget else "—"
     )
+
+    # Show airport code + origin city (not passport country)
+    airport = context.origin_airport or "—"
+    origin_city = _AIRPORT_CITY.get(airport.upper(), context.origin_country or "—")
+
     parts.append("**Trip Summary**")
-    parts.append(f"- Origin: {context.origin_airport or '—'} ({context.origin_country or '—'})")
+    parts.append(f"- Origin: {airport} ({origin_city})")
     parts.append(f"- Destination: {context.destination_city or '—'}, {context.destination_country or '—'}")
     parts.append(f"- Duration: {context.duration_days or '—'} days")
     if context.travel_month:
@@ -610,24 +746,27 @@ def _build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
         parts.append(f"- Travel style: {context.travel_style.capitalize()}")
     parts.append("")
 
-    # Flights
+    # Flights — only show confirmed DB records here; web fallback appears in Section 2
     parts.append("**Flights**")
     flights_raw = db_results.get("fetch_flights", "")
-    if flights_raw:
+    flights_is_web = flights_raw.startswith("[Web source]") if flights_raw else False
+    if flights_raw and not flights_is_web:
         try:
             flights = json.loads(flights_raw)
             if isinstance(flights, list) and flights:
                 for f in flights[:5]:
+                    price = f.get("price")
+                    price_str = f"${price}" if price else "price unavailable"
                     parts.append(
                         f"- {f.get('airline', '—')}: {f.get('flight_number', '—')}, "
-                        f"${f.get('price', '—')}"
+                        f"{price_str}"
                     )
             else:
-                parts.append(f"- {flights_raw}")
+                parts.append("- No confirmed flight records in database — see web data below.")
         except (json.JSONDecodeError, TypeError):
-            parts.append(f"- {flights_raw}")
+            parts.append("- No confirmed flight records in database — see web data below.")
     else:
-        parts.append("- Not available")
+        parts.append("- No confirmed flight records in database — see web data below.")
     parts.append("")
 
     # Hotels
@@ -654,7 +793,17 @@ def _build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
 
     # Activities + restaurants + weather + events + local transport + airport transfer
     parts.append("**Activities & Experience**")
+    parts.append("")
     has_experience = False
+
+    _CATEGORY_LABELS = {
+        "fetch_activities":       "Activities",
+        "fetch_restaurants":      "Restaurants",
+        "fetch_weather":          "Weather",
+        "events_finder":          "Events",
+        "local_transport_guide":  "Local Transport",
+        "airport_transfer_info":  "Airport Transfers",
+    }
 
     for raw_key, formatter in [
         ("fetch_activities",    _fmt_activities),
@@ -667,29 +816,43 @@ def _build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
         raw = db_results.get(raw_key, "")
         if raw:
             lines = formatter(raw)
-            parts.extend(lines)
             if lines:
+                label = _CATEGORY_LABELS.get(raw_key, raw_key)
+                parts.append(f"*{label}*")
+                parts.extend(lines)
+                parts.append("")
                 has_experience = True
 
     if not has_experience:
         parts.append("- Not available")
-    parts.append("")
+        parts.append("")
 
-    # Visa
+    # Visa — only show confirmed DB records; web fallback appears in Section 2
     parts.append("**Visa Information**")
     visa_raw = db_results.get("check_visa", "")
-    parts.append(f"- {visa_raw}" if visa_raw else "- Not available — check the official embassy website.")
+    visa_is_web = visa_raw.startswith("[Web source]") if visa_raw else False
+    if visa_raw and not visa_is_web:
+        parts.append(f"- {visa_raw}")
+    else:
+        parts.append("- No visa data in database — see web research section below.")
     parts.append("")
 
     # Cost Summary
     parts.append("**Cost Summary**")
     cost_raw = db_results.get("calculate_trip_cost", "")
+    flights_raw_for_cost = db_results.get("fetch_flights", "")
+    flight_is_estimated = not flights_raw_for_cost or flights_raw_for_cost.startswith("[Web source]")
     if cost_raw:
         try:
             cost = json.loads(cost_raw)
             for k, v in cost.items():
-                if k != "currency":
-                    parts.append(f"- {k.replace('_', ' ').title()}: {v}")
+                if k == "currency":
+                    continue
+                label = k.replace('_', ' ').title()
+                if k == "flight" and flight_is_estimated:
+                    parts.append(f"- {label}: {v} (flight price not confirmed — estimate only)")
+                else:
+                    parts.append(f"- {label}: {v}")
         except (json.JSONDecodeError, TypeError):
             parts.append(f"- {cost_raw}")
     else:
@@ -785,10 +948,73 @@ def _fmt_airport(raw: str) -> List[str]:
         return []
 
 
+def _extract_visa_summary(raw: str) -> str:
+    """
+    Extracts one clean visa status sentence from raw web research text.
+    Looks for sentences containing 'visa-free', 'no visa', 'visa required', or 'ETIAS'.
+    Skips markdown table rows (lines with 2+ pipe characters).
+    Falls back to a generic message with the source attribution.
+    """
+    import re as _re
+
+    _VISA_KEYWORDS = ("visa-free", "no visa", "visa required", "etias", "visa on arrival")
+    candidates = []
+
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # Skip source/content markers
+        if line.lower().startswith("source:") or line.lower().startswith("content:"):
+            continue
+        # Skip markdown table rows — they contain country comparisons not relevant to traveler
+        if line.count("|") >= 2:
+            continue
+        low = line.lower()
+        if any(kw in low for kw in _VISA_KEYWORDS):
+            for s in _re.split(r"(?<=[.!?])\s+", line):
+                s = s.strip()
+                if (
+                    len(s) > 20
+                    and s.count("|") < 2
+                    and any(kw in s.lower() for kw in _VISA_KEYWORDS)
+                ):
+                    candidates.append(s)
+                    break
+        if candidates:
+            break
+
+    if candidates:
+        return candidates[0] + " (Source: web research)"
+    return "Visa requirements could not be determined — check the official embassy website."
+
+
 def _build_web_section(web_results: Dict[str, str]) -> str:
     """Builds Section 2 (Live Web Data) deterministically from WebAgent results."""
+    import datetime as _dt
+    _today = _dt.date.today()
+
     parts: List[str] = ["# Section 2 — Live Web Data\n"]
     has_any = False
+
+    # Flights web fallback (promoted from DB section when no DB record found)
+    flights_web = web_results.get("fetch_flights", "")
+    if flights_web and flights_web.startswith("[Web source]"):
+        parts.append("**Flights (Web Research)**")
+        parts.append("- No direct flight records found in database for this route.")
+        parts.append("- Check current prices and availability on Google Flights, Skyscanner, or Kayak.")
+        parts.append("")
+        has_any = True
+
+    # Visa web fallback — extract one clean summary line from web research
+    visa_web = web_results.get("check_visa", "")
+    if visa_web and visa_web.startswith("[Web source]"):
+        clean = visa_web.removeprefix("[Web source]").strip()
+        visa_line = _extract_visa_summary(clean)
+        parts.append("**Visa Information (Web Research)**")
+        parts.append(f"- {visa_line}")
+        parts.append("")
+        has_any = True
 
     # Location coordinates
     geo_raw = web_results.get("geocode_location", "")
@@ -844,37 +1070,43 @@ def _build_web_section(web_results: Dict[str, str]) -> str:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Live events — skip lines with unknown price
+    # Live events — skip noisy or empty lines
     events_raw = web_results.get("fetch_live_events", "")
     if events_raw:
-        parts.append("**Live Events**")
-        for line in events_raw.strip().split("\n")[:5]:
+        event_lines = []
+        for line in events_raw.strip().split("\n"):
             stripped = line.strip().lstrip("- ")
-            if stripped:
-                parts.append(f"- {stripped}")
-        parts.append("")
-        has_any = True
+            if stripped and not _is_noisy_line(stripped):
+                event_lines.append(f"- {stripped}")
+            if len(event_lines) >= 5:
+                break
+        if event_lines:
+            parts.append("**Live Events**")
+            parts.extend(event_lines)
+            parts.append("")
+            has_any = True
 
-    # Local breweries — deduplicate by name
+    # Local breweries — deduplicate by name, skip noise
     brew_raw = web_results.get("fetch_breweries", "")
     if brew_raw:
-        parts.append("**Local Breweries & Pubs**")
         seen_names: set = set()
-        count = 0
+        brew_lines = []
         for line in brew_raw.strip().split("\n"):
             stripped = line.strip().lstrip("- ")
-            if not stripped:
+            if not stripped or _is_noisy_line(stripped):
                 continue
             name_key = stripped.split("|")[0].strip().lower()
             if name_key in seen_names:
                 continue
             seen_names.add(name_key)
-            parts.append(f"- {stripped}")
-            count += 1
-            if count >= 3:
+            brew_lines.append(f"- {stripped}")
+            if len(brew_lines) >= 3:
                 break
-        parts.append("")
-        has_any = True
+        if brew_lines:
+            parts.append("**Local Breweries & Pubs**")
+            parts.extend(brew_lines)
+            parts.append("")
+            has_any = True
 
     # Tavily web research — strip URLs, format as bullet points
     tavily_raw = web_results.get("web_research_tavily", "")
@@ -892,12 +1124,59 @@ def _build_web_section(web_results: Dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+_NOISE_PATTERNS = (
+    # image placeholders
+    "image ",
+    # navigation / UI labels scraped from booking sites
+    "select dates",
+    "weekly",
+    "monthly",
+    "view all",
+    "load more",
+    "read more",
+    "click here",
+    "sign up",
+    "subscribe",
+    "advertisement",
+    # broken table artefacts — lines that are mostly pipes
+)
+
+
+def _is_noisy_line(text: str) -> bool:
+    """Returns True when a line looks like UI junk or a scraping artefact."""
+    low = text.strip().lower()
+    if not low:
+        return True
+    # Starts with a noise keyword
+    if any(low.startswith(p) for p in _NOISE_PATTERNS):
+        return True
+    # Line is mostly pipe characters (broken markdown table)
+    if low.count("|") >= 3:
+        return True
+    return False
+
+
 def _parse_tavily_bullets(raw: str, max_bullets: int = 4) -> List[str]:
     """
-    Strips 'Source: URL' lines from a Tavily result and returns
-    the content as a list of clean bullet-point strings.
+    Strips 'Source: URL' lines, UI-noise, and clearly outdated date references
+    from a Tavily result, then returns clean bullet-point strings.
     """
     import re as _re
+    import datetime as _dt
+
+    _today = _dt.date.today()
+
+    # Regex to detect a past year range like "September 23, 2025, to January 11, 2026"
+    # or standalone past years embedded in a sentence.
+    _past_year_re = _re.compile(r"\b(20\d{2})\b")
+
+    def _sentence_is_stale(s: str) -> bool:
+        """Returns True when a sentence mentions only past years (before today)."""
+        years = [int(y) for y in _past_year_re.findall(s)]
+        if not years:
+            return False
+        # Allow if any mentioned year is current or future
+        return all(y < _today.year for y in years)
 
     sentences: List[str] = []
     for block in raw.split("\n\n"):
@@ -907,12 +1186,12 @@ def _parse_tavily_bullets(raw: str, max_bullets: int = 4) -> List[str]:
                 continue
             if line.lower().startswith("content:"):
                 line = line[len("content:"):].strip()
-            if line:
-                # Split on sentence boundaries
-                for s in _re.split(r"(?<=[.!?])\s+", line):
-                    s = s.strip()
-                    if len(s) > 30:
-                        sentences.append(s)
+            if _is_noisy_line(line):
+                continue
+            for s in _re.split(r"(?<=[.!?])\s+", line):
+                s = s.strip()
+                if len(s) > 30 and not _is_noisy_line(s) and not _sentence_is_stale(s):
+                    sentences.append(s)
 
     # Deduplicate while preserving order
     seen: set = set()
