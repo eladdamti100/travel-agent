@@ -99,6 +99,10 @@ def _get_latest_user_query(state: AgentState) -> str:
 
     logger.info("Cache store TripContext: %s", ctx.model_dump())
 
+    # origin_country is intentionally excluded: the cache_checker runs before
+    # the user provides nationality (HITL clarification), so its lookup key
+    # never contains origin_country. Including it here would produce a
+    # store key that never matches the lookup key.
     cache_key = build_trip_cache_key({
         "destination_city": _pick("destination_city"),
         "duration_days":    _pick("duration_days"),
@@ -106,7 +110,6 @@ def _get_latest_user_query(state: AgentState) -> str:
         "currency":         _pick("currency"),
         "num_travelers":    _pick("num_travelers"),
         "origin_airport":   _pick("origin_airport"),
-        "origin_country":   _pick("origin_country"),
     })
 
     logger.info("Cache store query/key: %s", cache_key)
