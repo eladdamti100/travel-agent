@@ -129,3 +129,27 @@ Trip planning cancelled. Safe travels!
 | Edit → `master_planner` re-runs with `hitl_feedback` visible in Section 3 | |
 | Cancel → END, no cache write | |
 | `hitl_feedback` and `critic_attempts` cleared after plan completion | |
+
+---
+
+## Known Limitations (cross-team, outside the HITL graph)
+
+These were observed during HITL Edit testing. They live **below** the HITL graph
+layer (Student 3 / shared planner files) and do not affect the HITL flow itself —
+the Edit feedback is captured and surfaced in Section 3 Notes correctly.
+
+1. **Lodging preference does not change hotel results on Edit.**
+   When the user edits with e.g. "I prefer budget hostels", the feedback reaches
+   the planner and appears in the Notes, but the actual hotel list is unchanged
+   because:
+   - `_extract_hotel_preference` (`context_enricher.py`) does not recognize the
+     word "hostel" — only "budget hotel".
+   - `FETCH_HOTELS` in `_TASK_REQUIREMENTS` (`planner_dependencies.py`) tracks only
+     `destination_city`, so a `hotel_preference` change does not invalidate the
+     hotel re-fetch.
+   - `StayAgent.run` (`stay_agent.py`) calls `fetch_hotels(city=...)` with no
+     preference filter, and the DB has no hostel rows for the test cities.
+
+   *Fix owner:* Student 3 (Yair) — web/planner sub-agent layer. The HITL graph
+   already passes `hitl_feedback` through correctly; no change needed on the
+   graph side.

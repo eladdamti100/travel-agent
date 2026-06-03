@@ -89,11 +89,22 @@ def extract_metadata(state: AgentState) -> dict:
     last_content = getattr(messages[-1], "content", "")
     last_content_lower = last_content.lower()
 
-    for keyword, city in _CITY_MAP.items():
-        if keyword in last_content_lower:
-            updates["current_city"] = city
-            logger.info("Detected city: %s", city)
-            break
+    # Position-aware city detection: when the message names several cities
+    # (e.g. "to Berlin from New York"), prefer the destination introduced by
+    # "to ". Falls back to the earliest mentioned city otherwise.
+    city_hits = [
+        (last_content_lower.find(keyword), city)
+        for keyword, city in _CITY_MAP.items()
+        if keyword in last_content_lower
+    ]
+    if city_hits:
+        to_idx = last_content_lower.rfind("to ")
+        after_to = sorted(
+            (pos, city) for pos, city in city_hits if to_idx != -1 and pos >= to_idx
+        )
+        chosen_city = after_to[0][1] if after_to else sorted(city_hits)[0][1]
+        updates["current_city"] = chosen_city
+        logger.info("Detected city: %s", chosen_city)
 
     budget_match = re.search(r"\$(\d[\d,]*(?:\.\d+)?)", last_content_lower)
     if budget_match:
@@ -501,6 +512,7 @@ def hitl_approval_node(state: AgentState) -> dict:
     return {
         "hitl_decision": decision,
         "hitl_feedback": feedback,
+        "force_replan": decision == "edit",
     }
 
 
