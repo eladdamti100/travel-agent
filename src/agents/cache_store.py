@@ -88,19 +88,25 @@ def _get_latest_user_query(state: AgentState) -> str:
     """
     Returns a deterministic structured cache key when possible, otherwise the latest user message.
     """
-
+    # Prefer the already-computed trip_context stored in state — it was built
+    # from the original planning query and is more complete than re-extracting
+    # from the latest message (which may be a short HITL reply like "israel").
+    stored = state.get("trip_context") or {}
     ctx = extract_trip_context_deterministic(state)
+
+    def _pick(field: str):
+        return stored.get(field) or getattr(ctx, field, None)
 
     logger.info("Cache store TripContext: %s", ctx.model_dump())
 
     cache_key = build_trip_cache_key({
-        "destination_city": ctx.destination_city,
-        "duration_days":    ctx.duration_days,
-        "total_budget":     ctx.total_budget,
-        "currency":         ctx.currency,
-        "num_travelers":    ctx.num_travelers,
-        "origin_airport":   ctx.origin_airport,
-        "origin_country":   ctx.origin_country,
+        "destination_city": _pick("destination_city"),
+        "duration_days":    _pick("duration_days"),
+        "total_budget":     _pick("total_budget"),
+        "currency":         _pick("currency"),
+        "num_travelers":    _pick("num_travelers"),
+        "origin_airport":   _pick("origin_airport"),
+        "origin_country":   _pick("origin_country"),
     })
 
     logger.info("Cache store query/key: %s", cache_key)
