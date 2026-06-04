@@ -354,6 +354,17 @@ def find_exact_cached_answer(
         miss_reason = "No cache entry found for this query."
     elif not row["is_valid"]:
         miss_reason = "Cache entry expired (TTL exceeded)."
+        if row["source"] == "web":
+            with sqlite3.connect(_CACHE_DB_PATH) as del_conn:
+                del_conn.execute(
+                    "DELETE FROM semantic_cache WHERE route = ? AND normalized_query = ?",
+                    (route, normalized_query),
+                )
+            logger.info(
+                "Deleted expired web cache entry immediately. route=%s query=%s",
+                route,
+                normalized_query,
+            )
         row = None  # treat as miss
 
     if row is None:
@@ -411,8 +422,11 @@ def find_cached_answer(
     """
     initialize_cache_db()
 
-    # Probabilistic background cleanup — fires on every lookup path (exact or semantic)
-    # so expired rows are purged even in read-heavy workloads with no new stores.
+    # Always purge expired web entries before searching — live data must never
+    # surface as a semantic hit after its TTL elapses.
+    _purge_expired_web_entries(route=route)
+
+    # Probabilistic background cleanup for general (non-web) housekeeping.
     if random.random() < _CLEANUP_ON_LOOKUP_PROBABILITY:
         _cleanup_cache(route=route)
 
@@ -665,6 +679,19 @@ def store_cache_entry(
                 query,
             )
 
+        # Web data is always fresh — delete any existing entries for this query
+        # so the new result overwrites stale web content unconditionally.
+        if source == "web" and _existing:
+            conn.execute(
+                "DELETE FROM semantic_cache WHERE route = ? AND normalized_query = ?",
+                (route, normalized_query),
+            )
+            logger.info(
+                "Replaced existing web cache entry with fresh data. route=%s query=%s",
+                route,
+                query,
+            )
+
         conn.execute(
             """
             INSERT INTO semantic_cache (
@@ -913,6 +940,34 @@ def build_trip_cache_key_from_context(
         "origin_airport":   origin_airport,
         "origin_country":   origin_country,
     })
+
+def _purge_expired_web_entries(route: str) -> int:
+    """
+    Deletes all web-sourced cache entries whose TTL has elapsed for the given route.
+
+    Called on every find_cached_answer invocation (not probabilistically) so
+    expired live-data entries are removed as soon as they are no longer valid,
+    rather than waiting for the background 5% cleanup.
+
+    Returns the number of deleted rows.
+    """
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        cursor = conn.execute(
+            """
+            DELETE FROM semantic_cache
+            WHERE route = ?
+              AND source = 'web'
+              AND created_at < datetime('now', '-' || ttl_days || ' days')
+            """,
+            (route,),
+        )
+        deleted = cursor.rowcount
+
+    if deleted:
+        logger.info("Purged %d expired web cache entries. route=%s", deleted, route)
+
+    return deleted
+
 
 def _cleanup_cache(route: str) -> None:
     """

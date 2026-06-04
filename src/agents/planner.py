@@ -456,6 +456,18 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         critic_suggestions=critic_suggestions,
     )
 
+    # Mark whether the final plan drew on any live web data so cache_store
+    # can apply the correct TTL (3 days for web, 30 days for pure DB).
+    used_web_source = any(
+        isinstance(v, str) and bool(v)
+        for k, v in task_results.items()
+        if k in _WEB_TASK_KEYS
+    ) or any(
+        isinstance(v, str) and v.startswith("[Web source]")
+        for v in task_results.values()
+    )
+    updates["used_web_source"] = used_web_source
+
     updates["planner_status"] = PlannerStatus.READY.value
     updates["messages"] = [AIMessage(content=final_answer)]
     updates["tool_call_count"] = state.get("tool_call_count", 0) + len(task_results)

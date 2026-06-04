@@ -98,3 +98,5 @@ class AgentState(TypedDict):
     hitl_decision: str
     critique_result: dict
     hitl_feedback: str
+
+    used_web_source: bool
