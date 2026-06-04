@@ -354,6 +354,17 @@ def find_exact_cached_answer(
         miss_reason = "No cache entry found for this query."
     elif not row["is_valid"]:
         miss_reason = "Cache entry expired (TTL exceeded)."
+        if row["source"] == "web":
+            with sqlite3.connect(_CACHE_DB_PATH) as del_conn:
+                del_conn.execute(
+                    "DELETE FROM semantic_cache WHERE route = ? AND normalized_query = ?",
+                    (route, normalized_query),
+                )
+            logger.info(
+                "Deleted expired web cache entry immediately. route=%s query=%s",
+                route,
+                normalized_query,
+            )
         row = None  # treat as miss
 
     if row is None:
@@ -662,6 +673,19 @@ def store_cache_entry(
                 "Cache key already stored with source=%s, overwriting with source=%s. query=%s",
                 _existing["source"],
                 source,
+                query,
+            )
+
+        # Web data is always fresh — delete any existing entries for this query
+        # so the new result overwrites stale web content unconditionally.
+        if source == "web" and _existing:
+            conn.execute(
+                "DELETE FROM semantic_cache WHERE route = ? AND normalized_query = ?",
+                (route, normalized_query),
+            )
+            logger.info(
+                "Replaced existing web cache entry with fresh data. route=%s query=%s",
+                route,
                 query,
             )
 
