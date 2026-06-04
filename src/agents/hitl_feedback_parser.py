@@ -40,6 +40,15 @@ _DUR_PATTERNS = (
 )
 
 
+def _validated_copy(context: TripContext, **updates) -> TripContext:
+    """Return a validated TripContext with the given fields overridden.
+
+    Pydantic v2's model_copy() does not accept a 'validate' keyword.
+    model_validate({**dump, **updates}) is the correct validated-copy pattern.
+    """
+    return TripContext.model_validate({**context.model_dump(), **updates})
+
+
 def apply_hitl_feedback(
     context: TripContext,
     hitl_feedback: str,
@@ -97,13 +106,11 @@ def _apply_origin_override(
         old_airport = context.origin_airport or "?"
         old_city = _AIRPORT_BY_IATA.get(old_airport, old_airport)
         logger.info(
-            "HITL edit: origin override %s (%s) → %s (%s)",
+            "HITL edit: origin override %s (%s) -> %s (%s)",
             old_airport, old_city,
             fb_origin_airport, fb_origin_city,
         )
-        context = context.model_copy(
-            update={"origin_airport": fb_origin_airport}, validate=True
-        )
+        context = _validated_copy(context, origin_airport=fb_origin_airport)
 
     return context
 
@@ -113,12 +120,12 @@ def _apply_destination_override(context: TripContext, fb_lower: str) -> TripCont
         for city in _COUNTRY_BY_CITY:
             if re.search(trigger + re.escape(city.lower()), fb_lower):
                 dest_country = _COUNTRY_BY_CITY.get(city)
-                logger.info("HITL edit: destination override → %s", city)
-                context = context.model_copy(
-                    update={"destination_city": city, "destination_country": dest_country},
-                    validate=True,
+                logger.info("HITL edit: destination override -> %s", city)
+                return _validated_copy(
+                    context,
+                    destination_city=city,
+                    destination_country=dest_country,
                 )
-                return context
     return context
 
 
@@ -127,8 +134,8 @@ def _apply_duration_override(context: TripContext, fb_lower: str) -> TripContext
         m = re.search(pat, fb_lower)
         if m:
             days = int(m.group(1))
-            logger.info("HITL edit: duration override → %d days", days)
-            return context.model_copy(update={"duration_days": days}, validate=True)
+            logger.info("HITL edit: duration override -> %d days", days)
+            return _validated_copy(context, duration_days=days)
     return context
 
 
@@ -136,6 +143,6 @@ def _apply_budget_override(context: TripContext, fb_lower: str) -> TripContext:
     budget_match = re.search(r"\$(\d[\d,]*(?:\.\d+)?)", fb_lower)
     if budget_match:
         budget = float(budget_match.group(1).replace(",", ""))
-        logger.info("HITL edit: budget override → $%.2f", budget)
-        return context.model_copy(update={"total_budget": budget}, validate=True)
+        logger.info("HITL edit: budget override -> $%.2f", budget)
+        return _validated_copy(context, total_budget=budget)
     return context

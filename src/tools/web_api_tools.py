@@ -10,12 +10,14 @@ import asyncio
 import json
 import os
 import re
+from datetime import date as _today_date
 from typing import Dict
 
 import httpx
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.tools import tool
 
+from src.config.city_registry import CURRENCY_BY_COUNTRY as _CURRENCY_BY_COUNTRY
 from src.utils.logger import get_logger
 
 logger = get_logger("web_api_tools")
@@ -142,8 +144,7 @@ async def fetch_live_events(city: str) -> str:
         if not events:
             return _MOCK_EVENTS.get(city_lower, f"- No upcoming events found in {city_clean}.")
 
-        from datetime import date as _date
-        today = _date.today().isoformat()
+        today = _today_date.today().isoformat()
         lines = []
         for ev in events:
             name = ev.get("name", "Live Event")
@@ -170,8 +171,10 @@ async def live_currency_conversion(amount: float, base: str, target: str) -> str
     base_c  = re.sub(r"[^a-zA-Z]", "", base).upper()[:3]
     target_c = re.sub(r"[^a-zA-Z]", "", target).upper()[:3]
 
-    if amount <= 0:
-        logger.warning("live_currency_conversion. amount=%s clamped_to=1.0", amount)
+    if amount < 0:
+        logger.warning("live_currency_conversion. amount=%.2f invalid=negative clamped_to=1.0", amount)
+        amount = 1.0
+    elif amount == 0:
         amount = 1.0
 
     def _fallback(reason: str) -> str:
@@ -279,9 +282,7 @@ async def fetch_country_metadata(country_name: str) -> str:
         })
     except Exception as exc:
         logger.error("fetch_country_metadata. status=exception country=%s error=%s", country_clean, exc)
-        # Use city_registry for more accurate fallback currencies
-        from src.config.city_registry import CURRENCY_BY_COUNTRY
-        inferred = CURRENCY_BY_COUNTRY.get(country_clean.lower(), "EUR")
+        inferred = _CURRENCY_BY_COUNTRY.get(country_clean.lower(), "EUR")
         return json.dumps({
             "status": "inferred_fallback",
             "canonical_name": country_clean,

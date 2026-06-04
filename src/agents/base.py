@@ -2,12 +2,8 @@
 LLM factory — returns a configured model instance for the selected provider.
 
 Set LLM_PROVIDER=groq or LLM_PROVIDER=gemini (default) in .env.
+HuggingFace / torch silence vars are set once in run.py before any import.
 """
-
-import os
-
-os.environ["TQDM_DISABLE"] = "True"
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 from src.config.settings import settings
 

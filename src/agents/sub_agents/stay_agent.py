@@ -3,7 +3,7 @@ Stay sub-agent — fetches hotels for the destination city.
 """
 
 import asyncio
-from time import time
+import time
 
 from src.agents.sub_agents.base import BaseSubAgent
 from src.models.planner import PlannerToolResults
@@ -34,8 +34,6 @@ class StayAgent(BaseSubAgent):
 
         if not context.destination_city:
             return result
-
-        import time
 
         start_time = time.perf_counter()
 

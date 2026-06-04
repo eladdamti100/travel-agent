@@ -14,12 +14,16 @@ from src.agents.master_orchestrator import run_master_orchestrator
 from src.agents.planner import run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
+from src.agents.base import get_model as _get_unbound_model
+from src.agents.validator import InputValidator, ai_validate, validate_input
+from src.agents.vector_guard import is_vector_threat
 from src.config.city_registry import CITY_KEYWORDS as _CITY_MAP
 from src.config.settings import settings
 from src.graph.state import AgentState
 from src.models.trip_context import TripContext
 from src.prompts.loader import get_prompt
 from src.utils.logger import get_logger
+from src.utils.modification_detector import detect_modification_context
 
 logger = get_logger("nodes")
 
@@ -35,8 +39,6 @@ def extract_metadata(state: AgentState) -> dict:
     Resets all per-turn output fields so stale data from a previous plan
     cannot bleed into the current turn.  Does not route intent.
     """
-    from src.utils.modification_detector import detect_modification_context
-
     messages = state.get("messages", [])
     updates: dict = {
         # ── turn-level resets ────────────────────────────────────────────────
@@ -110,8 +112,6 @@ def run_validator(state: AgentState) -> dict:
     HITL turns use is_hitl=True: short factual answers (airport codes, nationalities,
     durations, budgets) are fast-approved; harm and injection checks still run.
     """
-    from src.agents.validator import InputValidator, ai_validate, validate_input
-
     messages = state.get("messages", [])
     if not messages:
         return {"validation_status": "approved"}
@@ -132,7 +132,6 @@ def run_validator(state: AgentState) -> dict:
         return {"validation_status": "approved"}
 
     if InputValidator.is_clearly_travel(last_content):
-        from src.agents.vector_guard import is_vector_threat
         if not is_vector_threat(last_content):
             logger.info("validator. status=approved path=travel_keyword")
             return {"validation_status": "approved"}
@@ -215,7 +214,34 @@ def cache_check_node(state: AgentState) -> dict:
 # ── Node 8: Master Planner ──────────────────────────────────────────────────
 
 def master_planner_node(state: AgentState) -> dict:
-    return run_master_planner(state)
+    """
+    Wrapper with a hard wall-clock timeout so a stalled planner never blocks
+    the graph indefinitely. The planner runs in a ThreadPoolExecutor (P0-2.2),
+    so we enforce the timeout at this node boundary.
+    """
+    import concurrent.futures as _cf
+    timeout = settings.planner_timeout_seconds
+    with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run_master_planner, state)
+        try:
+            return future.result(timeout=timeout)
+        except _cf.TimeoutError:
+            logger.error(
+                "master_planner_node. status=timeout timeout_seconds=%.0f", timeout
+            )
+            future.cancel()
+            return {
+                "planner_status": "timeout",
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "The planner took too long to respond. "
+                            "Please try again with a simpler request, "
+                            "or check that your API keys are configured correctly."
+                        )
+                    )
+                ],
+            }
 
 
 # ── Node 9: Critic ───────────────────────────────────────────────────────────
@@ -349,8 +375,7 @@ def summarizer_node(state: AgentState) -> dict:
     if not transcript_lines:
         return {}
 
-    from src.agents.base import get_model
-    model = get_model(temperature=0)  # unbound — summarizer never calls tools
+    model = _get_unbound_model(temperature=0)  # unbound — summarizer never calls tools
 
     summary_response = model.invoke([
         SystemMessage(content=get_prompt("summarizer_prompt")),

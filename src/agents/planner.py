@@ -43,7 +43,7 @@ from src.agents.sub_agents.web_agent import WebAgent
 from src.config.city_registry import COUNTRY_BY_CITY as _DESTINATION_COUNTRY_BY_CITY
 from src.config.settings import settings
 from src.graph.state import AgentState
-from src.models.context_enrichment import PreferenceUpdate
+from src.models.context_enrichment import ContextEnrichmentResult, PreferenceUpdate
 from src.models.planner import PlannerStatus, PlannerTaskType
 from src.models.trip_context import TripContext
 from src.services.plan_enricher import calculate_cost_if_possible, fill_missing_with_web
@@ -200,7 +200,6 @@ async def _run_master_planner_async(state: AgentState) -> dict:
             "Enrichment failed or timed out (%s). Falling back to deterministic context.",
             type(_enrichment_raw).__name__,
         )
-        from src.models.context_enrichment import ContextEnrichmentResult
         enrichment_result = ContextEnrichmentResult()
     else:
         enrichment_result = _enrichment_raw
@@ -414,6 +413,9 @@ async def run_sub_agents_async(
     return merged_raw_results
 
 
+_MAX_TRAVEL_PREF_ENTRIES = 10
+
+
 def _build_preference_state_updates(
     state: AgentState,
     preference_updates: List[PreferenceUpdate],
@@ -425,11 +427,28 @@ def _build_preference_state_updates(
             existing = state.get("travel_preferences", "") or ""
             pending = updates.get("travel_preferences", existing) or ""
 
-            updates["travel_preferences"] = (
+            raw = (
                 f"{pending}\n- {update.value}".strip()
                 if pending
                 else f"- {update.value}"
             )
+
+            # Deduplicate and cap at _MAX_TRAVEL_PREF_ENTRIES bullet points.
+            lines = [l for l in raw.splitlines() if l.strip()]
+            seen: set = set()
+            deduped: List[str] = []
+            for line in lines:
+                key = line.strip().lower()
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(line)
+            if len(deduped) > _MAX_TRAVEL_PREF_ENTRIES:
+                deduped = deduped[-_MAX_TRAVEL_PREF_ENTRIES:]  # keep most recent
+                logger.info(
+                    "travel_preferences. trimmed_to=%d entries", _MAX_TRAVEL_PREF_ENTRIES
+                )
+
+            updates["travel_preferences"] = "\n".join(deduped)
             continue
 
         updates[update.field_name] = update.value

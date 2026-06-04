@@ -135,13 +135,11 @@ async def enrich_trip_context_async(
     except Exception as error:
         logger.warning("Context enrichment failed (non-critical, using deterministic context): %s", error)
 
-        fallback_context = current_context.model_copy(
-            update={
-                "extraction_source": current_context.extraction_source or "deterministic",
-                "slm_enriched": False,
-            },
-            validate=True,
-        )
+        fallback_context = TripContext.model_validate({
+            **current_context.model_dump(),
+            "extraction_source": current_context.extraction_source or "deterministic",
+            "slm_enriched": False,
+        })
 
         return ContextEnrichmentResult(
             trip_context=fallback_context,
@@ -230,13 +228,11 @@ def _sanitize_enrichment_result(
 
         valid_updates.append(update)
 
-    trip_context = result.trip_context.model_copy(
-        update={
-            "extraction_source": result.trip_context.extraction_source or "slm",
-            "slm_enriched": True,
-        },
-        validate=True,
-    )
+    trip_context = TripContext.model_validate({
+        **result.trip_context.model_dump(),
+        "extraction_source": result.trip_context.extraction_source or "slm",
+        "slm_enriched": True,
+    })
 
     return ContextEnrichmentResult(
         trip_context=trip_context,

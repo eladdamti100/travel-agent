@@ -30,17 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-os.environ["TORCHINDUCTOR_DISABLE"] = "1"
-os.environ["TORCH_COMPILE_DISABLE"] = "1"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-# Suppress all noisy loggers
+# HuggingFace / torch noise vars are set once in run.py before any import.
+# Suppress library loggers directly (safe to do at import time — no env mutation).
 import logging as _logging
 _logging.getLogger("sentence_transformers").setLevel(_logging.ERROR)
 _logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
-# Disable tqdm progress bars used by sentence_transformers
-os.environ["TQDM_DISABLE"] = "1"
 
 import numpy as np
 from sentence_transformers import SentenceTransformer

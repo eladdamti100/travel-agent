@@ -152,4 +152,38 @@ async def generate_notes_section(
     log_token_usage(response, call_site="plan_generator.notes_section")
 
     content = response.content if isinstance(response.content, str) else str(response.content)
+
+    # Guard: empty or suspiciously short responses indicate a model failure.
+    # Retry once with temperature=0.3 before falling back to a static message.
+    _MIN_NOTES_CHARS = 50
+    _MAX_NOTES_CHARS = 3000
+    if len(content.strip()) < _MIN_NOTES_CHARS:
+        logger.warning(
+            "plan_generator. notes_section_too_short=%d retrying", len(content.strip())
+        )
+        try:
+            retry_model = get_model(temperature=0.3)
+            retry_resp = await retry_model.ainvoke([
+                SystemMessage(content=get_prompt("final_answer_prompt")),
+                HumanMessage(content=(
+                    f"Planning mode: {planning_mode}\n"
+                    f"Traveler budget: ${context.total_budget} {context.currency or 'USD'}\n"
+                    f"DB tool results (key: status): {db_status}\n"
+                    f"Web tool results (key: status): {web_status}"
+                )),
+            ])
+            retry_content = retry_resp.content if isinstance(retry_resp.content, str) else str(retry_resp.content)
+            if len(retry_content.strip()) >= _MIN_NOTES_CHARS:
+                content = retry_content
+                log_token_usage(retry_resp, call_site="plan_generator.notes_section_retry")
+        except Exception as exc:
+            logger.error("plan_generator. notes_section_retry_failed=%s", exc)
+
+    # Truncate runaway responses to prevent the final answer from being too long.
+    if len(content) > _MAX_NOTES_CHARS:
+        content = content[:_MAX_NOTES_CHARS] + "\n\n*(response truncated)*"
+
+    if len(content.strip()) < _MIN_NOTES_CHARS:
+        content = "Notes could not be generated. Please review Sections 1 and 2 for your trip details."
+
     return f"# Section 3 — Notes and Assumptions\n\n{content}"
