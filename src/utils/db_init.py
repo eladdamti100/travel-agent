@@ -117,17 +117,60 @@ def create_travel_db() -> None:
         )
     """)
 
-    # ── Flights (all from TLV) ────────────────────────────────────────────────
+    # ── Flights ───────────────────────────────────────────────────────────────
     flights = [
-        ("TLV", "Paris",    "El Al",          350, "LY321"),
-        ("TLV", "Paris",    "Air France",     420, "AF123"),
-        ("TLV", "London",   "British Airways",450, "BA164"),
-        ("TLV", "London",   "Virgin Atlantic",390, "VS100"),
-        ("TLV", "Tokyo",    "El Al",          950, "LY091"),
-        ("TLV", "Tokyo",    "Emirates",       820, "EK312"),
-        ("TLV", "New York", "United",         750, "UA445"),
-        ("TLV", "Berlin",   "Lufthansa",      280, "LH909"),
-        ("TLV", "Berlin",   "Ryanair",        110, "FR101"),
+        # From TLV (Tel Aviv)
+        ("TLV", "Paris",    "El Al",           350, "LY321"),
+        ("TLV", "Paris",    "Air France",      420, "AF123"),
+        ("TLV", "London",   "British Airways", 450, "BA164"),
+        ("TLV", "London",   "Virgin Atlantic", 390, "VS100"),
+        ("TLV", "Tokyo",    "El Al",           950, "LY091"),
+        ("TLV", "Tokyo",    "Emirates",        820, "EK312"),
+        ("TLV", "New York", "United",          750, "UA445"),
+        ("TLV", "New York", "Delta",           810, "DL402"),
+        ("TLV", "Berlin",   "Lufthansa",       280, "LH909"),
+        ("TLV", "Berlin",   "Ryanair",         110, "FR101"),
+        # From JFK (New York)
+        ("JFK", "Paris",    "Air France",      480, "AF007"),
+        ("JFK", "Paris",    "Delta",           520, "DL402"),
+        ("JFK", "London",   "British Airways", 420, "BA178"),
+        ("JFK", "London",   "American",        390, "AA100"),
+        ("JFK", "Tokyo",    "Japan Airlines",  850, "JL005"),
+        ("JFK", "Tokyo",    "United",          920, "UA837"),
+        ("JFK", "Berlin",   "Lufthansa",       510, "LH400"),
+        ("JFK", "Berlin",   "Norse Atlantic",  380, "N0701"),
+        # From LHR (London Heathrow)
+        ("LHR", "Paris",    "Air France",      120, "AF1680"),
+        ("LHR", "Paris",    "British Airways", 140, "BA308"),
+        ("LHR", "Tokyo",    "British Airways", 760, "BA005"),
+        ("LHR", "Tokyo",    "Japan Airlines",  800, "JL043"),
+        ("LHR", "New York", "British Airways", 380, "BA117"),
+        ("LHR", "New York", "Virgin Atlantic", 360, "VS003"),
+        ("LHR", "Berlin",   "British Airways", 130, "BA902"),
+        ("LHR", "Berlin",   "Ryanair",          80, "FR9002"),
+        # From CDG (Paris Charles de Gaulle)
+        ("CDG", "London",   "Air France",      130, "AF1180"),
+        ("CDG", "London",   "EasyJet",          90, "U29048"),
+        ("CDG", "Tokyo",    "Air France",      750, "AF292"),
+        ("CDG", "New York", "Air France",      420, "AF011"),
+        ("CDG", "New York", "Delta",           460, "DL264"),
+        ("CDG", "Berlin",   "Air France",      110, "AF1220"),
+        ("CDG", "Berlin",   "EasyJet",          85, "U22941"),
+        # From BER (Berlin Brandenburg)
+        ("BER", "Paris",    "Lufthansa",       100, "LH1008"),
+        ("BER", "Paris",    "EasyJet",          75, "U22940"),
+        ("BER", "London",   "British Airways", 120, "BA903"),
+        ("BER", "London",   "Ryanair",          70, "FR9001"),
+        ("BER", "Tokyo",    "Lufthansa",       720, "LH796"),
+        ("BER", "New York", "Lufthansa",       480, "LH401"),
+        ("BER", "New York", "Norse Atlantic",  360, "N0702"),
+        # From NRT (Tokyo Narita)
+        ("NRT", "Paris",    "Air France",      800, "AF291"),
+        ("NRT", "Paris",    "Japan Airlines",  820, "JL415"),
+        ("NRT", "London",   "British Airways", 780, "BA006"),
+        ("NRT", "New York", "Japan Airlines",  860, "JL004"),
+        ("NRT", "New York", "United",          900, "UA838"),
+        ("NRT", "Berlin",   "Lufthansa",       730, "LH797"),
     ]
     cursor.executemany(
         "INSERT INTO flights (origin, destination, airline, price, flight_number) VALUES (?,?,?,?,?)",
@@ -173,16 +216,41 @@ def create_travel_db() -> None:
 
     # ── Visa Requirements ─────────────────────────────────────────────────────
     visa_requirements = [
+        # Israel passports
         ("israel", "france",   "No visa required for tourism up to 90 days (Schengen)."),
         ("israel", "japan",    "No visa required for tourism up to 90 days."),
         ("israel", "uk",       "No visa required for tourism up to 6 months."),
         ("israel", "usa",      "ESTA authorization required — apply online before travel."),
         ("israel", "germany",  "No visa required for tourism up to 90 days (Schengen)."),
-        ("india",  "france",   "Schengen Visa required. Apply at the French consulate."),
-        ("india",  "japan",    "Visa required. Apply at the Japanese embassy."),
+        # USA passports
         ("usa",    "france",   "No visa required for tourism up to 90 days (Schengen)."),
         ("usa",    "japan",    "No visa required for tourism up to 90 days."),
         ("usa",    "uk",       "No visa required for tourism up to 6 months."),
+        ("usa",    "germany",  "No visa required for tourism up to 90 days (Schengen)."),
+        # UK passports
+        ("uk",     "france",   "No visa required for tourism up to 90 days (Schengen post-Brexit)."),
+        ("uk",     "japan",    "No visa required for tourism up to 90 days."),
+        ("uk",     "usa",      "ESTA authorization required — apply online before travel."),
+        ("uk",     "germany",  "No visa required for tourism up to 90 days (Schengen post-Brexit)."),
+        # Indian passports
+        ("india",  "france",   "Schengen Visa required. Apply at the French consulate."),
+        ("india",  "japan",    "Visa required. Apply at the Japanese embassy."),
+        ("india",  "uk",       "Standard Visitor Visa required. Apply online via UK Visas and Immigration."),
+        ("india",  "usa",      "B-1/B-2 tourist visa required. Apply at the US Embassy."),
+        ("india",  "germany",  "Schengen Visa required. Apply at the German consulate."),
+        # French passports
+        ("france", "japan",    "No visa required for tourism up to 90 days."),
+        ("france", "uk",       "No visa required for tourism up to 6 months."),
+        ("france", "usa",      "ESTA authorization required — apply online before travel."),
+        # German passports
+        ("germany","japan",    "No visa required for tourism up to 90 days."),
+        ("germany","uk",       "No visa required for tourism up to 6 months."),
+        ("germany","usa",      "ESTA authorization required — apply online before travel."),
+        # Japanese passports
+        ("japan",  "france",   "No visa required for tourism up to 90 days (Schengen)."),
+        ("japan",  "uk",       "No visa required for tourism up to 6 months."),
+        ("japan",  "usa",      "ESTA authorization required — apply online before travel."),
+        ("japan",  "germany",  "No visa required for tourism up to 90 days (Schengen)."),
     ]
     cursor.executemany(
         "INSERT INTO visa_requirements (origin_country, destination_country, requirement) VALUES (?,?,?)",

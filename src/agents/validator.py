@@ -38,6 +38,7 @@ from src.agents.validator_patterns import (
 )
 from src.prompts.loader import get_prompt
 from src.utils.logger import get_logger
+from src.utils.token_tracker import log_token_usage
 
 load_dotenv()
 
@@ -338,6 +339,7 @@ def ai_validate(message: str) -> Optional[ValidationResult]:
             SystemMessage(content=get_prompt("validator_prompt")),
             HumanMessage(content=f"Validate this user message:\n\n\"{message}\""),
         ])
+        log_token_usage(response, call_site="validator.ai_validate")
 
         raw = response.content.strip()
 

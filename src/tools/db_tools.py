@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from langchain_core.tools import tool
+from src.config.city_registry import DB_COUNTRY_ALIASES as _COUNTRY_ALIASES_DB
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "travel_agency.db"
 
@@ -151,6 +152,12 @@ def fetch_activities(city: str) -> str:
     return json.dumps(results, indent=2)
 
 
+def _normalize_country_for_db(name: str) -> str:
+    """Normalises a canonical country name to the short form stored in the DB."""
+    key = name.strip().lower()
+    return _COUNTRY_ALIASES_DB.get(key, key)
+
+
 @tool
 def get_visa_requirement(origin_country: str, destination_country: str) -> str:
     """
@@ -165,7 +172,10 @@ def get_visa_requirement(origin_country: str, destination_country: str) -> str:
     """
     results = _run_query(
         query,
-        (origin_country.strip().lower(), destination_country.strip().lower()),
+        (
+            _normalize_country_for_db(origin_country),
+            _normalize_country_for_db(destination_country),
+        ),
     )
     if isinstance(results, str):
         return results

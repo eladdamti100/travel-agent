@@ -5,6 +5,7 @@ Trip context model — structured representation of a user trip request.
 from typing import Optional
 
 from pydantic import BaseModel, Field
+from src.config.city_registry import COUNTRY_BY_CITY as _COUNTRY_BY_CITY
 
 
 class TripContext(BaseModel):
@@ -112,13 +113,8 @@ class TripContext(BaseModel):
     )
 
 
-DESTINATION_COUNTRY_BY_CITY = {
-    "Paris": "France",
-    "London": "United Kingdom",
-    "Tokyo": "Japan",
-    "New York": "United States",
-    "Berlin": "Germany",
-}
+# Keep the public name for backward compatibility — re-exported from city_registry.
+DESTINATION_COUNTRY_BY_CITY = _COUNTRY_BY_CITY
 
 
 REQUIRED_TRIP_FIELDS = (

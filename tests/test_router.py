@@ -36,47 +36,16 @@ class TestRouterFunctions:
         assert route_after_cache_check({"cache_status": "miss"}) == "master_planner"
 
     def test_master_planner_routing(self):
+        # New HITL topology: a complete plan routes to the critic (Session 7),
+        # which then drives the critic → hitl_approval → cache_store chain.
         from src.graph.router import route_after_master_planner
         assert route_after_master_planner({"planner_status": "missing_required_info"}) == END
-        assert route_after_master_planner({"cache_status": "miss"}) == "cache_store"
-        assert route_after_master_planner({}) == "summarizer"
+        assert route_after_master_planner({"cache_status": "miss"}) == "critic"
+        assert route_after_master_planner({}) == "critic"
 
-    def test_should_continue_all_branches(self):
-        from src.graph.router import should_continue, MAX_TOOL_CALLS
-
-        base = [HumanMessage(content="Plan a Paris trip")]
-
-        # Max tool calls → circuit_breaker
-        assert should_continue({
-            "messages": base + [AIMessage(content="done")],
-            "tool_call_count": MAX_TOOL_CALLS,
-        }) == "circuit_breaker"
-
-        # Tool calls in last message → tools
-        tool_msg = AIMessage(content="", tool_calls=[{"name": "fetch_flights", "args": {}, "id": "1"}])
-        assert should_continue({
-            "messages": base + [tool_msg],
-            "tool_call_count": 0,
-        }) == "tools"
-
-        # Admin session with enough calls → cache_store (reviewer is now async in main.py)
-        assert should_continue({
-            "messages": base + [AIMessage(content="Final plan")],
-            "tool_call_count": 6,
-            "is_admin": True,
-            "current_city": "Paris",
-            "cache_status": "miss",
-        }) == "cache_store"
-
-        # Cache miss final answer → cache_store
-        assert should_continue({
-            "messages": base + [AIMessage(content="Final plan")],
-            "tool_call_count": 0,
-            "cache_status": "miss",
-        }) == "cache_store"
-
-        # Default → summarizer
-        assert should_continue({
-            "messages": base + [AIMessage(content="Final plan")],
-            "tool_call_count": 0,
-        }) == "summarizer"
+    def test_legacy_should_continue_removed(self):
+        """should_continue was deleted in P2-1.3 (dead code removal)."""
+        import src.graph.router as router_mod
+        assert not hasattr(router_mod, "should_continue"), (
+            "should_continue was the legacy agent/tools loop router — it should be gone"
+        )

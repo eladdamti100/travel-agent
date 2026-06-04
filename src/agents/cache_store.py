@@ -24,7 +24,7 @@ _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cache_store")
 atexit.register(_executor.shutdown, wait=True)  # flush pending writes on clean exit
 
 
-def _background_store(query: str, answer: str, trip_context: dict) -> None:
+def _background_store(query: str, answer: str, trip_context: dict, source: str = "db") -> None:
     """
     Compresses and stores a cache entry in the background.
 
@@ -34,14 +34,14 @@ def _background_store(query: str, answer: str, trip_context: dict) -> None:
     try:
         compressed = compress_answer(answer)
 
-        logger.info("Cache store writing entry. query=%s answer_chars=%d", query, len(answer))
+        logger.info("Cache store writing entry. query=%s answer_chars=%d source=%s", query, len(answer), source)
 
         store_cache_entry(
             query=query,
             answer=answer,
             route="cache_check",
             compressed_answer=compressed,
-            source="db",
+            source=source,
             trip_context=trip_context or None,
         )
         logger.info("Background cache store completed for query=%s", query)
@@ -73,8 +73,17 @@ def run_cache_store(state: AgentState) -> dict:
         logger.info("Cache store skipped: missing query or final answer.")
         return {}
 
+    # Don't cache plans for unsupported/unknown destinations — structured key
+    # would be None (required field missing), falling back to raw text which
+    # would store a broken plan and serve it as a future cache hit.
+    stored_ctx = state.get("trip_context") or {}
+    if not stored_ctx.get("destination_city"):
+        logger.info("Cache store skipped: destination_city is None/unsupported.")
+        return {}
+
     trip_ctx = state.get("trip_context") or {}
-    future = _executor.submit(_background_store, query, answer, trip_ctx)
+    source = "web" if state.get("used_web_source") else "db"
+    future = _executor.submit(_background_store, query, answer, trip_ctx, source)
     future.add_done_callback(
         lambda f: logger.error("Cache store future raised unexpectedly: %s", f.exception())
         if f.exception() else None
@@ -88,19 +97,28 @@ def _get_latest_user_query(state: AgentState) -> str:
     """
     Returns a deterministic structured cache key when possible, otherwise the latest user message.
     """
-
+    # Prefer the already-computed trip_context stored in state — it was built
+    # from the original planning query and is more complete than re-extracting
+    # from the latest message (which may be a short HITL reply like "israel").
+    stored = state.get("trip_context") or {}
     ctx = extract_trip_context_deterministic(state)
+
+    def _pick(field: str):
+        return stored.get(field) or getattr(ctx, field, None)
 
     logger.info("Cache store TripContext: %s", ctx.model_dump())
 
+    # origin_country is intentionally excluded: the cache_checker runs before
+    # the user provides nationality (HITL clarification), so its lookup key
+    # never contains origin_country. Including it here would produce a
+    # store key that never matches the lookup key.
     cache_key = build_trip_cache_key({
-        "destination_city": ctx.destination_city,
-        "duration_days":    ctx.duration_days,
-        "total_budget":     ctx.total_budget,
-        "currency":         ctx.currency,
-        "num_travelers":    ctx.num_travelers,
-        "origin_airport":   ctx.origin_airport,
-        "origin_country":   ctx.origin_country,
+        "destination_city": _pick("destination_city"),
+        "duration_days":    _pick("duration_days"),
+        "total_budget":     _pick("total_budget"),
+        "currency":         _pick("currency"),
+        "num_travelers":    _pick("num_travelers"),
+        "origin_airport":   _pick("origin_airport"),
     })
 
     logger.info("Cache store query/key: %s", cache_key)

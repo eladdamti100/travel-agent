@@ -115,6 +115,7 @@ def _prompt_plan_approval(critique: dict) -> dict:
 
     console.print()
     console.print(Panel(
+        "[bold white]The graph is paused — waiting for your decision.[/bold white]\n\n"
         f"[bold]Score:[/bold] {score}/10\n"
         f"[bold]Summary:[/bold] {reason}\n"
         + (
@@ -125,22 +126,25 @@ def _prompt_plan_approval(critique: dict) -> dict:
             "\n[bold]Suggestions:[/bold]\n" + "\n".join(f"  → {s}" for s in suggestions)
             if suggestions else ""
         ),
-        title="[cyan]Critic Review[/cyan]",
+        title="[cyan bold]Human Approval Required — Critic Review[/cyan bold]",
         border_style="cyan",
     ))
     console.print()
+    console.print(
+        "  [green bold][A] Approve[/green bold] — accept this plan and save it\n"
+        "  [yellow bold][E] Edit[/yellow bold]   — describe what to change, the agent will replan\n"
+        "  [red bold][C] Cancel[/red bold] — discard this plan and start over\n"
+    )
 
     while True:
         choice = Prompt.ask(
-            "[bold cyan]What would you like to do?[/bold cyan] "
-            "[[green]A[/green]]pprove  [[yellow]E[/yellow]]dit  [[red]C[/red]]ancel",
+            "[bold cyan]Your choice (A / E / C)[/bold cyan]",
         ).strip().lower()
 
         if choice in ("a", "approve", "approved"):
             return {"decision": "approved", "feedback": ""}
 
         if choice in ("c", "cancel", "cancelled"):
-            console.print("[dim]Trip planning cancelled.[/dim]")
             return {"decision": "cancelled", "feedback": ""}
 
         if choice in ("e", "edit"):
@@ -261,10 +265,12 @@ def run() -> None:
         final_plan_text: str | None = None
         plan_nodes = {"master_planner", "cache_check"}
         pending_interrupt: Optional[dict] = None
+        # Track whether we're inside a critic-triggered replan (suppress plan reprint)
+        _critic_replan_in_progress: bool = False
 
         def _stream_graph(input_payload):
             """Stream one graph pass, return (final_plan_text, interrupt_payload)."""
-            nonlocal final_plan_text, pending_interrupt
+            nonlocal final_plan_text, pending_interrupt, _critic_replan_in_progress
 
             with console.status("[tool.call]Starting...[/tool.call]", spinner="dots") as status:
                 for event in graph.stream(
@@ -300,6 +306,29 @@ def run() -> None:
 
                     update_status_for_node(node_name, node_data, status)
 
+                    # Print a visible line when the critic rejects the plan so the
+                    # demo audience can clearly see the self-correction loop.
+                    if node_name == "critic":
+                        critique = node_data.get("critique_result") or {}
+                        attempts = node_data.get("critic_attempts", 1)
+                        score = critique.get("score", "?")
+                        from src.graph.nodes import MAX_CRITIC_ATTEMPTS
+                        if not critique.get("passed", True) and attempts < MAX_CRITIC_ATTEMPTS:
+                            reason = critique.get("reason", "")
+                            status.stop()
+                            console.print(
+                                f"\n[yellow bold]Critic failed[/yellow bold] "
+                                f"(score {score}/10, attempt {attempts}/{MAX_CRITIC_ATTEMPTS})"
+                                + (f" — {reason}" if reason else "")
+                            )
+                            console.print(
+                                "[yellow]  → Replanning silently with critic feedback...[/yellow]\n"
+                            )
+                            status.start()
+                            _critic_replan_in_progress = True
+                        else:
+                            _critic_replan_in_progress = False
+
                     messages = node_data.get("messages", [])
                     if messages:
                         last_msg = messages[-1]
@@ -311,11 +340,21 @@ def run() -> None:
                         ):
                             text = extract_text(last_msg.content)
 
-                            if text and text not in seen_contents:
+                            # Suppress reprinting the plan during a critic-triggered replan.
+                            # Only the final approved plan (after critic passes or max attempts)
+                            # gets displayed.
+                            is_critic_replan_output = (
+                                _critic_replan_in_progress
+                                and node_name == "master_planner"
+                            )
+
+                            if text and text not in seen_contents and not is_critic_replan_output:
                                 seen_contents.add(text)
                                 status.stop()
                                 print_agent(text)
                                 status.start()
+                            elif text:
+                                seen_contents.add(text)
 
                             if node_name in plan_nodes and text:
                                 is_hitl_stop = (
@@ -341,6 +380,9 @@ def run() -> None:
                 if user_response["decision"] == "cancelled":
                     console.print("\n[dim]Trip planning cancelled. Safe travels![/dim]\n")
                     break
+
+                if user_response["decision"] == "approved":
+                    console.print("\n[green]Plan approved — saving to cache...[/green]\n")
 
                 _stream_graph(Command(resume=user_response))
 

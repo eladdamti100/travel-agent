@@ -11,6 +11,7 @@ from src.graph.state import AgentState
 from src.models.routing import RouteDecision, RouteType
 from src.prompts.loader import get_prompt
 from src.utils.logger import get_logger
+from src.utils.token_tracker import log_token_usage
 
 logger = get_logger("master_orchestrator")
 
@@ -38,6 +39,10 @@ def run_master_orchestrator(state: AgentState) -> dict:
             SystemMessage(content=get_prompt("orchestrator_prompt")),
             HumanMessage(content=last_content),
         ])
+        # Token tracking for structured_output responses: the parsed Pydantic object
+        # does not carry usage_metadata.  log_token_usage will silently no-op here
+        # and return {}.  Full tracking requires LangChain callbacks (P2 work).
+        log_token_usage(decision, call_site="master_orchestrator")
 
         logger.info(
             "Master orchestrator: route=%s reason=%s",

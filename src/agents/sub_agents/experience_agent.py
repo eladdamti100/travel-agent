@@ -4,7 +4,7 @@ and local transport for the destination city.
 """
 
 import asyncio
-from time import time
+import time
 
 from src.agents.sub_agents.base import BaseSubAgent
 from src.models.planner import PlannerToolResults
@@ -85,8 +85,6 @@ class ExperienceAgent(BaseSubAgent):
             )
 
         keys = list(tasks.keys())
-
-        import time
 
         start_time = time.perf_counter()
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
