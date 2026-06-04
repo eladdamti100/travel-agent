@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     exchangerate_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
 
+    # ── Observability (LangSmith) ─────────────────────────────────────────────
+    # Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable tracing.
+    langsmith_api_key: Optional[str] = None
+    langsmith_tracing: bool = False
+    langsmith_project: str = "marco-travel-planner"
+
     # ── Semantic cache ────────────────────────────────────────────────────────
     cache_hit_threshold: float = 0.85
     cache_ttl_days_db: int = 30
@@ -144,6 +150,29 @@ class Settings(BaseSettings):
                 "Optional web API keys not configured (static fallbacks active): %s",
                 ", ".join(optional_warnings),
             )
+
+    def configure_tracing(self) -> bool:
+        """
+        Enable LangSmith tracing when LANGSMITH_TRACING=true and a key is set.
+
+        Sets the LangChain environment variables that the SDK checks at runtime.
+        Returns True if tracing was enabled, False otherwise.
+        Call once in run.py after validate_startup().
+        """
+        import os as _os
+        if not self.langsmith_tracing or not self.langsmith_api_key:
+            return False
+
+        _os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        _os.environ["LANGCHAIN_API_KEY"] = self.langsmith_api_key
+        _os.environ["LANGCHAIN_PROJECT"] = self.langsmith_project
+
+        from src.utils.logger import get_logger
+        get_logger("settings").info(
+            "tracing. provider=langsmith project=%s enabled=True",
+            self.langsmith_project,
+        )
+        return True
 
 
 # Module-level singleton — import this everywhere instead of re-instantiating.

@@ -3,44 +3,26 @@ LangGraph workflow — compiles the full travel planner state graph.
 
 Graph topology
 ──────────────
-START
-  │
-  ▼
-extract_metadata
-  │
-  ▼
-validator
-  │ route_after_validator
-  ├─ [blocked]             → END
-  ├─ [resume_hitl_context] → resume_hitl_context → master_planner
-  └─ [approved]            → master_orchestrator
-                                  │ route_after_orchestrator
-                                  ├─ [preferences_memory] → preferences_memory → summarizer → END
-                                  ├─ [research]           → researcher → END
-                                  └─ [cache_check]        → cache_check
-                                                                 │ route_after_cache_check
-                                                                 ├─ [hit]  → END
-                                                                 └─ [miss] → master_planner
-                                                                                 │ route_after_master_planner
-                                                                                 ├─ [missing_required_info] → END
-                                                                                 └─ [final_plan] → critic
-                                                                                                     │ route_after_critic
-                                                                                                     ├─ [rejected] → master_planner
-                                                                                                     └─ [approved] → hitl_approval
-                                                                                                                         │ route_after_hitl
-                                                                                                                         ├─ [approved]  → cache_store → summarizer → END
-                                                                                                                         ├─ [edit]      → master_planner
-                                                                                                                         └─ [cancelled] → END
+START → extract_metadata → validator
+          │ blocked        → END
+          │ HITL resume    → resume_hitl_context → master_planner
+          └─ approved      → master_orchestrator
+                               ├─ preferences_memory → summarizer → END
+                               ├─ researcher → END
+                               └─ cache_check
+                                    ├─ hit  → END
+                                    └─ miss → master_planner
+                                                  └─ critic
+                                                       ├─ rejected → master_planner (replan)
+                                                       └─ passed   → hitl_approval
+                                                                         ├─ approved  → cache_store → summarizer → END
+                                                                         ├─ edit      → master_planner
+                                                                         └─ cancelled → END
 
-HITL Resume:
-  When a previous planner turn stopped to ask for missing trip details, the next
-  user reply bypasses master_orchestrator, researcher, and semantic cache, and
-  resumes planning from the saved pending TripContext.
-
-Plan-approval HITL:
-  After a complete plan is produced, the critic runs and then the graph suspends
-  for user approval. The user can approve (proceed to cache), edit (replan with
-  feedback), or cancel (end gracefully).
+Checkpointing:
+  CLI path  (synchronous) — SqliteSaver via a persistent sqlite3 connection.
+  API path  (async)       — AsyncSqliteSaver, bootstrapped during FastAPI startup.
+  Both write to the same database file so sessions are shared across interfaces.
 
 Invariant:
   Every user query passes through validator before intent routing.
@@ -48,7 +30,6 @@ Invariant:
 
 import logging
 import sqlite3
-from pathlib import Path
 
 logging.getLogger("langgraph").setLevel(logging.ERROR)
 
@@ -81,15 +62,20 @@ from src.graph.router import (
 from src.graph.state import AgentState
 
 settings.cache_dir.mkdir(parents=True, exist_ok=True)
+
+# Synchronous SQLite connection — used by the CLI and synchronous graph.stream().
 _conn = sqlite3.connect(str(settings.checkpoints_db_path), check_same_thread=False)
 _checkpointer = SqliteSaver(_conn)
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     """
-    Compile and return the StateGraph with SqliteSaver for persistent
-    cross-session memory. Each unique thread_id is a separate conversation.
+    Compile and return the StateGraph.
+
+    checkpointer defaults to the module-level SqliteSaver (synchronous CLI path).
+    Pass an AsyncSqliteSaver instance for the async FastAPI path.
     """
+    cp = checkpointer if checkpointer is not None else _checkpointer
     builder = StateGraph(AgentState)
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
@@ -162,7 +148,8 @@ def build_graph():
     builder.add_edge("cache_store", "summarizer")
     builder.add_edge("summarizer", END)
 
-    return builder.compile(checkpointer=_checkpointer)
+    return builder.compile(checkpointer=cp)
 
 
+# Module-level singleton used by main.py (synchronous CLI path).
 graph = build_graph()

@@ -109,3 +109,7 @@ class AgentState(TypedDict):
     hitl_edit_attempts: int
 
     used_web_source: bool
+
+    # Structured final plan — populated after a complete plan is generated.
+    # Deserialise with: FinalPlan(**state["final_plan"])
+    final_plan: Dict[str, Any]

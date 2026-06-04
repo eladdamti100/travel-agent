@@ -64,6 +64,7 @@ def extract_metadata(state: AgentState) -> dict:
         "planner_scheduler_result": {},
         "context_enrichment_status": "",
         "used_web_source": False,
+        "final_plan": {},
     }
 
     if not messages:

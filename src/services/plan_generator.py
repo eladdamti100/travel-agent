@@ -4,13 +4,27 @@ Plan generator — LLM-powered Section 3 and final plan assembly.
 Extracted from planner.py. The only module in the services layer that calls an LLM.
 Sections 1 and 2 are built deterministically by plan_formatter; this module
 adds the Notes section and assembles the three-section final answer.
+
+Returns both a markdown string (for the terminal UI) and a FinalPlan object
+(for programmatic consumers such as the FastAPI layer).
 """
 
-from typing import Dict, List, Optional
+import json
+from typing import Dict, List, Optional, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.base import get_model
+from src.config.city_registry import CITY_BY_AIRPORT as _AIRPORT_CITY
+from src.models.final_plan import (
+    ActivityItem,
+    CostSummary,
+    FinalPlan,
+    FlightOption,
+    HotelOption,
+    TripSummary,
+    WebEnrichment,
+)
 from src.models.planner import DependencyCheckResult, PlannerTaskType
 from src.models.trip_context import TripContext
 from src.prompts.loader import get_prompt
@@ -52,12 +66,14 @@ async def generate_final_plan(
     hitl_feedback: str = "",
     critic_issues: Optional[List[str]] = None,
     critic_suggestions: Optional[List[str]] = None,
-) -> str:
+) -> Tuple[str, FinalPlan]:
     """
     Builds the final plan in three guaranteed sections.
 
     Sections 1 and 2 are assembled deterministically from parsed tool data.
     Section 3 (Notes) uses a focused LLM call for brief reasoning text.
+
+    Returns (markdown_string, FinalPlan) so callers can choose their rendering.
     """
     db_results = {k: v for k, v in task_results.items() if k in _DB_TASK_KEYS}
     web_results = {k: v for k, v in task_results.items() if k in _WEB_TASK_KEYS}
@@ -82,7 +98,19 @@ async def generate_final_plan(
     )
 
     sep = "\n\n---\n\n"
-    return f"{section1}{sep}{section2}{sep}{section3}"
+    markdown = f"{section1}{sep}{section2}{sep}{section3}"
+
+    structured = _build_final_plan(
+        context=context,
+        db_results=db_results,
+        web_results=web_results,
+        notes=section3,
+        planning_mode=planning_mode,
+        markdown=markdown,
+        used_web=bool(web_results),
+    )
+
+    return markdown, structured
 
 
 async def generate_notes_section(
@@ -187,3 +215,139 @@ async def generate_notes_section(
         content = "Notes could not be generated. Please review Sections 1 and 2 for your trip details."
 
     return f"# Section 3 — Notes and Assumptions\n\n{content}"
+
+
+# ── FinalPlan builder ─────────────────────────────────────────────────────────
+
+def _build_final_plan(
+    context: TripContext,
+    db_results: Dict[str, str],
+    web_results: Dict[str, str],
+    notes: str,
+    planning_mode: str,
+    markdown: str,
+    used_web: bool,
+) -> FinalPlan:
+    """Assembles a FinalPlan from parsed tool results. Never raises."""
+    try:
+        airport = context.origin_airport or ""
+        trip_summary = TripSummary(
+            origin_airport=airport,
+            origin_city=_AIRPORT_CITY.get(airport.upper(), context.origin_country),
+            destination_city=context.destination_city,
+            destination_country=context.destination_country,
+            duration_days=context.duration_days,
+            travel_month=context.travel_month,
+            total_budget=context.total_budget,
+            currency=context.currency or "USD",
+            travel_style=context.travel_style,
+        )
+
+        flights: List[FlightOption] = []
+        raw_flights = db_results.get(PlannerTaskType.FETCH_FLIGHTS.value, "")
+        if raw_flights and not raw_flights.startswith("[Web source]"):
+            try:
+                for f in json.loads(raw_flights)[:5]:
+                    flights.append(FlightOption(
+                        airline=f.get("airline", ""),
+                        flight_number=f.get("flight_number", ""),
+                        price=f.get("price"),
+                    ))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        hotels: List[HotelOption] = []
+        raw_hotels = db_results.get(PlannerTaskType.FETCH_HOTELS.value, "")
+        if raw_hotels:
+            try:
+                for h in json.loads(raw_hotels)[:5]:
+                    hotels.append(HotelOption(
+                        name=h.get("name", ""),
+                        price_per_night=h.get("price_per_night"),
+                        stars=h.get("stars"),
+                    ))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        activities: List[ActivityItem] = []
+        raw_acts = db_results.get(PlannerTaskType.FETCH_ACTIVITIES.value, "")
+        if raw_acts:
+            try:
+                for a in json.loads(raw_acts)[:5]:
+                    activities.append(ActivityItem(
+                        name=a.get("name", ""),
+                        category=a.get("category", ""),
+                        price=a.get("price"),
+                    ))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Cost summary
+        cost_summary = CostSummary(currency=context.currency or "USD")
+        raw_cost = db_results.get(PlannerTaskType.CALCULATE_TRIP_COST.value, "")
+        if raw_cost:
+            try:
+                c = json.loads(raw_cost)
+                cost_summary.flight_cost = c.get("flight_cost")
+                cost_summary.hotel_total = c.get("hotel_total")
+                cost_summary.estimated_total = c.get("total_cost") or c.get("total")
+                if cost_summary.estimated_total and context.total_budget:
+                    cost_summary.within_budget = cost_summary.estimated_total <= context.total_budget
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Web enrichment
+        web_enrichment = WebEnrichment()
+        raw_geo = web_results.get(PlannerTaskType.GEOCODE_LOCATION.value, "")
+        if raw_geo:
+            try:
+                geo = json.loads(raw_geo)
+                web_enrichment.coordinates = {"lat": geo.get("lat", 0), "lng": geo.get("lng", 0)}
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        raw_curr = web_results.get(PlannerTaskType.LIVE_CURRENCY_CONVERSION.value, "")
+        if raw_curr:
+            try:
+                curr = json.loads(raw_curr)
+                web_enrichment.currency_rate = (
+                    f"{curr.get('original', '')} = {curr.get('converted', '')}"
+                )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        raw_events = web_results.get(PlannerTaskType.FETCH_LIVE_EVENTS.value, "")
+        if raw_events:
+            web_enrichment.live_events = [
+                l.strip().lstrip("- ") for l in raw_events.splitlines()
+                if l.strip()
+            ][:5]
+
+        raw_tavily = web_results.get(PlannerTaskType.WEB_RESEARCH_TAVILY.value, "")
+        if raw_tavily and not raw_tavily.startswith("Search Engine"):
+            web_enrichment.web_highlights = [
+                l.strip().lstrip("- ") for l in raw_tavily.splitlines()
+                if l.strip() and not l.strip().lower().startswith("source:")
+            ][:4]
+
+        visa_info = db_results.get(PlannerTaskType.CHECK_VISA.value, "")
+        if visa_info and visa_info.startswith("[Web source]"):
+            visa_info = visa_info.removeprefix("[Web source]").strip()
+
+        return FinalPlan(
+            trip_summary=trip_summary,
+            flights=flights,
+            hotels=hotels,
+            activities=activities,
+            visa_info=visa_info,
+            cost_summary=cost_summary,
+            web_enrichment=web_enrichment,
+            notes=notes,
+            planning_mode=planning_mode,
+            used_web_source=used_web,
+            raw_markdown=markdown,
+        )
+
+    except Exception as exc:
+        logger.error("plan_generator. build_final_plan_failed=%s", exc)
+        return FinalPlan(raw_markdown=markdown, planning_mode=planning_mode)

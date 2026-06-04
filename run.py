@@ -113,4 +113,6 @@ if __name__ == "__main__":
     except ConfigurationError as exc:
         print(f"\n[Marco] Configuration error:\n{exc}\n")
         raise SystemExit(1)
+
+    settings.configure_tracing()
     run()

@@ -259,7 +259,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
         hitl_question = (
             final_dependency_result.hitl_question
-            or _build_default_hitl_question()
+            or _DEFAULT_HITL_QUESTION
         )
         updates["planner_status"] = PlannerStatus.MISSING_REQUIRED_INFO.value
         updates["planner_task_results"] = task_results
@@ -301,7 +301,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     updates["planner_scheduler_result"] = scheduler_result.model_dump()
     updates["planner_status"] = final_dependency_result.status.value
 
-    final_answer = await generate_final_plan(
+    final_answer, final_plan = await generate_final_plan(
         context=merged_context,
         dependency_result=final_dependency_result,
         task_results=task_results,
@@ -311,11 +311,12 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         critic_suggestions=critic_suggestions,
     )
 
-    used_web_source = any(
-        isinstance(v, str) and bool(v) and v.startswith("[Web source]")
+    used_web_source = final_plan.used_web_source or any(
+        isinstance(v, str) and v.startswith("[Web source]")
         for v in task_results.values()
     )
     updates["used_web_source"] = used_web_source
+    updates["final_plan"] = final_plan.model_dump()
 
     updates["planner_status"] = PlannerStatus.READY.value
     updates["messages"] = [AIMessage(content=final_answer)]
@@ -479,8 +480,7 @@ def _log_dependency_state(dependency_graph, scheduler_result) -> None:
     )
 
 
-def _build_default_hitl_question() -> str:
-    return (
-        "I can plan this trip, but I need the origin airport, origin country, "
-        "destination city, trip duration, and total budget first."
-    )
+_DEFAULT_HITL_QUESTION = (
+    "I can plan this trip, but I need the origin airport, origin country, "
+    "destination city, trip duration, and total budget first."
+)
