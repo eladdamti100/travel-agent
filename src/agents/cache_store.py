@@ -24,7 +24,7 @@ _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cache_store")
 atexit.register(_executor.shutdown, wait=True)  # flush pending writes on clean exit
 
 
-def _background_store(query: str, answer: str, trip_context: dict) -> None:
+def _background_store(query: str, answer: str, trip_context: dict, source: str = "db") -> None:
     """
     Compresses and stores a cache entry in the background.
 
@@ -34,14 +34,14 @@ def _background_store(query: str, answer: str, trip_context: dict) -> None:
     try:
         compressed = compress_answer(answer)
 
-        logger.info("Cache store writing entry. query=%s answer_chars=%d", query, len(answer))
+        logger.info("Cache store writing entry. query=%s answer_chars=%d source=%s", query, len(answer), source)
 
         store_cache_entry(
             query=query,
             answer=answer,
             route="cache_check",
             compressed_answer=compressed,
-            source="db",
+            source=source,
             trip_context=trip_context or None,
         )
         logger.info("Background cache store completed for query=%s", query)
@@ -82,7 +82,8 @@ def run_cache_store(state: AgentState) -> dict:
         return {}
 
     trip_ctx = state.get("trip_context") or {}
-    future = _executor.submit(_background_store, query, answer, trip_ctx)
+    source = "web" if state.get("used_web_source") else "db"
+    future = _executor.submit(_background_store, query, answer, trip_ctx, source)
     future.add_done_callback(
         lambda f: logger.error("Cache store future raised unexpectedly: %s", f.exception())
         if f.exception() else None
