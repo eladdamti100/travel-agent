@@ -23,7 +23,13 @@ import warnings
 warnings.warn = lambda *args, **kwargs: None  # suppress all third-party warnings
 logging.disable(logging.CRITICAL)             # suppress all log output to the terminal
 
+from src.config.settings import ConfigurationError, settings
 from src.main import run
 
 if __name__ == "__main__":
+    try:
+        settings.validate_startup()
+    except ConfigurationError as exc:
+        print(f"\n[Marco] Configuration error:\n{exc}\n")
+        raise SystemExit(1)
     run()

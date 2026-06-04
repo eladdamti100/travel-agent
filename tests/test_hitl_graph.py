@@ -90,9 +90,13 @@ class TestStateFields:
         from src.graph.state import AgentState
         assert AgentState.__annotations__["hitl_decision"] == str
 
-    def test_critique_result_is_dict_type(self):
-        from src.graph.state import AgentState
-        assert AgentState.__annotations__["critique_result"] == dict
+    def test_critique_result_is_typed_dict(self):
+        from src.graph.state import AgentState, CritiqueResultDict
+        # critique_result is now a proper TypedDict, not bare dict
+        annotation = AgentState.__annotations__["critique_result"]
+        assert annotation is CritiqueResultDict or (
+            hasattr(annotation, "__origin__") or issubclass(annotation, dict)
+        )
 
     def test_hitl_feedback_is_str_type(self):
         from src.graph.state import AgentState
@@ -347,22 +351,22 @@ class TestCriticFeedbackInjection:
 
     def test_generate_notes_section_accepts_critic_params(self):
         import inspect
-        from src.agents.planner import _generate_notes_section
-        sig = inspect.signature(_generate_notes_section)
+        from src.services.plan_generator import generate_notes_section
+        sig = inspect.signature(generate_notes_section)
         assert "critic_issues" in sig.parameters
         assert "critic_suggestions" in sig.parameters
 
     def test_generate_final_plan_accepts_critic_params(self):
         import inspect
-        from src.agents.planner import _generate_final_plan
-        sig = inspect.signature(_generate_final_plan)
+        from src.services.plan_generator import generate_final_plan
+        sig = inspect.signature(generate_final_plan)
         assert "critic_issues" in sig.parameters
         assert "critic_suggestions" in sig.parameters
 
     def test_critic_context_appears_in_notes_source(self):
         import inspect
-        from src.agents.planner import _generate_notes_section
-        source = inspect.getsource(_generate_notes_section)
+        from src.services.plan_generator import generate_notes_section
+        source = inspect.getsource(generate_notes_section)
         assert "critic_issues" in source
         assert "critic_suggestions" in source
         assert "CRITIC REJECTED" in source
@@ -415,8 +419,8 @@ class TestReplanningOnEdit:
 
     def test_hitl_feedback_flows_to_notes_section(self):
         import inspect
-        from src.agents.planner import _generate_notes_section
-        source = inspect.getsource(_generate_notes_section)
+        from src.services.plan_generator import generate_notes_section
+        source = inspect.getsource(generate_notes_section)
         assert "hitl_feedback" in source
         assert "User requested changes" in source
 

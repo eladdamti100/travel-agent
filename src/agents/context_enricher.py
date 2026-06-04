@@ -26,6 +26,12 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.base import get_model
+from src.config.city_registry import (
+    AIRPORT_BY_CITY as _CITY_TO_AIRPORT,
+    CITY_BY_AIRPORT as _AIRPORT_TO_CITY,
+    CITY_KEYWORDS as _SUPPORTED_CITY_KEYWORDS,
+    COUNTRY_ALIASES as _COUNTRY_ALIASES,
+)
 from src.graph.state import AgentState
 from src.models.context_enrichment import ContextEnrichmentResult
 from src.models.trip_context import (
@@ -35,51 +41,9 @@ from src.models.trip_context import (
 )
 from src.prompts.loader import get_prompt
 from src.utils.logger import get_logger
+from src.utils.token_tracker import log_token_usage
 
 logger = get_logger("context_enricher")
-
-
-_SUPPORTED_CITY_KEYWORDS = {
-    "paris": "Paris",
-    "london": "London",
-    "tokyo": "Tokyo",
-    "new york": "New York",
-    "berlin": "Berlin",
-}
-
-
-_CITY_TO_AIRPORT = {
-    "new york": "JFK",
-    "london": "LHR",
-    "tokyo": "NRT",
-    "paris": "CDG",
-    "berlin": "BER",
-    "tel aviv": "TLV",
-    "telaviv": "TLV",
-}
-
-_COUNTRY_ALIASES = {
-    "israel": "Israel",
-    "israeli": "Israel",
-    "usa": "United States",
-    "u.s.": "United States",
-    "us": "United States",
-    "united states": "United States",
-    "america": "United States",
-    "american": "United States",
-    "uk": "United Kingdom",
-    "u.k.": "United Kingdom",
-    "united kingdom": "United Kingdom",
-    "england": "United Kingdom",
-    "britain": "United Kingdom",
-    "british": "United Kingdom",
-    "france": "France",
-    "french": "France",
-    "germany": "Germany",
-    "german": "Germany",
-    "japan": "Japan",
-    "japanese": "Japan",
-}
 
 
 def extract_trip_context_deterministic(state: AgentState) -> TripContext:
@@ -156,6 +120,7 @@ async def enrich_trip_context_async(
                 )
             ),
         ])
+        log_token_usage(response, call_site="context_enricher")
 
         result = _sanitize_enrichment_result(response)
 
@@ -174,7 +139,8 @@ async def enrich_trip_context_async(
             update={
                 "extraction_source": current_context.extraction_source or "deterministic",
                 "slm_enriched": False,
-            }
+            },
+            validate=True,
         )
 
         return ContextEnrichmentResult(
@@ -268,7 +234,8 @@ def _sanitize_enrichment_result(
         update={
             "extraction_source": result.trip_context.extraction_source or "slm",
             "slm_enriched": True,
-        }
+        },
+        validate=True,
     )
 
     return ContextEnrichmentResult(
@@ -406,15 +373,7 @@ def _extract_origin_country(text: str) -> Optional[str]:
     return None
 
 
-_AIRPORT_TO_CITY = {code: city for city, code in _CITY_TO_AIRPORT.items() if len(city) > 3}
-_AIRPORT_TO_CITY.update({
-    "JFK": "New York",
-    "LHR": "London",
-    "NRT": "Tokyo",
-    "CDG": "Paris",
-    "BER": "Berlin",
-    "TLV": "Tel Aviv",
-})
+# _AIRPORT_TO_CITY is imported directly from city_registry (CITY_BY_AIRPORT)
 
 
 def _extract_destination_city(text: str) -> Optional[str]:

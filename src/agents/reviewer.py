@@ -13,6 +13,7 @@ from langchain_core.messages import SystemMessage
 
 from src.agents.base import get_model
 from src.prompts.loader import get_prompt
+from src.utils.token_tracker import log_token_usage
 
 
 def _content_to_text(content) -> str:
@@ -40,6 +41,7 @@ async def _review_plan_async(plan: str) -> str:
         SystemMessage(content=get_prompt("reviewer_prompt")),
         ("user", f"Please review this travel plan:\n\n{plan}"),
     ])
+    log_token_usage(response, call_site="reviewer")
 
     return _content_to_text(response.content)
 

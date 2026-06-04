@@ -12,6 +12,10 @@ import json
 from typing import Dict, Optional, Tuple
 
 from src.agents.sub_agents.base import BaseSubAgent
+from src.config.city_registry import (
+    CURRENCY_BY_CITY as _CITY_CURRENCY,
+    CURRENCY_BY_COUNTRY as _ORIGIN_CURRENCY,
+)
 from src.models.planner import PlannerTaskType, PlannerToolResults
 from src.models.trip_context import TripContext
 from src.tools.web_api_tools import (
@@ -26,29 +30,6 @@ from src.utils.logger import get_logger
 
 logger = get_logger("web_agent")
 
-# Destination city → ISO-4217 local currency
-_CITY_CURRENCY: Dict[str, str] = {
-    "london":   "GBP",
-    "paris":    "EUR",
-    "berlin":   "EUR",
-    "tokyo":    "JPY",
-    "new york": "USD",
-}
-
-# Origin/passport country → ISO-4217 currency
-_ORIGIN_CURRENCY: Dict[str, str] = {
-    "israel":         "ILS",
-    "united states":  "USD",
-    "usa":            "USD",
-    "united kingdom": "GBP",
-    "uk":             "GBP",
-    "france":         "EUR",
-    "germany":        "EUR",
-    "japan":          "JPY",
-    "australia":      "AUD",
-    "canada":         "CAD",
-    "india":          "INR",
-}
 
 # Spawn a second parallel instance when task count exceeds this threshold
 _MAX_TASKS_PER_INSTANCE: int = 3

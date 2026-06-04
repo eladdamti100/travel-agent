@@ -15,6 +15,7 @@ from src.graph.state import AgentState
 from src.prompts.loader import get_prompt
 from src.tools import ALL_TOOLS
 from src.utils.logger import get_logger
+from src.utils.token_tracker import log_token_usage
 
 logger = get_logger("researcher_agent")
 
@@ -53,6 +54,7 @@ def run_researcher(state: AgentState) -> dict:
 
     for step in range(_MAX_RESEARCH_STEPS):
         response = model.invoke(conversation)
+        log_token_usage(response, call_site=f"researcher.step_{step}")
         conversation.append(response)
 
         tool_calls = getattr(response, "tool_calls", None)

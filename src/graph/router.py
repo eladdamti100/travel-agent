@@ -2,41 +2,15 @@
 Conditional edge functions for the LangGraph travel planner workflow.
 """
 
-from langchain_core.messages import HumanMessage
 from langgraph.graph import END
 
+from src.config.settings import settings
 from src.graph.state import AgentState
-from src.utils.graph_guards import detect_repetition
 
 # Imported here to avoid a circular import (nodes.py → router.py is one-way).
-# MAX_CRITIC_ATTEMPTS is the single source of truth defined in nodes.py.
 from src.graph.nodes import MAX_CRITIC_ATTEMPTS
 
-
-def _current_turn_messages(messages: list) -> list:
-    """
-    Return only the messages belonging to the current turn.
-
-    Slices from the last HumanMessage onwards so detect_repetition does not
-    false-positive on tool calls from previous sessions.
-    """
-    for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage):
-            return messages[i:]
-    return messages
-
-
-MAX_TOOL_CALLS = 8
-
-
-def route_after_metadata(state: AgentState) -> str:
-    """
-    Conditional edge after extract_metadata.
-
-    Strict architecture:
-      Every user message must pass through validation before any intent routing.
-    """
-    return "validator"
+MAX_HITL_EDIT_ATTEMPTS: int = settings.max_hitl_edit_attempts
 
 
 def route_after_validator(state: AgentState) -> str:
@@ -97,39 +71,6 @@ def route_after_cache_check(state: AgentState) -> str:
     return "master_planner"
 
 
-def should_continue(state: AgentState) -> str:
-    """
-    Conditional edge function — decides the next node after the legacy agent runs.
-
-    This is used only by the legacy agent/tools loop path.
-    The reviewer no longer sits in this blocking path; admin plan reviews are
-    fired asynchronously from main.py after the stream completes.
-
-    Decision tree:
-      1. tool_call_count >= MAX_TOOL_CALLS        → circuit_breaker
-      2. Repetitive identical tool call detected  → circuit_breaker
-      3. Last message contains tool_calls         → tools
-      4. Final answer after cache miss            → cache_store
-      5. Final answer otherwise                   → summarizer
-    """
-    last = state["messages"][-1]
-    count = state.get("tool_call_count", 0)
-
-    if count >= MAX_TOOL_CALLS:
-        return "circuit_breaker"
-
-    if detect_repetition(_current_turn_messages(state["messages"])):
-        return "circuit_breaker"
-
-    if hasattr(last, "tool_calls") and last.tool_calls:
-        return "tools"
-
-    if state.get("cache_status") == "miss":
-        return "cache_store"
-
-    return "summarizer"
-
-
 def route_after_master_planner(state: AgentState) -> str:
     """
     Conditional edge after the new master planner.
@@ -171,6 +112,7 @@ def route_after_hitl(state: AgentState) -> str:
 
     approved  → cache_store (then summarizer → END)
     edit      → master_planner (hitl_feedback is in state for the replanner)
+              → END when MAX_HITL_EDIT_ATTEMPTS is exceeded (prevents infinite loop)
     cancelled → END
     """
     decision = state.get("hitl_decision", "approved")
@@ -179,6 +121,12 @@ def route_after_hitl(state: AgentState) -> str:
         return END
 
     if decision == "edit":
+        edit_attempts = state.get("hitl_edit_attempts") or 0
+        if edit_attempts > MAX_HITL_EDIT_ATTEMPTS:
+            # Inject a graceful message — state["messages"] is append-only so
+            # we cannot write here; the guard just ends the graph.  The HITL
+            # approval node already logged the attempt count.
+            return END
         return "master_planner"
 
     return "cache_store"

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from langchain_core.tools import tool
+from src.config.city_registry import DB_COUNTRY_ALIASES as _COUNTRY_ALIASES_DB
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "travel_agency.db"
 
@@ -149,13 +150,6 @@ def fetch_activities(city: str) -> str:
     if not results:
         return f"No activities found in {city}."
     return json.dumps(results, indent=2)
-
-
-_COUNTRY_ALIASES_DB = {
-    "united states": "usa",
-    "united kingdom": "uk",
-    "united arab emirates": "uae",
-}
 
 
 def _normalize_country_for_db(name: str) -> str:
