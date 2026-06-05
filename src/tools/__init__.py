@@ -36,6 +36,7 @@ from src.tools.calc_tools import (
     currency_conversion,
     distance_travel_time,
     estimate_daily_budget,
+    generate_daily_itinerary,
     summarize_trip,
 )
 
@@ -46,11 +47,16 @@ from src.tools.search_tools import web_search
 from src.tools.web_api_tools import (
     fetch_country_metadata,
     fetch_live_events,
+    fetch_live_flights,
     fetch_local_breweries,
+    fetch_local_transport_live,
     geocode_location,
     live_currency_conversion,
     web_research_tavily,
 )
+
+# Planner-only tools (PDF export, final deliverables)
+from src.tools.planner_tools import export_plan_to_pdf
 
 logger = get_logger("tools_registry")
 
@@ -78,11 +84,14 @@ COMPUTATIONAL_CORE_TOOLS = [
     estimate_daily_budget,
     summarize_trip,
     distance_travel_time,
+    generate_daily_itinerary,
 ]
 
 EXTERNAL_WEB_API_TOOLS = [
     geocode_location,
     fetch_live_events,
+    fetch_live_flights,
+    fetch_local_transport_live,
     live_currency_conversion,
     fetch_local_breweries,
     fetch_country_metadata,
@@ -90,18 +99,22 @@ EXTERNAL_WEB_API_TOOLS = [
     web_search,
 ]
 
+# Only exposed to the master planner — not the orchestrator or researcher.
+PLANNER_ONLY_TOOLS = [
+    export_plan_to_pdf,
+]
+
 # ─── CONSOLIDATED MASTER TOOL PORTFOLIO ─────────────────────────────────────
 
 ALL_TOOLS = DATABASE_DRIVEN_TOOLS + COMPUTATIONAL_CORE_TOOLS + EXTERNAL_WEB_API_TOOLS
 
-# Log registry generation status on compilation initialization
 logger.info(
-    "Central Tool Registry synchronized successfully. Total tools cataloged: %d "
-    "(Database: %d, Computational: %d, Web-API: %d)",
+    "Tool registry ready. total=%d db=%d calc=%d web=%d planner_only=%d",
     len(ALL_TOOLS),
     len(DATABASE_DRIVEN_TOOLS),
     len(COMPUTATIONAL_CORE_TOOLS),
     len(EXTERNAL_WEB_API_TOOLS),
+    len(PLANNER_ONLY_TOOLS),
 )
 
 # ─── EXPLICIT EXPORT CONFIGURATION ──────────────────────────────────────────
@@ -111,4 +124,5 @@ __all__ = [
     "DATABASE_DRIVEN_TOOLS",
     "COMPUTATIONAL_CORE_TOOLS",
     "EXTERNAL_WEB_API_TOOLS",
+    "PLANNER_ONLY_TOOLS",
 ]

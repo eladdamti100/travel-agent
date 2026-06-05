@@ -273,3 +273,85 @@ def distance_travel_time(origin_city: str, destination_city: str) -> str:
         "estimated_flight_time": f"{hours}h {minutes:02d}m",
         "note": "Estimate based on ~900 km/h cruising speed. Actual times vary by airline and route.",
     }, indent=2)
+
+
+# ── generate_daily_itinerary ──────────────────────────────────────────────────
+
+_DEFAULT_MORNING = [
+    "Explore the city centre and main landmark",
+    "Visit the national museum",
+    "Walking tour of the old town",
+    "Day trip to a nearby attraction",
+]
+_DEFAULT_AFTERNOON = [
+    "Lunch at a local restaurant, afternoon shopping",
+    "Art gallery and café break",
+    "Park walk and local market",
+    "Boat tour / city tour bus",
+]
+_DEFAULT_EVENING = [
+    "Dinner at a recommended local restaurant",
+    "Evening show / theatre / concert",
+    "Sunset viewpoint and night market",
+    "Jazz bar / rooftop dining experience",
+]
+
+
+@tool
+def generate_daily_itinerary(
+    destination_city: str,
+    duration_days: int,
+    activities: str = "",
+    daily_budget_usd: float = 0.0,
+) -> str:
+    """
+    Build a structured day-by-day itinerary for a trip.
+
+    destination_city:  Target destination (e.g. "Tokyo").
+    duration_days:     Number of trip days (1-30).
+    activities:        Comma-separated list of planned activities (optional).
+    daily_budget_usd:  Per-day spending budget in USD (optional, 0 = unspecified).
+
+    Returns a JSON array with one entry per day: morning, afternoon, evening, budget note.
+    """
+    try:
+        duration_days = int(duration_days)
+        daily_budget_usd = float(daily_budget_usd)
+    except (ValueError, TypeError) as e:
+        return f"Error: invalid input — {e}"
+
+    if duration_days <= 0 or duration_days > 30:
+        return "Error: duration_days must be between 1 and 30."
+
+    # Parse user-provided activities into a queue
+    activity_list = [a.strip() for a in activities.split(",") if a.strip()] if activities else []
+
+    itinerary = []
+    for day in range(1, duration_days + 1):
+        idx = (day - 1) % 4
+        morning   = activity_list.pop(0) if activity_list else _DEFAULT_MORNING[idx]
+        afternoon = activity_list.pop(0) if activity_list else _DEFAULT_AFTERNOON[idx]
+        evening   = _DEFAULT_EVENING[idx]
+
+        day_entry: dict = {
+            "day": day,
+            "morning": morning,
+            "afternoon": afternoon,
+            "evening": evening,
+        }
+
+        if daily_budget_usd > 0:
+            day_entry["budget_note"] = f"~${daily_budget_usd:.0f} available for food, transport, and entrance fees"
+
+        if day == 1:
+            day_entry["note"] = "Arrival day — check in, rest, light exploration."
+        elif day == duration_days:
+            day_entry["note"] = "Departure day — check out, last-minute shopping, head to airport."
+
+        itinerary.append(day_entry)
+
+    return json.dumps({
+        "destination": destination_city,
+        "duration_days": duration_days,
+        "itinerary": itinerary,
+    }, indent=2)
