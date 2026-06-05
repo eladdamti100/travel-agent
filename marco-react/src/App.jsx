@@ -76,7 +76,7 @@ function SplashScreen({ onEnter }) {
         <div style={{ fontSize:80, marginBottom:4, lineHeight:1, filter:'drop-shadow(0 6px 24px rgba(56,189,248,0.3))' }}>🌍</div>
         <div style={{ marginTop:20, marginBottom:8 }}>
           <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.25em', color:'rgba(56,189,248,0.7)' }}>LUXURY AI TRAVEL CONCIERGE</div>
-          <h1 style={{ fontSize:52, fontWeight:800, letterSpacing:'-0.04em', background:'linear-gradient(135deg, #f0f9ff 0%, #38bdf8 50%, #818cf8 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>Marco Agent</h1>
+          <h1 style={{ fontSize:52, fontWeight:800, letterSpacing:'-0.04em', background:'linear-gradient(135deg, #f0f9ff 0%, #38bdf8 50%, #818cf8 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>marco</h1>
         </div>
         <p style={{ color:'rgba(148,163,184,0.85)', fontSize:15, maxWidth:380, lineHeight:1.7, margin:'0 auto 40px' }}>Design fully personalized itineraries, discover the best routes, and unlock curated experiences — in seconds.</p>
         <button className="splash-btn" onClick={handleEnter}>START CHATTING</button>
@@ -87,8 +87,25 @@ function SplashScreen({ onEnter }) {
 
 export default function App() {
   const [showSplash, setShowSplash]           = useState(true);
-  const [activeSession, setActiveSession]     = useState(() => crypto.randomUUID());
-  const [sessions, setSessions]               = useState([]);
+  
+  // FIX: Load active session from localStorage to prevent loss on refresh
+  const [activeSession, setActiveSession]     = useState(() => {
+    try {
+      return localStorage.getItem('activeSession') || crypto.randomUUID();
+    } catch {
+      return crypto.randomUUID();
+    }
+  });
+
+const [sessions, setSessions] = useState(() => {
+  try {
+    const saved = localStorage.getItem('allSessions');
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+});
+
   const [messages, setMessages]               = useState([]);
   const [hitlPending, setHitlPending]         = useState(false);
   const [prompt, setPrompt]                   = useState('');
@@ -125,6 +142,13 @@ export default function App() {
   const menuRef   = useRef(null);
   const dark = theme === 'dark';
 
+  // FIX: Save active session to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('activeSession', activeSession);
+    } catch {}
+  }, [activeSession]);
+
   useEffect(() => { setHasStartedChat(messages.length > 0); }, [messages, activeSession]);
 
   useEffect(() => {
@@ -136,8 +160,17 @@ export default function App() {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, activeNodes]);
 
   const fetchSessions = useCallback(async () => {
-    try { const r = await fetch(`${BASE_URL}/sessions`); const d = await r.json(); setSessions(d.sessions || []); } catch {}
-  }, []);
+  try {
+    const r = await fetch(`${BASE_URL}/sessions`);
+    const d = await r.json();
+    const backendSessions = d.sessions || [];
+    setSessions(prev => {
+      const merged = [...new Set([...prev, ...backendSessions])];
+      try { localStorage.setItem('allSessions', JSON.stringify(merged)); } catch {}
+      return merged;
+    });
+  } catch {}
+}, []);
 
   const fetchState = useCallback(async (sid) => {
     try {
@@ -168,13 +201,28 @@ export default function App() {
     fetchSessions(); fetchState(activeSession);
   }, [activeSession]);
 
-  const handleNewPlan = () => { setActiveSession(crypto.randomUUID()); setFeedback(''); setPrompt(''); setHasStartedChat(false); setPanelMode('split'); setAgentState({}); setActiveCard(null); };
+const handleNewPlan = () => {
+  const newId = crypto.randomUUID();
+  setSessions(prev => {
+    const updated = [...new Set([...prev, newId])];
+    try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
+    return updated;
+  });
+  setActiveSession(newId);
+  setFeedback(''); setPrompt(''); setHasStartedChat(false);
+  setPanelMode('split'); setAgentState({}); setActiveCard(null);
+};
 
-  const handleDelete = async (sid, e) => {
-    e.stopPropagation();
-    await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' });
-    if (sid === activeSession) handleNewPlan(); else fetchSessions();
-  };
+const handleDelete = async (sid, e) => {
+  e.stopPropagation();
+  await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' });
+  setSessions(prev => {
+    const updated = prev.filter(s => s !== sid);
+    try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
+    return updated;
+  });
+  if (sid === activeSession) handleNewPlan(); else fetchSessions();
+};
 
   const handleStartEdit = (sid, e) => { e.stopPropagation(); setEditingSession(sid); setEditValue(sessionNames[sid] || sid.substring(0, 8) + '…'); };
 
@@ -407,10 +455,10 @@ export default function App() {
           overflow:'hidden', transition:'width 0.3s cubic-bezier(0.16, 1, 0.3, 1), min-width 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
           borderRight:`1px solid ${t.border}`, background: t.sidebarBg, backdropFilter: 'blur(15px)', display:'flex', flexDirection:'column', position:'relative', zIndex:10,
         }}>
-          <div style={{ padding:'20px 16px', width:260, display:'flex', flexDirection:'column', height:'100%' }}>
+            <div style={{ padding:'20px 16px', width:260, display:'flex', flexDirection:'column', height:'100%' }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:24 }}>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <span style={{ fontSize:16, fontWeight:800, color:t.text, letterSpacing:'-0.02em', textTransform: 'uppercase' }}>Marco</span>
+                <span style={{ fontSize:16, fontWeight:800, color:t.text, letterSpacing:'-0.02em', textTransform: 'LOWERCASE' }}>marco</span>
               </div>
               <button className="btn btn-ghost" style={{ padding:'6px' }} onClick={() => setSidebarOpen(false)}><Icons.Menu size={16}/></button>
             </div>
@@ -511,8 +559,8 @@ export default function App() {
             <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
               {messages.map((msg, idx) => (
                 <div key={idx} className="fade-up" style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                  <span style={{ fontSize:10, fontWeight:700, color:t.muted, textTransform:'uppercase', letterSpacing:'0.08em' }}>
-                    {msg.role === 'user' ? 'GUEST' : 'MARCO CONCIERGE'}
+                  <span style={{ fontSize:10, fontWeight:700, color:t.muted, textTransform:'lowercase', letterSpacing:'0.08em' }}>
+                    {msg.role === 'user' ? 'GUEST' : 'marco'}
                   </span>
                   <div className={`bubble ${msg.role==='user'?'bubble-user':'bubble-agent'}`}>
                     {msg.role === 'assistant' ? <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} /> : msg.content}
@@ -636,11 +684,11 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Cards - הקטנו רווחים פנימיים כדי שיכנסו כולם במסך */}
+                  {/* Cards */}
                   <div className="dynamic-grid">
                     
                     {/* Flight Card */}
-                    <div className="dynamic-card" onClick={() => setActiveCard('flights')}>
+                    <div className="dynamic-card" onClick={() => setActiveCard('fetch_flights')}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, color: t.accent }}>
                         <div style={{ background: t.accentGlow, padding: 6, borderRadius: 8 }}><Icons.Flight size={16} /></div>
                         <span style={{ fontWeight: 600, fontSize: 14, color: t.text }}>Flights</span>
@@ -649,12 +697,12 @@ export default function App() {
                         Click to view flight pathways and routing structures.
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}`, fontSize: 11, fontWeight: 600 }}>
-                        Status: {agentState?.planner_task_results?.flights ? 'Completed' : 'Pending'}
+                        Status: {agentState?.planner_task_results?.fetch_flights ? 'Completed' : 'Pending'}
                       </div>
                     </div>
 
                     {/* Hotel Card */}
-                    <div className="dynamic-card" onClick={() => setActiveCard('accommodations')}>
+                    <div className="dynamic-card" onClick={() => setActiveCard('fetch_hotels')}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, color: t.amber }}>
                         <div style={{ background: `${t.amber}22`, padding: 6, borderRadius: 8 }}><Icons.Hotel size={16} /></div>
                         <span style={{ fontWeight: 600, fontSize: 14, color: t.text }}>Accommodations</span>
@@ -664,12 +712,12 @@ export default function App() {
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}`, display: 'flex', justifyContent: 'space-between', fontSize: 11, fontWeight: 600 }}>
                         <span>Status:</span>
-                        <span>{agentState?.planner_task_results?.accommodations ? 'Completed' : 'Pending'}</span>
+                        <span>{agentState?.planner_task_results?.fetch_hotels ? 'Completed' : 'Pending'}</span>
                       </div>
                     </div>
 
                     {/* Environment Card */}
-                    <div className="dynamic-card" onClick={() => setActiveCard('environment')}>
+                    <div className="dynamic-card" onClick={() => setActiveCard('fetch_weather')}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, color: t.green }}>
                         <div style={{ background: `${t.green}22`, padding: 6, borderRadius: 8 }}><Icons.Sun size={16} /></div>
                         <span style={{ fontWeight: 600, fontSize: 14, color: t.text }}>Environment</span>
@@ -678,7 +726,7 @@ export default function App() {
                         Click to view weather matrix and local events.
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}`, fontSize: 11, fontWeight: 600 }}>
-                        Status: {agentState?.planner_task_results?.environment ? 'Completed' : 'Pending'}
+                        Status: {agentState?.planner_task_results?.fetch_weather ? 'Completed' : 'Pending'}
                       </div>
                     </div>
 
@@ -687,8 +735,7 @@ export default function App() {
               )}
 
             </div>
-
-            {/* ── CARD DETAILS MODAL ── */}
+{/* ── CARD DETAILS MODAL ── */}
             {activeCard && (
               <div className="fade-up" style={{
                 position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
@@ -698,73 +745,92 @@ export default function App() {
               }}>
                 <div style={{
                   background: t.surfaceHi, border: `1px solid ${t.borderHi}`, borderRadius: 24,
-                  padding: '32px 32px 40px', maxWidth: 600, width: '100%', maxHeight: '85vh', overflowY: 'auto',
+                  padding: '32px 32px 40px', maxWidth: 650, width: '100%', maxHeight: '85vh', overflowY: 'auto',
                   boxShadow: `0 24px 60px ${dark?'rgba(0,0,0,0.6)':'rgba(0,0,0,0.1)'}`, position: 'relative'
                 }}>
-                  <button onClick={() => setActiveCard(null)} style={{ position: 'absolute', top: 24, right: 24, background: 'none', border: 'none', color: t.muted, cursor: 'pointer', padding: 4 }}>
-                    <Icons.X size={20} />
+                  <button onClick={() => setActiveCard(null)} style={{ position: 'absolute', top: 24, right: 24, background: dark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.05)', border: 'none', color: t.muted, cursor: 'pointer', padding: 8, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }} onMouseEnter={e => e.currentTarget.style.background = dark?'rgba(255,255,255,0.1)':'rgba(0,0,0,0.1)'} onMouseLeave={e => e.currentTarget.style.background = dark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.05)'}>
+                    <Icons.X size={18} />
                   </button>
-                  <h2 style={{ fontSize: 24, fontWeight: 700, color: t.text, marginBottom: 24, textTransform: 'capitalize' }}>
-                    {activeCard} Details
-                  </h2>
                   
-                  <div style={{ color: t.text, fontSize: 14, whiteSpace: 'pre-wrap', lineHeight: 1.7, background: t.surface, padding: 20, borderRadius: 16, border: `1px solid ${t.border}` }}>
-                    {agentState?.planner_task_results?.[activeCard] 
-                      || agentState?.final_plan?.[activeCard] 
-                      || (agentState?.planner_structured_results && JSON.stringify(agentState.planner_structured_results[activeCard], null, 2))
-                      || "No detailed information available yet. Please wait for the planner to complete this task."}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+                    <div style={{ 
+                      background: activeCard === 'fetch_flights' ? t.accentGlow : activeCard === 'fetch_hotels' ? `${t.amber}22` : `${t.green}22`, 
+                      color: activeCard === 'fetch_flights' ? t.accent : activeCard === 'fetch_hotels' ? t.amber : t.green, 
+                      padding: 10, borderRadius: 12 
+                    }}>
+                       {activeCard === 'fetch_flights' ? <Icons.Flight size={24} /> : activeCard === 'fetch_hotels' ? <Icons.Hotel size={24} /> : <Icons.Sun size={24} />}
+                    </div>
+                    <h2 style={{ fontSize: 24, fontWeight: 700, color: t.text, margin: 0 }}>
+                      {{ fetch_flights: 'Flights', fetch_hotels: 'Accommodations', fetch_weather: 'Environment & Weather' }[activeCard] || activeCard} Details
+                    </h2>
+                  </div>
+
+                  <div style={{ color: t.text, fontSize: 14, lineHeight: 1.7 }}>
+                    {(() => {
+                      const rawData = agentState?.planner_task_results?.[activeCard] 
+                        || agentState?.final_plan?.[activeCard] 
+                        || agentState?.planner_structured_results?.[activeCard];
+
+                      if (!rawData) return <div style={{ padding: 20, textAlign: 'center', color: t.muted, background: t.surface, borderRadius: 16, border: `1px dashed ${t.border}` }}>No detailed information available yet.</div>;
+
+                      let data = rawData;
+                      if (typeof rawData === 'string') {
+                        try { data = JSON.parse(rawData); } 
+                        catch (e) { return <div className="glass" style={{ padding: 20 }} dangerouslySetInnerHTML={{ __html: renderMarkdown(rawData) }} />; }
+                      }
+
+                      // If data is an Array (e.g. Flights list)
+                      if (Array.isArray(data)) {
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            {data.map((item, i) => (
+                              <div key={i} style={{ padding: '20px', display: 'flex', flexWrap: 'wrap', gap: '20px 32px', background: t.surface, border: `1px solid ${t.border}`, borderRadius: 16 }}>
+                                {typeof item === 'object' && item !== null ? (
+                                  Object.entries(item).map(([k, v]) => (
+                                    <div key={k} style={{ display: 'flex', flexDirection: 'column' }}>
+                                      <span style={{ fontSize: 11, textTransform: 'uppercase', color: t.muted, fontWeight: 700, letterSpacing: '0.05em', marginBottom: 4 }}>
+                                        {k.replace(/_/g, ' ')}
+                                      </span>
+                                      <span style={{ fontSize: 16, fontWeight: 600, color: k.toLowerCase() === 'price' ? t.green : t.text }}>
+                                        {k.toLowerCase() === 'price' && typeof v === 'number' ? `$${v}` : typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                      </span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <span style={{ color: t.text }}>{String(item)}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      // If data is a single Object
+                      if (typeof data === 'object' && data !== null) {
+                        return (
+                          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 16, padding: '20px', display: 'flex', flexWrap: 'wrap', gap: '20px 32px' }}>
+                            {Object.entries(data).map(([k, v]) => (
+                              <div key={k} style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ fontSize: 11, textTransform: 'uppercase', color: t.muted, fontWeight: 700, letterSpacing: '0.05em', marginBottom: 4 }}>
+                                  {k.replace(/_/g, ' ')}
+                                </span>
+                                <span style={{ fontSize: 16, fontWeight: 600, color: t.text }}>
+                                  {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      // Fallback for simple strings/primitives
+                      return <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 14, background: t.surface, padding: 20, borderRadius: 16 }}>{String(data)}</div>;
+                    })()}
                   </div>
                 </div>
               </div>
             )}
-
-            {/* ── HITL MODAL (Overlay on Right Panel) ── */}
-            {hitlPending && !activeCard && (
-              <div className="fade-up" style={{
-                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                background: dark ? 'rgba(10, 15, 24, 0.75)' : 'rgba(250, 248, 245, 0.75)',
-                backdropFilter: 'blur(12px)', zIndex: 100,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40
-              }}>
-                <div style={{
-                  background: t.surfaceHi, border: `1px solid ${t.borderHi}`, borderRadius: 24,
-                  padding: 32, maxWidth: 460, width: '100%',
-                  boxShadow: `0 24px 60px ${dark?'rgba(0,0,0,0.6)':'rgba(0,0,0,0.1)'}`
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'center', color: t.accent, marginBottom: 16 }}>
-                    <div style={{ background: t.accentGlow, padding: 16, borderRadius: '50%' }}>
-                      <Icons.Check size={32} />
-                    </div>
-                  </div>
-                  <h2 style={{ textAlign: 'center', fontSize: 22, fontWeight: 700, color: t.text, marginBottom: 8 }}>Validation Required</h2>
-                  <p style={{ textAlign: 'center', color: t.muted, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
-                    The Planner Agent has constructed a route. Please review the constraints before finalizing.
-                  </p>
-                  
-                  {criticData && (
-                    <div style={{ background: t.surface, padding: 16, borderRadius: 12, marginBottom: 24, border: `1px solid ${t.border}` }}>
-                       <div style={{ fontWeight:700, color:scoreColor(criticData.score), marginBottom:10, fontSize:12, textTransform:'uppercase' }}>Critic Score: {criticData.score}/10</div>
-                       {(criticData.issues||[]).map((i,idx) => <div key={idx} style={{ fontSize: 13, color: t.muted, marginBottom: 6, display: 'flex', gap: 8 }}><span style={{ color: t.amber }}>!</span> {i}</div>)}
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <button className="btn btn-green" style={{ padding: '14px', fontSize: 14 }} onClick={() => handleHitl('approved')}>
-                      <Icons.Check size={16} /> Approve & Proceed
-                    </button>
-                    <button className="btn btn-outline" style={{ padding: '14px', fontSize: 14 }} onClick={() => { const note = window.prompt('Enter edit instructions:'); if (note) { setFeedback(note); handleHitl('edit'); } }}>
-                      <Icons.Pencil size={16} /> Request Changes
-                    </button>
-                    <button className="btn btn-ghost" style={{ padding: '14px', fontSize: 14, color: t.red }} onClick={() => handleHitl('cancelled')}>
-                      <Icons.X size={16} /> Cancel Plan
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
           </div>
-
         </div>
       </div>
     </>
