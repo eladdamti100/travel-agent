@@ -47,7 +47,7 @@ def is_noisy_line(text: str) -> bool:
 
 # ── Section 1: DB data ────────────────────────────────────────────────────────
 
-def build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
+def build_db_section(context: TripContext, db_results: Dict[str, str], has_live_flights: bool = False) -> str:
     """Builds Section 1 (Database Data) deterministically from SQLite tool results."""
     parts: List[str] = ["# Section 1 — Database Data\n"]
 
@@ -73,7 +73,11 @@ def build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
     parts.append("**Flights**")
     flights_raw = db_results.get("fetch_flights", "")
     flights_is_web = flights_raw.startswith("[Web source]") if flights_raw else False
-    if flights_raw and not flights_is_web:
+    live_flights_available = has_live_flights
+
+    if live_flights_available:
+        parts.append("- Live flight prices from Google Flights — see Section 2 below.")
+    elif flights_raw and not flights_is_web:
         try:
             flights = json.loads(flights_raw)
             if isinstance(flights, list) and flights:
@@ -153,7 +157,23 @@ def build_db_section(context: TripContext, db_results: Dict[str, str]) -> str:
     parts.append("**Cost Summary**")
     cost_raw = db_results.get("calculate_trip_cost", "")
     flights_raw_for_cost = db_results.get("fetch_flights", "")
-    flight_is_estimated = not flights_raw_for_cost or flights_raw_for_cost.startswith("[Web source]")
+    live_raw_for_cost    = db_results.get("fetch_live_flights", "")
+    flight_is_estimated  = not flights_raw_for_cost or flights_raw_for_cost.startswith("[Web source]")
+
+    # If live flights exist but DB flights don't, add cheapest live price to cost summary
+    if has_live_flights and not flights_raw_for_cost:
+        try:
+            live_list = json.loads(live_raw_for_cost) if live_raw_for_cost else []
+            if live_list:
+                cheapest = min(live_list, key=lambda f: f.get("price", 9999))
+                parts.append(
+                    f"- Cheapest flight (Google Flights): "
+                    f"${cheapest.get('price')} — {cheapest.get('airline')} "
+                    f"{cheapest.get('duration', '')}"
+                )
+                flight_is_estimated = False
+        except (json.JSONDecodeError, TypeError):
+            pass
     if cost_raw:
         try:
             cost = json.loads(cost_raw)
@@ -299,6 +319,24 @@ def build_web_section(web_results: Dict[str, str]) -> str:
     parts: List[str] = ["# Section 2 — Live Web Data\n"]
     has_any = False
 
+    # Live flights from SerpAPI Google Flights
+    live_flights_raw = web_results.get("fetch_live_flights", "")
+    if live_flights_raw:
+        try:
+            live_flights = json.loads(live_flights_raw)
+            if isinstance(live_flights, list) and live_flights:
+                parts.append("**Live Flights (Google Flights)**")
+                for f in live_flights[:5]:
+                    price    = f.get("price", "?")
+                    airline  = f.get("airline", "?")
+                    duration = f.get("duration", "")
+                    dur_str  = f"  |  {duration}" if duration else ""
+                    parts.append(f"- {airline}: ${price}{dur_str}")
+                parts.append("")
+                has_any = True
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     flights_web = web_results.get("fetch_flights", "")
     if flights_web and flights_web.startswith("[Web source]"):
         parts.append("**Flights (Web Research)**")
@@ -402,6 +440,61 @@ def build_web_section(web_results: Dict[str, str]) -> str:
             parts.extend(brew_lines)
             parts.append("")
             has_any = True
+
+    # Local transport (structured JSON from fetch_local_transport_live)
+    transport_raw = web_results.get("fetch_local_transport", "")
+    if not transport_raw:
+        transport_raw = web_results.get("local_transport_guide", "")
+    if transport_raw:
+        try:
+            t = json.loads(transport_raw)
+            if isinstance(t, dict) and "options" in t:
+                source_tag = " (live enriched)" if "live" in t.get("source", "") else ""
+                parts.append(f"**Local Transport — {t.get('city', 'City')}{source_tag}**")
+
+                at = t.get("airport_transfer", {})
+                if at:
+                    price = at.get("price_usd")
+                    price_str = f"  ~${price}" if price else ""
+                    dur = at.get("duration_min")
+                    dur_str = f"  {dur} min" if dur else ""
+                    parts.append(
+                        f"- Airport transfer: **{at.get('mode', '?')}** "
+                        f"({at.get('from', '')} → {at.get('to', '')})"
+                        f"{dur_str}{price_str}"
+                    )
+                    if at.get("tip"):
+                        parts.append(f"  → *{at['tip']}*")
+
+                metro = t.get("metro", {})
+                if metro:
+                    parts.append(
+                        f"- Metro/Subway: **{metro.get('network', '?')}** "
+                        f"— ${metro.get('single_usd', '?')}/ride  |  "
+                        f"Day pass ${metro.get('day_pass_usd', '?')}"
+                    )
+                    if metro.get("card"):
+                        parts.append(f"  → Card: {metro['card']}")
+
+                for opt in t.get("options", [])[:4]:
+                    mode     = opt.get("mode", "?")
+                    price    = opt.get("price", "")
+                    day_pass = opt.get("day_pass", "")
+                    notes    = opt.get("notes", "")
+                    dp_str   = f"  day pass {day_pass}" if day_pass else ""
+                    parts.append(f"- {mode}: {price}{dp_str}  — {notes}")
+
+                if t.get("live_update"):
+                    parts.append(f"\n  *Live update:* {t['live_update'][:200]}")
+
+                parts.append("")
+                has_any = True
+        except (json.JSONDecodeError, TypeError):
+            if transport_raw and len(transport_raw) > 10:
+                parts.append("**Local Transport**")
+                parts.append(f"- {transport_raw[:400]}")
+                parts.append("")
+                has_any = True
 
     tavily_raw = web_results.get("web_research_tavily", "")
     if tavily_raw and not tavily_raw.startswith("Search Engine"):

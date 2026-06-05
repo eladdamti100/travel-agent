@@ -263,8 +263,20 @@ def critique_plan(state: Dict[str, Any]) -> CritiqueResult:
     visa       = structured.get("visa")
     cost_obj   = structured.get("cost") or {}
 
+    # Live flights (SerpAPI) are stored in raw_results under "fetch_live_flights".
+    # Treat them as equivalent to DB flights for completeness and budget purposes.
+    import json as _json
+    live_flights_raw = raw_results.get("fetch_live_flights", "")
+    live_flights: list = []
+    if live_flights_raw and not flights:
+        try:
+            live_flights = _json.loads(live_flights_raw)
+        except (ValueError, TypeError):
+            live_flights = []
+    has_flights = bool(flights) or bool(live_flights)
+
     completeness = {
-        "has_flights":        bool(flights),
+        "has_flights":        has_flights,
         "has_hotels":         bool(hotels),
         "has_activities":     bool(activities),
         "has_visa_info":      bool(visa),
@@ -272,7 +284,14 @@ def critique_plan(state: Dict[str, Any]) -> CritiqueResult:
     }
 
     # ── 3. Budget breakdown ───────────────────────────────────────────────────
-    bd = _build_budget_breakdown(structured, budget, duration_days, num_travelers)
+    # Inject live flights into structured so _build_budget_breakdown can price them.
+    structured_for_budget = dict(structured)
+    if live_flights and not structured_for_budget.get("flights"):
+        # Normalise live flights to the same shape as DB flights
+        structured_for_budget["flights"] = [
+            {"price": f.get("price", 0)} for f in live_flights
+        ]
+    bd = _build_budget_breakdown(structured_for_budget, budget, duration_days, num_travelers)
 
     # Raw text fallback if structured results have no total
     if not bd.total_estimated and raw_results:

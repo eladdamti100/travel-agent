@@ -5,6 +5,7 @@ Produced by plan_generator.py after all planner sub-agents have run.
 Consumed by the FastAPI layer, the critic, and the PDF exporter.
 """
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -74,3 +75,7 @@ class FinalPlan:
     planning_mode: str = "full_planning"
     used_web_source: bool = False
     raw_markdown: str = ""
+
+    def model_dump(self) -> dict:
+        """Pydantic-compatible serialisation for callers that expect model_dump()."""
+        return dataclasses.asdict(self)

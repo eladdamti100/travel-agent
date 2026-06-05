@@ -55,6 +55,7 @@ _WEB_TASK_KEYS: frozenset = frozenset({
     PlannerTaskType.FETCH_BREWERIES.value,
     PlannerTaskType.FETCH_COUNTRY_METADATA.value,
     PlannerTaskType.WEB_RESEARCH_TAVILY.value,
+    "fetch_live_flights",   # SerpAPI Google Flights — live prices go to Section 2
 })
 
 
@@ -84,7 +85,11 @@ async def generate_final_plan(
         if val and val.startswith("[Web source]"):
             web_results = {**web_results, key: val}
 
-    section1 = build_db_section(context, db_results)
+    section1 = build_db_section(
+        context,
+        db_results,
+        has_live_flights=bool(web_results.get("fetch_live_flights")),
+    )
     section2 = build_web_section(web_results)
     section3 = await generate_notes_section(
         context=context,

@@ -37,6 +37,7 @@ from src.tools.calc_tools import (
     distance_travel_time,
     estimate_daily_budget,
     generate_daily_itinerary,
+    generate_trip_packages,
     summarize_trip,
 )
 
@@ -85,6 +86,7 @@ COMPUTATIONAL_CORE_TOOLS = [
     summarize_trip,
     distance_travel_time,
     generate_daily_itinerary,
+    generate_trip_packages,
 ]
 
 EXTERNAL_WEB_API_TOOLS = [
