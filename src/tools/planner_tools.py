@@ -32,6 +32,26 @@ def _safe_filename(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", text.strip().lower())
 
 
+def _ascii_safe(text: str) -> str:
+    """Replace Unicode characters that Helvetica cannot render."""
+    return (
+        text
+        .replace("—", "--")   # em dash
+        .replace("–", "-")    # en dash
+        .replace("’", "'")    # right single quote
+        .replace("‘", "'")    # left single quote
+        .replace("“", '"')    # left double quote
+        .replace("”", '"')    # right double quote
+        .replace("…", "...")  # ellipsis
+        .replace("é", "e")    # é
+        .replace("è", "e")    # è
+        .replace("à", "a")    # à
+        .replace("→", "->")   # arrow
+        .replace("←", "<-")
+        .encode("ascii", errors="replace").decode("ascii")
+    )
+
+
 # ── export_plan_to_pdf ────────────────────────────────────────────────────────
 
 @tool
@@ -81,7 +101,7 @@ def export_plan_to_pdf(
         # ── Cover header ──────────────────────────────────────────────────────
         pdf.set_font("Helvetica", "B", 22)
         pdf.set_text_color(30, 60, 120)
-        pdf.cell(0, 14, f"Travel Plan — {destination_city.title()}", ln=True, align="C")
+        pdf.cell(0, 14, f"Travel Plan - {destination_city.title()}", ln=True, align="C")
 
         pdf.set_font("Helvetica", "", 11)
         pdf.set_text_color(100, 100, 100)
@@ -99,7 +119,7 @@ def export_plan_to_pdf(
         pdf.set_text_color(30, 30, 30)
 
         for raw_line in plan_text.splitlines():
-            line = raw_line.rstrip()
+            line = _ascii_safe(raw_line.rstrip())
 
             # Section headers (markdown ## or **)
             if line.startswith("## ") or (line.startswith("**") and line.endswith("**")):
@@ -112,11 +132,11 @@ def export_plan_to_pdf(
                 pdf.set_text_color(30, 30, 30)
 
             # Bullet points
-            elif line.startswith("- ") or line.startswith("• "):
+            elif line.startswith("- ") or line.startswith("* "):
                 body = line[2:].strip()
                 for wrapped in textwrap.wrap(body, width=95):
                     pdf.cell(6)
-                    pdf.cell(0, 7, f"• {wrapped}", ln=True)
+                    pdf.cell(0, 7, f"- {wrapped}", ln=True)
 
             # Empty line
             elif not line:
