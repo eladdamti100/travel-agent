@@ -200,7 +200,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
             "Enrichment failed or timed out (%s). Falling back to deterministic context.",
             type(_enrichment_raw).__name__,
         )
-        enrichment_result = ContextEnrichmentResult()
+        enrichment_result = ContextEnrichmentResult(trip_context=deterministic_context)
     else:
         enrichment_result = _enrichment_raw
 

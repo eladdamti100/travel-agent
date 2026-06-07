@@ -18,6 +18,8 @@ Default hit threshold:
 
 from __future__ import annotations
 
+import atexit
+import functools
 import json
 import os
 import random
@@ -25,8 +27,9 @@ import re
 import sqlite3
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -99,6 +102,66 @@ _CLEANUP_ON_LOOKUP_PROBABILITY = 0.05
 
 _VALID_SOURCES = ("db", "web")
 
+# Background executor for cache cleanup/deletion — never blocks the caller.
+_bg_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cache_bg_cleanup")
+atexit.register(_bg_executor.shutdown, wait=False)
+
+
+def _bg_submit(fn: Callable, *args: Any) -> None:
+    """Fire-and-forget: submit fn(*args) to the background cleanup thread."""
+    try:
+        future = _bg_executor.submit(fn, *args)
+        future.add_done_callback(
+            lambda f: logger.error("Background cache task raised: %s", f.exception())
+            if f.exception() else None
+        )
+    except Exception as exc:
+        logger.error("Failed to submit background cache task: %s", exc)
+
+
+# ── Background sweep thread ───────────────────────────────────────────────────
+# Runs every 6 hours regardless of query traffic. Removes entries that are past
+# their valid_until date or TTL so the DB stays compact even when idle.
+
+_SWEEP_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
+_sweep_stop = threading.Event()
+
+
+def _sweep_expired_entries() -> int:
+    """
+    Deletes every cache row that has expired — either past valid_until
+    (trip date has passed) or past its TTL (data is stale).
+
+    Safe to call at any time: a missing DB is silently ignored.
+    """
+    if not _CACHE_DB_PATH.exists():
+        return 0
+    try:
+        with sqlite3.connect(_CACHE_DB_PATH) as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM semantic_cache
+                WHERE (valid_until IS NOT NULL AND valid_until < date('now'))
+                   OR created_at < datetime('now', '-' || ttl_days || ' days')
+                """
+            ).rowcount
+        if deleted:
+            logger.info("Periodic sweep: deleted %d expired cache entries.", deleted)
+        return deleted
+    except Exception as exc:
+        logger.error("Periodic sweep failed: %s", exc)
+        return 0
+
+
+def _sweep_loop() -> None:
+    """Daemon loop: sleep _SWEEP_INTERVAL_SECONDS, then sweep, repeat."""
+    while not _sweep_stop.wait(_SWEEP_INTERVAL_SECONDS):
+        _sweep_expired_entries()
+
+
+_sweep_thread = threading.Thread(target=_sweep_loop, name="cache_sweep", daemon=True)
+_sweep_thread.start()
+
 
 def _get_embedding_model() -> SentenceTransformer:
     """
@@ -149,6 +212,14 @@ def initialize_cache_db() -> None:
         _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
         with sqlite3.connect(_CACHE_DB_PATH) as conn:
+            # WAL lets background writers and the main-thread reader run
+            # concurrently without blocking each other.
+            # synchronous=NORMAL is safe with WAL and avoids an fsync per write.
+            # cache_size=-4000 keeps 4 MB of pages in RAM to reduce I/O.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-4000")
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS semantic_cache (
@@ -164,6 +235,7 @@ def initialize_cache_db() -> None:
                     ttl_days INTEGER NOT NULL DEFAULT 30,
                     trip_vector_json TEXT,
                     trip_context_json TEXT,
+                    valid_until TEXT,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -177,6 +249,7 @@ def initialize_cache_db() -> None:
                 "ALTER TABLE semantic_cache ADD COLUMN ttl_days INTEGER NOT NULL DEFAULT 30",
                 "ALTER TABLE semantic_cache ADD COLUMN trip_vector_json TEXT",
                 "ALTER TABLE semantic_cache ADD COLUMN trip_context_json TEXT",
+                "ALTER TABLE semantic_cache ADD COLUMN valid_until TEXT",
             ):
                 try:
                     conn.execute(migration)
@@ -201,6 +274,21 @@ def initialize_cache_db() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_semantic_cache_route_query
                 ON semantic_cache(route, normalized_query)
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_semantic_cache_destination
+                ON semantic_cache(LOWER(json_extract(trip_context_json, '$.destination_city')))
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_semantic_cache_valid_until
+                ON semantic_cache(valid_until)
+                WHERE valid_until IS NOT NULL
                 """
             )
 
@@ -239,14 +327,18 @@ def normalize_query(query: str) -> str:
     return normalized
 
 
+@functools.lru_cache(maxsize=256)
+def _embed_cached(text: str) -> tuple:
+    """LRU-cached embedding — same text always produces the same vector."""
+    return tuple(_get_embedding_model().encode(text, normalize_embeddings=True).tolist())
+
+
 def embed_text(text: str) -> List[float]:
     """
     Creates an embedding vector for the given text.
+    Results are LRU-cached (maxsize=256) so repeated queries skip the neural net.
     """
-    model = _get_embedding_model()
-    vector = model.encode(text, normalize_embeddings=True)
-
-    return vector.astype(float).tolist()
+    return list(_embed_cached(text))
 
 
 def cosine_similarity(vector_a: List[float], vector_b: List[float]) -> float:
@@ -266,30 +358,116 @@ def cosine_similarity(vector_a: List[float], vector_b: List[float]) -> float:
     return float(np.dot(a, b) / denominator)
 
 
-def _load_embedding_index(route: str) -> List[Dict[str, Any]]:
+def _load_embedding_index(
+    route: str,
+    trip_context: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """
-    Loads only id, query, and embedding_json for all rows in a route.
+    Loads id, query, and embedding_json for candidate rows in a route.
 
-    Intentionally excludes the large answer/compressed_answer columns so the
-    similarity scan never loads megabytes of cached text into memory.
-    The full row is fetched separately only when a hit is confirmed.
+    When trip_context is provided, two WHERE clauses are pushed into SQLite
+    before any Python runs (pre-filtering):
+      - destination_city exact match
+      - total_budget within ±5%
+
+    Rows without trip_context_json always pass through so free-text entries
+    remain reachable via semantic fallback.
     """
     initialize_cache_db()
 
+    conditions = [
+        "route = ?",
+        "created_at >= datetime('now', '-' || ttl_days || ' days')",
+        "(valid_until IS NULL OR valid_until >= date('now'))",
+    ]
+    params: List[Any] = [route]
+
+    if trip_context:
+        destination = trip_context.get("destination_city")
+        if destination:
+            conditions.append(
+                "(trip_context_json IS NULL"
+                " OR LOWER(json_extract(trip_context_json, '$.destination_city')) = ?)"
+            )
+            params.append(str(destination).strip().lower())
+
+        budget = trip_context.get("total_budget")
+        if budget is not None:
+            try:
+                budget_f = float(budget)
+                min_b, max_b = budget_f * 0.95, budget_f * 1.05
+                conditions.append(
+                    "(trip_context_json IS NULL"
+                    " OR json_extract(trip_context_json, '$.total_budget') IS NULL"
+                    " OR CAST(json_extract(trip_context_json, '$.total_budget') AS REAL)"
+                    "    BETWEEN ? AND ?)"
+                )
+                params.extend([min_b, max_b])
+            except (TypeError, ValueError):
+                pass
+
+    where = " AND ".join(conditions)
+
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        # Include answer columns only when pre-filter is active (few rows expected).
+        # Base conditions = 3 (route + TTL + valid_until); any extra means a
+        # destination/budget filter was added — safe to load answer text.
+        answer_cols = ", answer, compressed_answer, source, ttl_days" if len(conditions) > 3 else ""
         rows = conn.execute(
-            """
-            SELECT id, query, embedding_json, trip_vector_json, trip_context_json
+            f"""
+            SELECT id, query, embedding_json, trip_context_json{answer_cols}
             FROM semantic_cache
-            WHERE route = ?
-              AND created_at >= datetime('now', '-' || ttl_days || ' days')
+            WHERE {where}
             ORDER BY id DESC
+            LIMIT ?
             """,
-            (route,),
+            params + [_MAX_ROWS_PER_ROUTE],
         ).fetchall()
 
+    logger.info(
+        "Pre-filter loaded %d candidate rows. route=%s destination=%s budget=%s",
+        len(rows),
+        route,
+        trip_context.get("destination_city") if trip_context else None,
+        trip_context.get("total_budget") if trip_context else None,
+    )
+
     return [dict(row) for row in rows]
+
+
+def _compute_valid_until(trip_context: Optional[Dict[str, Any]]) -> Optional[str]:
+    """
+    Returns the ISO date (YYYY-MM-DD) after which this cached answer is no longer valid.
+
+    Logic (in priority order):
+      1. travel_start_date known → valid until start_date - 1 day
+         (day before departure all time-sensitive items — flights, hotels, events — become irrelevant)
+      2. travel_end_date known  → valid until end_date
+         (plan is valid through the last day of the trip)
+      3. Neither known → None  (rely on TTL only)
+    """
+    if not trip_context:
+        return None
+    start = trip_context.get("travel_start_date")
+    if start:
+        try:
+            return (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+        except ValueError:
+            pass
+    end = trip_context.get("travel_end_date")
+    if end:
+        try:
+            return date.fromisoformat(end).isoformat()
+        except ValueError:
+            pass
+    return None
+
+
+def _delete_by_id(row_id: int) -> None:
+    """Deletes a single cache row by primary key. Safe for background use."""
+    with sqlite3.connect(_CACHE_DB_PATH) as conn:
+        conn.execute("DELETE FROM semantic_cache WHERE id = ?", (row_id,))
 
 
 def _fetch_row_by_id(row_id: int) -> Optional[Dict[str, Any]]:
@@ -313,13 +491,17 @@ def find_exact_cached_answer(
     query: str,
     *,
     route: str = "cache_check",
+    _normalized: Optional[str] = None,
 ) -> CacheCheckResult:
     """
     Finds an exact cache match by normalized_query before semantic similarity is used.
+
+    Pass _normalized when the caller already holds normalize_query(query) to
+    avoid computing it twice (find_cached_answer does this internally).
     """
     initialize_cache_db()
 
-    normalized_query = normalize_query(query)
+    normalized_query = _normalized if _normalized is not None else normalize_query(query)
 
     logger.info(
         "Exact cache lookup. route=%s normalized_query=%s",
@@ -327,17 +509,19 @@ def find_exact_cached_answer(
         normalized_query,
     )
 
-    # Single connection — fetch the latest row regardless of TTL, then check
-    # validity in Python. Avoids a second DB round-trip on miss.
+    # Fetch the latest row; validity is checked in Python so we can log the
+    # exact reason. The WHERE already excludes rows past valid_until so only
+    # truly live entries reach the TTL check.
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT query, answer, compressed_answer, source, ttl_days,
+            SELECT id, query, answer, compressed_answer, source, ttl_days,
                    CASE WHEN created_at >= datetime('now', '-' || ttl_days || ' days')
                         THEN 1 ELSE 0 END AS is_valid
             FROM semantic_cache
             WHERE route = ? AND normalized_query = ?
+              AND (valid_until IS NULL OR valid_until >= date('now'))
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -348,17 +532,14 @@ def find_exact_cached_answer(
         miss_reason = "No cache entry found for this query."
     elif not row["is_valid"]:
         miss_reason = "Cache entry expired (TTL exceeded)."
-        if row["source"] == "web":
-            with sqlite3.connect(_CACHE_DB_PATH) as del_conn:
-                del_conn.execute(
-                    "DELETE FROM semantic_cache WHERE route = ? AND normalized_query = ?",
-                    (route, normalized_query),
-                )
-            logger.info(
-                "Deleted expired web cache entry immediately. route=%s query=%s",
-                route,
-                normalized_query,
-            )
+        # Delete by id — not by normalized_query — to avoid erasing a
+        # concurrently stored fresh entry with the same text.
+        _bg_submit(_delete_by_id, row["id"])
+        logger.info(
+            "Scheduled async delete of expired entry id=%s route=%s",
+            row["id"],
+            route,
+        )
         row = None  # treat as miss
 
     if row is None:
@@ -416,31 +597,20 @@ def find_cached_answer(
     """
     initialize_cache_db()
 
-    # Always purge expired web entries before searching — live data must never
-    # surface as a semantic hit after its TTL elapses.
-    _purge_expired_web_entries(route=route)
+    # Normalize once here; pass it to find_exact_cached_answer so the regex
+    # pipeline runs exactly once per find_cached_answer call.
+    normalized_query = normalize_query(query)
 
-    # Probabilistic background cleanup for general (non-web) housekeeping.
-    if random.random() < _CLEANUP_ON_LOOKUP_PROBABILITY:
-        _cleanup_cache(route=route)
-
-    exact_result = find_exact_cached_answer(query=query, route=route)
+    # Exact match is the fast path — run it before any cleanup overhead.
+    exact_result = find_exact_cached_answer(query=query, route=route, _normalized=normalized_query)
     if exact_result.status == CacheStatus.HIT:
         return exact_result
 
-    normalized_query = normalize_query(query)
-
-    # Structured trip keys (identified by the key_version: prefix) must match
-    # exactly — semantic fuzzy matching would give false positives because two
-    # structured keys for different cities look textually similar.
-    if f"key_version:{_CACHE_KEY_VERSION}" in normalized_query:
-        return CacheCheckResult(
-            status=CacheStatus.MISS,
-            similarity_score=0.0,
-            matched_query=None,
-            cached_answer=None,
-            reason="Structured key requires exact match only.",
-        )
+    # Housekeeping: TTL and valid_until correctness are enforced by WHERE clauses,
+    # so cleanup is purely space management and can be both probabilistic and async.
+    if random.random() < _CLEANUP_ON_LOOKUP_PROBABILITY:
+        _bg_submit(_purge_expired_web_entries, route)
+        _bg_submit(_cleanup_cache, route)
 
     logger.info(
         "Semantic cache lookup. route=%s normalized_query=%s",
@@ -450,28 +620,28 @@ def find_cached_answer(
 
     query_embedding = embed_text(normalized_query)
 
-    # Build hybrid trip vector for the query when TripContext is available.
-    # All trip_vector imports are lazy to avoid circular import at module level.
-    query_trip_vec: Optional[np.ndarray] = None
-    query_coverage: float = 0.0
+    # Compute coverage for threshold adjustment.
+    # Destination + budget are enforced by SQLite pre-filtering; only duration
+    # still needs a Python hard filter inside the scan loop below.
     effective_threshold = threshold
+    _check_hard_filters = None
     if trip_context:
         try:
             from src.services.trip_vector import (
                 adjusted_threshold,
-                build_trip_vector,
-                check_hard_filters,  # imported once here; reused in hybrid path below
+                check_hard_filters as _check_hard_filters,
+                compute_coverage,
             )
-            query_trip_vec, query_coverage = build_trip_vector(query_embedding, trip_context)
-            effective_threshold = adjusted_threshold(threshold, query_coverage)
+            coverage = compute_coverage(trip_context)
+            effective_threshold = adjusted_threshold(threshold, coverage)
             logger.info(
-                "Trip vector built. coverage=%.2f threshold %.2f→%.2f",
-                query_coverage, threshold, effective_threshold,
+                "Coverage=%.2f threshold %.2f→%.2f",
+                coverage, threshold, effective_threshold,
             )
         except Exception as exc:
-            logger.warning("Query trip vector build failed — using text-only: %s", exc)
+            logger.warning("Coverage computation failed — using base threshold: %s", exc)
 
-    index_rows = _load_embedding_index(route=route)
+    index_rows = _load_embedding_index(route=route, trip_context=trip_context)
 
     if not index_rows:
         return CacheCheckResult(
@@ -482,102 +652,69 @@ def find_cached_answer(
             reason="Semantic cache is empty for this route.",
         )
 
-    best_score = 0.0
-    best_id: Optional[int] = None
-    best_query: Optional[str] = None
-
-    # ── Hybrid similarity scan ────────────────────────────────────────────────
-    # For each row:
-    #   - If both query and row have trip vectors: apply hard filters first,
-    #     then use hybrid vector dot product.
-    #   - Otherwise: fall back to text-only batch cosine.
-    # We separate rows into two groups and batch each independently.
-
-    hybrid_rows:   List[Dict[str, Any]] = []
-    textonly_rows: List[Dict[str, Any]] = []
-    textonly_vecs: List[List[float]]    = []
+    # ── Unified cosine scan ───────────────────────────────────────────────────
+    # Destination + budget are pre-filtered by SQLite.
+    # Duration hard filter runs here in Python for rows that have trip_context_json.
+    candidate_rows: List[Dict[str, Any]] = []
+    candidate_vecs: List[List[float]] = []
 
     for row in index_rows:
-        if query_trip_vec is not None and row.get("trip_vector_json"):
-            hybrid_rows.append(row)
-        else:
+        if _check_hard_filters is not None and row.get("trip_context_json"):
             try:
-                vec = json.loads(row["embedding_json"])
-                textonly_vecs.append(vec)
-                textonly_rows.append(row)
-            except (json.JSONDecodeError, TypeError, ValueError) as err:
-                logger.warning("Skipping invalid cache embedding: %s", err)
-
-    # -- Hybrid path --
-    if hybrid_rows and query_trip_vec is not None:
-        for row in hybrid_rows:
-            try:
-                cached_ctx = json.loads(row["trip_context_json"] or "{}")
-                passes, reason = check_hard_filters(trip_context, cached_ctx)
+                cached_ctx = json.loads(row["trip_context_json"])
+                passes, reason = _check_hard_filters(trip_context, cached_ctx)
                 if not passes:
-                    logger.debug("Hard filter rejected row id=%s: %s", row["id"], reason)
+                    logger.debug("Duration filter rejected row id=%s: %s", row["id"], reason)
                     continue
-                row_vec = np.array(json.loads(row["trip_vector_json"]), dtype=np.float32)
-                score = float(np.dot(query_trip_vec, row_vec))
             except (json.JSONDecodeError, TypeError, ValueError) as err:
-                logger.warning("Skipping invalid trip vector row id=%s: %s", row["id"], err)
+                logger.warning("Skipping row with invalid trip_context_json id=%s: %s", row["id"], err)
                 continue
-            if score > best_score:
-                best_score = score
-                best_id = row["id"]
-                best_query = row["query"]
+        try:
+            candidate_vecs.append(json.loads(row["embedding_json"]))
+            candidate_rows.append(row)
+        except (json.JSONDecodeError, TypeError, ValueError) as err:
+            logger.warning("Skipping row with invalid embedding id=%s: %s", row["id"], err)
 
-    # -- Text-only batch path --
-    if textonly_vecs:
+    best_score = 0.0
+    best_row: Optional[Dict[str, Any]] = None
+
+    if candidate_vecs:
         q_vec = np.array(query_embedding, dtype=np.float32)
-        matrix = np.array(textonly_vecs, dtype=np.float32)
+        matrix = np.array(candidate_vecs, dtype=np.float32)
+        scores = matrix @ q_vec
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+        best_row = candidate_rows[best_idx]
 
-        if matrix.ndim == 2 and matrix.shape[1] == q_vec.shape[0]:
-            scores = matrix @ q_vec
-        else:
-            logger.warning(
-                "Embedding dimension mismatch: matrix=%s query_dim=%d — per-row fallback.",
-                matrix.shape, q_vec.shape[0],
-            )
-            scores = np.array([
-                float(np.dot(q_vec, np.array(r, dtype=np.float32)))
-                if len(r) == q_vec.shape[0] else 0.0
-                for r in textonly_vecs
-            ])
+    # Clamp to [0, 1] — dot products on unit vectors can produce 1.0000001.
+    best_score = max(0.0, min(best_score, 1.0))
 
-        text_best_idx = int(np.argmax(scores))
-        text_best_score = float(scores[text_best_idx])
-        if text_best_score > best_score:
-            best_score = text_best_score
-            best_id = textonly_rows[text_best_idx]["id"]
-            best_query = textonly_rows[text_best_idx]["query"]
-
-    # Clamp to [0, 1] — floating point dot products on unit vectors can
-    # produce values like 1.0000001 which would fail Pydantic's le=1.0 check.
-    best_score = max(0.0, min(float(best_score), 1.0))
-
-    if best_id is not None and best_score >= effective_threshold:
-        full_row = _fetch_row_by_id(best_id)
+    if best_row is not None and best_score >= effective_threshold:
+        # When no pre-filter was active, _load_embedding_index omitted the answer
+        # columns to avoid loading large text for every scanned row. Fetch them
+        # now for this single winning row.
+        if best_row.get("answer") is None:
+            full = _fetch_row_by_id(best_row["id"])
+            if full:
+                best_row = {**best_row, **full}
 
         logger.info(
             "Semantic cache hit. score=%.4f matched_query=%s source=%s ttl_days=%s",
             best_score,
-            best_query,
-            full_row.get("source") if full_row else None,
-            full_row.get("ttl_days") if full_row else None,
+            best_row.get("query"),
+            best_row.get("source"),
+            best_row.get("ttl_days"),
         )
 
         return CacheCheckResult(
             status=CacheStatus.HIT,
             similarity_score=best_score,
-            matched_query=best_query,
-            cached_answer=full_row["answer"] if full_row else None,
-            cached_compressed_answer=(
-                full_row.get("compressed_answer") or None if full_row else None
-            ),
+            matched_query=best_row.get("query"),
+            cached_answer=best_row.get("answer"),
+            cached_compressed_answer=best_row.get("compressed_answer") or None,
             reason="Found a sufficiently similar cached answer.",
-            source=full_row.get("source") if full_row else None,
-            ttl_days=full_row.get("ttl_days") if full_row else None,
+            source=best_row.get("source"),
+            ttl_days=best_row.get("ttl_days"),
         )
 
     logger.info("Semantic cache miss. best_score=%.4f effective_threshold=%.4f", best_score, effective_threshold)
@@ -585,7 +722,7 @@ def find_cached_answer(
     return CacheCheckResult(
         status=CacheStatus.MISS,
         similarity_score=best_score,
-        matched_query=best_query,
+        matched_query=best_row.get("query") if best_row else None,
         cached_answer=None,
         reason="No cached answer was similar enough.",
     )
@@ -630,6 +767,12 @@ def store_cache_entry(
     normalized_query = normalize_query(query)
     embedding = embed_text(normalized_query)
     now = datetime.now(timezone.utc)
+
+    # Compute valid_until from trip dates so the entry auto-expires when the
+    # travel window passes — regardless of when it was stored.
+    valid_until = _compute_valid_until(trip_context)
+    if valid_until:
+        logger.info("Cache entry valid_until=%s query=%s", valid_until, query)
 
     # Build multi-dimensional trip vector when TripContext is available.
     trip_vector_json_str: Optional[str] = None
@@ -700,9 +843,10 @@ def store_cache_entry(
                 ttl_days,
                 trip_vector_json,
                 trip_context_json,
+                valid_until,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.query,
@@ -716,6 +860,7 @@ def store_cache_entry(
                 entry.ttl_days,
                 trip_vector_json_str,
                 trip_context_json_str,
+                valid_until,
                 entry.timestamp.isoformat(),
             ),
         )
@@ -724,7 +869,8 @@ def store_cache_entry(
 
     logger.info("Cache entry committed. route=%s query=%s", route, query)
 
-    _cleanup_cache(route=route)
+    # Cleanup runs async — never blocks the caller.
+    _bg_submit(_cleanup_cache, route)
 
     logger.info("Stored semantic cache entry for route=%s query=%s confidence=%.4f", route, query, confidence)
 

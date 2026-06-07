@@ -266,38 +266,22 @@ def build_trip_vector(
     trip_context: dict,
 ) -> Tuple[np.ndarray, float]:
     """
-    Builds the weighted travel vector from a text embedding + TripContext dict.
+    Returns the unit-normalised text embedding (384d) and structured coverage.
 
-    Returns:
-        vector   — unit-normalised float32 ndarray of shape (411,)
-        coverage — fraction of structured dimensions present (0.0–1.0)
-
-    Missing dimensions are ZERO (not neutral) — they are excluded from the
-    dot product entirely so sparse vectors don't inflate similarity.
-    When all structured dims are zero, the vector degrades to pure text.
-
-    To add a new dimension (all three steps required — import-time assertions
-    will catch it if you forget one):
-      1. Add its weight to DIMENSION_WEIGHTS — reduce other weights so sum stays 1.0.
-      2. Write an _enc_<name>(ctx) encoder function above.
-      3. Append (weight_key, encoder) to _STRUCTURED_ENCODERS.
+    The structured dimensions are no longer concatenated into the vector —
+    business constraints (destination, budget) are enforced by SQLite
+    pre-filtering before cosine similarity runs.  Coverage is still computed
+    so adjusted_threshold() can raise the bar when context is sparse.
     """
-    w = DIMENSION_WEIGHTS
     struct_vecs = [enc(trip_context) for _, enc in _STRUCTURED_ENCODERS]
-    struct_keys = [key for key, _ in _STRUCTURED_ENCODERS]
-
     coverage = sum(1 for v in struct_vecs if np.any(v != 0)) / len(struct_vecs)
 
-    components = [np.sqrt(w["text"]) * np.array(text_embedding, dtype=np.float32)]
-    for key, vec in zip(struct_keys, struct_vecs):
-        components.append(np.sqrt(w[key]) * vec)
-
-    combined = np.concatenate(components).astype(np.float32)
-    norm = np.linalg.norm(combined)
+    vec = np.array(text_embedding, dtype=np.float32)
+    norm = np.linalg.norm(vec)
     if norm > 0:
-        combined /= norm
+        vec /= norm
 
-    return combined, coverage
+    return vec, coverage
 
 
 # ── Hard filters ──────────────────────────────────────────────────────────────
