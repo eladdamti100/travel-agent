@@ -59,3 +59,9 @@ models/
 # MyPy / type checkers
 .mypy_cache/
 .ruff_cache/
+
+# React frontend
+marco-react/node_modules/
+marco-react/dist/
+marco-react/.next/
+marco-react/.vite/
