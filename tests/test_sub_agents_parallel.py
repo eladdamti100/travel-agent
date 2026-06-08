@@ -1,5 +1,5 @@
 """
-Tests for parallel sub-agent execution — run_sub_agents_async
+Tests for parallel sub-agent execution — run_sub_agents_async (delegates to WebSupervisor).
 """
 
 import asyncio
@@ -39,9 +39,7 @@ class TestSubAgentsParallel:
         transport = _mock_agent(("fetch_flights", "check_visa"), {"fetch_flights": '{"airline": "El Al"}'})
         stay = _mock_agent(("fetch_hotels",), {"fetch_hotels": '{"name": "Ibis"}'})
         experience = _mock_agent(("fetch_activities",), {"fetch_activities": '{"activity": "Louvre"}'})
-        with patch("src.agents.planner.TransportAgent", return_value=transport), \
-             patch("src.agents.planner.StayAgent", return_value=stay), \
-             patch("src.agents.planner.ExperienceAgent", return_value=experience):
+        with patch("src.agents.web_supervisor.get_planner_agents", return_value=[transport, stay, experience]):
             merged = asyncio.run(run_sub_agents_async(context=_make_trip_context()))
         assert "fetch_flights" in merged and "fetch_hotels" in merged and "fetch_activities" in merged
 
@@ -50,9 +48,7 @@ class TestSubAgentsParallel:
         transport = _mock_agent(("fetch_flights", "check_visa"), crash=True)
         stay = _mock_agent(("fetch_hotels",), {"fetch_hotels": '{"name": "Ibis"}'})
         experience = _mock_agent(("fetch_activities",), {"fetch_activities": '{"activity": "Louvre"}'})
-        with patch("src.agents.planner.TransportAgent", return_value=transport), \
-             patch("src.agents.planner.StayAgent", return_value=stay), \
-             patch("src.agents.planner.ExperienceAgent", return_value=experience):
+        with patch("src.agents.web_supervisor.get_planner_agents", return_value=[transport, stay, experience]):
             merged = asyncio.run(run_sub_agents_async(context=_make_trip_context()))
         assert "fetch_flights" not in merged
         assert "fetch_hotels" in merged and "fetch_activities" in merged
@@ -64,9 +60,7 @@ class TestSubAgentsParallel:
         transport = _mock_agent(("fetch_flights", "check_visa"))
         stay = _mock_agent(("fetch_hotels",), {"fetch_hotels": '{"name": "Ibis"}'})
         experience = _mock_agent(("fetch_activities",), {"fetch_activities": '{"activity": "Louvre"}'})
-        with patch("src.agents.planner.TransportAgent", return_value=transport), \
-             patch("src.agents.planner.StayAgent", return_value=stay), \
-             patch("src.agents.planner.ExperienceAgent", return_value=experience):
+        with patch("src.agents.web_supervisor.get_planner_agents", return_value=[transport, stay, experience]):
             merged = asyncio.run(run_sub_agents_async(context=_make_trip_context(), existing_results=existing))
         transport.run.assert_not_awaited()
         assert "El Al" in merged["fetch_flights"]
@@ -78,9 +72,7 @@ class TestSubAgentsParallel:
         transport = _mock_agent(("fetch_flights", "check_visa"))
         stay = _mock_agent(("fetch_hotels",))
         experience = _mock_agent(("fetch_activities",))
-        with patch("src.agents.planner.TransportAgent", return_value=transport), \
-             patch("src.agents.planner.StayAgent", return_value=stay), \
-             patch("src.agents.planner.ExperienceAgent", return_value=experience):
+        with patch("src.agents.web_supervisor.get_planner_agents", return_value=[transport, stay, experience]):
             merged = asyncio.run(run_sub_agents_async(context=_make_trip_context(), existing_results=existing))
         transport.run.assert_not_awaited()
         stay.run.assert_not_awaited()
