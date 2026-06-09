@@ -143,17 +143,12 @@ export default function App() {
   useEffect(() => { const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, nodeState.active]);
 
-  const fetchSessions = useCallback(async () => {
-    try {
-      const r = await fetch(`${BASE_URL}/sessions`);
-      const d = await r.json();
-      setSessions(prev => {
-        const merged = [...new Set([...prev, ...(d.sessions || [])])];
-        try { localStorage.setItem('allSessions', JSON.stringify(merged)); } catch {}
-        return merged;
-      });
-    } catch {}
-  }, []);
+  // מאזין למעבר סשנים - מנקה וטוען מחדש כשמשתמש בוחר טיול ישן
+  useEffect(() => {
+    if (activeSession) {
+      fetchState(activeSession);
+    }
+  }, [activeSession]);
 
   const fetchState = useCallback(async (sid) => {
     try {
@@ -174,9 +169,13 @@ export default function App() {
       setMessages(msgs);
       
       const isCacheHit = vals.cache_status && vals.cache_status.toLowerCase() === 'hit';
-      const hasPlanData = !!vals.planner_task_results || !!vals.final_plan || !!vals.planner_structured_results || isCacheHit;
+      const hasPlanResult = vals.planner_task_results && Object.values(vals.planner_task_results).some(v => v !== null && v !== undefined);
       
-      if (msgs.length > 0 || hasPlanData) setHasStartedChat(true);
+      if (msgs.length > 0 || hasPlanResult || vals.final_plan || vals.planner_structured_results || isCacheHit) {
+        setHasStartedChat(true);
+      } else {
+        setHasStartedChat(false);
+      }
       
       setKpi({ cacheStatus: vals.cache_status || 'Cache Miss', cacheTtl: vals.cache_ttl || 'Live Feed' });
       const cd = vals.critic_results || vals.critique_result || null;
@@ -187,7 +186,15 @@ export default function App() {
       const hasHitlIndication = vals.awaiting_hitl_decision || 
                                 vals.awaiting_user_clarification || 
                                 (vals.critique_result && !vals.planner_status?.includes('completed'));
-      const cacheHitAwaiting = isCacheHit && !isGraphPaused && !cacheHitlResolved;
+                                
+      // בדיקה אם הטיול כבר אושר בעבר מהקאש (שמור ב-localStorage)
+      let isCacheHandled = false;
+      try {
+        const resolved = JSON.parse(localStorage.getItem('resolvedSessions') || '[]');
+        if (resolved.includes(sid)) isCacheHandled = true;
+      } catch {}
+
+      const cacheHitAwaiting = isCacheHit && !isGraphPaused && !cacheHitlResolved && !isCacheHandled;
       setHitlPending((isGraphPaused && hasHitlIndication) || cacheHitAwaiting);
     } catch (err) { console.error("Error fetching state:", err); }
   }, [cacheHitlResolved]);
@@ -206,6 +213,7 @@ export default function App() {
       return updated;
     });
     setActiveSession(newId);
+    setMessages([]); 
     setFeedback(''); setPrompt(''); setHasStartedChat(false); setShowUpdateInput(false); setCacheHitlResolved(false); setCacheHitPrompted(false); setGraphPaused(false);
     setPanelMode('split'); setAgentState({}); setActiveCard(null);
   };
@@ -218,7 +226,7 @@ export default function App() {
       try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
       return updated;
     });
-    if (sid === activeSession) handleNewPlan(); else fetchSessions();
+    if (sid === activeSession) handleNewPlan();
   };
 
   const handleStartEdit = (sid, e) => { e.stopPropagation(); setEditingSession(sid); setEditValue(sessionNames[sid] || sid.substring(0, 8) + '…'); };
@@ -232,8 +240,16 @@ export default function App() {
   };
 
   const handleReset = async () => {
-    if (!window.confirm('Reset all sessions? This clears the entire checkpoint database.')) return;
-    await fetch(`${BASE_URL}/sessions`, { method: 'DELETE' }); setMenuOpen(false); handleNewPlan(); fetchSessions();
+    if (!window.confirm('Are you sure you want to clear your local trips?')) return;
+    for (const sid of sessions) {
+      try { await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' }); } catch {}
+    }
+    setSessions([]);
+    localStorage.removeItem('allSessions');
+    localStorage.removeItem('sessionNames');
+    localStorage.removeItem('resolvedSessions');
+    setMenuOpen(false); 
+    handleNewPlan();
   };
 
   const handleRefresh = () => { fetchState(activeSession); setMenuOpen(false); };
@@ -295,7 +311,7 @@ export default function App() {
 
   const handleFormSubmit = e => {
     if (e) e.preventDefault();
-    if (!formDest.trim() || !formCitizenship.trim() || !formAirport.trim() || nodeState.isLoading || graphPaused) return;
+    if (!formDest.trim() || !formCitizenship.trim() || !formAirport.trim() || !formDates.trim() || !formBudget.trim() || nodeState.isLoading || graphPaused) return;
     const destWithPrefs = formPreferences ? `${formDest.trim()} (Preferences: ${formPreferences.trim()})` : formDest.trim();
     const content = `Plan a trip to ${destWithPrefs}.${formDates ? ` Dates: ${formDates}.` : ''}${formBudget ? ` Budget: ${formBudget}.` : ''} Citizenship: ${formCitizenship.trim()}. Departure Airport: ${formAirport.trim()}.`;
     executeChat(content);
@@ -309,6 +325,14 @@ export default function App() {
         setCacheHitlResolved(true);
         setHitlPending(false);
         setShowUpdateInput(false);
+        
+        // שמירת הסטטוס המקומי כדי שההודעה לא תקפוץ שוב בעתיד
+        try {
+          const resolved = JSON.parse(localStorage.getItem('resolvedSessions') || '[]');
+          if (!resolved.includes(activeSession)) {
+            localStorage.setItem('resolvedSessions', JSON.stringify([...resolved, activeSession]));
+          }
+        } catch {}
         
         if (action === 'approve') {
             setMessages(prev => [...prev, { role: 'assistant', content: 'Plan successfully approved from cache! Have a wonderful trip 🌍' }]);
@@ -335,7 +359,6 @@ export default function App() {
     finally { 
       dispatchNode({ type: 'DONE' }); 
       fetchState(activeSession); 
-      fetchSessions(); 
     }
   };
 
@@ -469,11 +492,49 @@ export default function App() {
             .bg-canvas, .world-dots, .plane-trail { display:none !important; }
           }
 
+          /* --- התצוגה ה"סקסית" החדשה של רשימות מתוך קאש --- */
           .cache-modal-md { display: flex; flex-direction: column; gap: 16px; font-family: inherit; }
-          .cache-modal-md ul.md-ul { display: flex; flex-wrap: wrap; gap: 20px 32px; background: ${t.surface}; border: 1px solid ${t.border}; border-radius: 16px; padding: 20px; list-style: none; margin: 0; }
-          .cache-modal-md li { display: flex; flex-direction: column; font-size: 16px; font-weight: 600; color: ${t.text}; }
-          .cache-modal-md li strong { font-size: 11px; text-transform: uppercase; color: ${t.muted}; font-weight: 700; letter-spacing: 0.05em; margin-bottom: 4px; display: inline-block; }
+          .cache-modal-md ul, .cache-modal-md ol { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
+          .cache-modal-md li { 
+            background: ${dark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)'}; 
+            padding: 14px 18px; 
+            border-radius: 12px; 
+            border-left: 4px solid ${t.accent}; 
+            font-size: 14.5px; 
+            font-weight: 500; 
+            color: ${t.text}; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 4px; 
+            transition: all 0.25s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+          }
+          .cache-modal-md li:hover { 
+            transform: translateX(5px); 
+            background: ${dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'}; 
+            border-color: ${t.green};
+          }
+          .cache-modal-md li strong { color: ${t.accent}; font-size: 14px; letter-spacing: 0; }
           .cache-modal-md p { color: ${t.text}; font-size: 14.5px; line-height: 1.6; margin: 0; }
+
+          .sexy-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; width: 100%; }
+          .sexy-list-item { 
+            background: ${dark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)'}; 
+            padding: 14px 18px; 
+            border-radius: 12px; 
+            border-left: 4px solid ${t.accent}; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 4px; 
+            transition: all 0.25s ease; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+          }
+          .sexy-list-item:hover { 
+            transform: translateX(5px); 
+            background: ${dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'}; 
+            border-color: ${t.green};
+          }
+          .sexy-list-item-title { font-size: 14.5px; font-weight: 500; color: ${t.text}; line-height: 1.5; }
         `}</style>
 
         {/* ── Background layers ── */}
@@ -702,13 +763,15 @@ export default function App() {
                           <input className="form-input" placeholder="e.g. Israeli" value={formCitizenship} onChange={e => setFormCitizenship(e.target.value)} required />
                         </div>
                         <div>
+                          {/* הוספתי REQUIRED */}
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>DATES / DURATION</label>
-                          <input className="form-input" placeholder="e.g. Oct 12-18 or '5 Days'" value={formDates} onChange={e => setFormDates(e.target.value)} />
+                          <input className="form-input" placeholder="e.g. Oct 12-18 or '5 Days'" value={formDates} onChange={e => setFormDates(e.target.value)} required />
                         </div>
                         
                         <div>
+                          {/* הוספתי REQUIRED */}
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>BUDGET</label>
-                          <input className="form-input" placeholder="e.g. $3000" value={formBudget} onChange={e => setFormBudget(e.target.value)} />
+                          <input className="form-input" placeholder="e.g. $3000" value={formBudget} onChange={e => setFormBudget(e.target.value)} required />
                         </div>
                         <div>
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>PREFERENCES</label>
@@ -989,13 +1052,42 @@ export default function App() {
                         }
                       }
 
+                      // פונקציה שהופכת רשימות של טקסט ל"כרטיסיות" יפות (Sexy UI)
                       const renderValue = (k, v) => {
                         if (v === null || v === undefined || String(v).trim() === '') {
                           return <span style={{ color: t.muted, opacity: 0.5 }}>—</span>;
                         }
-                        if (k.toLowerCase() === 'price' && typeof v === 'number') return `$${v}`;
+                        if (k.toLowerCase() === 'price' && typeof v === 'number') {
+                          return <span style={{ color: t.green, fontWeight: 700 }}>${v}</span>;
+                        }
                         if (typeof v === 'object') return JSON.stringify(v);
-                        return String(v);
+                        
+                        const strVal = String(v).trim();
+                        
+                        // בדיקה אם הטקסט מכיל רשימה (נקודות, מקפים וכו') - והפיכתו לממשק מעוצב
+                        if (strVal.includes('\n- ') || strVal.includes('\n* ') || strVal.startsWith('- ') || strVal.startsWith('* ')) {
+                          const lines = strVal.split('\n').filter(l => l.trim());
+                          return (
+                            <div className="sexy-list">
+                              {lines.map((line, idx) => {
+                                const cleanLine = line.replace(/^[-*]\s*/, '').trim();
+                                if (!cleanLine) return null;
+                                
+                                // איתור מחירים ($) וצביעתם בירוק תוך כדי
+                                const parts = cleanLine.split(/(\$\d+(?:\.\d{2})?(?:\/night)?)/);
+                                
+                                return (
+                                  <div key={idx} className="sexy-list-item">
+                                    <span className="sexy-list-item-title">
+                                      {parts.map((part, pIdx) => part.startsWith('$') ? <span key={pIdx} style={{color: t.green, fontWeight: 800}}>{part}</span> : part)}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        }
+                        return <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, marginTop: '4px', fontSize: '14.5px' }}>{strVal}</div>;
                       };
 
                       if (Array.isArray(data)) {
@@ -1009,7 +1101,7 @@ export default function App() {
                                       <span style={{ fontSize: 11, textTransform: 'uppercase', color: t.muted, fontWeight: 700, letterSpacing: '0.05em', marginBottom: 4 }}>
                                         {k.replace(/_/g, ' ')}
                                       </span>
-                                      <span style={{ fontSize: 15, fontWeight: 600, color: k.toLowerCase() === 'price' ? t.green : t.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                                      <span style={{ fontSize: 15, fontWeight: 600, color: t.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
                                         {renderValue(k, v)}
                                       </span>
                                     </div>
@@ -1031,7 +1123,7 @@ export default function App() {
                                 <span style={{ fontSize: 11, textTransform: 'uppercase', color: t.muted, fontWeight: 700, letterSpacing: '0.05em', marginBottom: 4 }}>
                                   {k.replace(/_/g, ' ')}
                                 </span>
-                                <span style={{ fontSize: 15, fontWeight: 600, color: k.toLowerCase() === 'price' ? t.green : t.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                                <span style={{ fontSize: 15, fontWeight: 600, color: t.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
                                   {renderValue(k, v)}
                                 </span>
                               </div>
