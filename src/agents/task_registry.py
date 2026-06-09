@@ -3,9 +3,14 @@ Task registry for planner execution.
 
 Maps PlannerTaskType values to the sub-agent responsible for producing them.
 Features defensive dual-format normalization supporting both string keys and Enum objects.
+
+Sub-agent tiers
+---------------
+  Tier 1 (DB-backed):  TransportAgent, StayAgent, ExperienceAgent
+  Tier 2 (Web / LLM):  TransportWebAgent, StayWebAgent, ExperienceWebAgent, ManagerWebAgent
 """
 
-from typing import Dict, Iterable, List, Set, Any
+from typing import Any, Dict, Iterable, List
 
 from src.agents.sub_agents.experience_agent import ExperienceAgent
 from src.agents.sub_agents.stay_agent import StayAgent
@@ -19,26 +24,92 @@ from src.utils.logger import get_logger
 
 logger = get_logger("task_registry")
 
-
-_AGENT_FACTORIES = [
-    # ── DB-backed agents (fast, deterministic) ──────────────────────────────
-    TransportAgent,      # fetch_flights, check_visa
-    StayAgent,           # fetch_hotels
-    ExperienceAgent,     # activities, restaurants, weather, events, local transport
-    # ── Hierarchical web agent team (live APIs, Epic 3) ──────────────────────
-    TransportWebAgent,   # GEOCODE_LOCATION + transport_live_research
-    StayWebAgent,        # stay_live_research
-    ExperienceWebAgent,  # FETCH_LIVE_EVENTS + FETCH_BREWERIES + experience_web_research
-    ManagerWebAgent,     # LIVE_CURRENCY_CONVERSION + FETCH_COUNTRY_METADATA + WEB_RESEARCH_TAVILY
+# ── Tier 1: DB-backed agents (fast, deterministic SQLite tools) ───────────────
+_DB_AGENT_FACTORIES = [
+    TransportAgent,    # fetch_flights, check_visa
+    StayAgent,         # fetch_hotels
+    ExperienceAgent,   # fetch_activities, fetch_restaurants, local_transport_guide,
+                       # fetch_weather, events_finder, airport_transfer_info
 ]
+
+# ── Tier 2: Hierarchical web agents (live APIs, LLM ReAct loops) ─────────────
+_WEB_AGENT_FACTORIES = [
+    TransportWebAgent,    # geocode_location, transport_live_research
+    StayWebAgent,         # stay_live_research
+    ExperienceWebAgent,   # fetch_live_events, fetch_breweries, experience_web_research
+    ManagerWebAgent,      # live_currency_conversion, fetch_country_metadata, web_research_tavily
+]
+
+# ── Combined — backward compatibility ─────────────────────────────────────────
+_AGENT_FACTORIES = _DB_AGENT_FACTORIES + _WEB_AGENT_FACTORIES
+
+
+# ── Public constructors ───────────────────────────────────────────────────────
+
+def get_db_agents():
+    """Returns fresh Tier 1 DB-backed sub-agent instances."""
+    return [factory() for factory in _DB_AGENT_FACTORIES]
+
+
+def get_web_agents():
+    """Returns fresh Tier 2 hierarchical web agent instances."""
+    return [factory() for factory in _WEB_AGENT_FACTORIES]
 
 
 def get_planner_agents():
-    """
-    Returns all planner sub-agents.
-    """
+    """Returns all planner sub-agents (Tier 1 + Tier 2). Backward compatible."""
     return [factory() for factory in _AGENT_FACTORIES]
 
+
+# ── Task-filtered constructors ────────────────────────────────────────────────
+
+def get_db_agents_for_tasks(task_keys: Iterable[Any]):
+    """
+    Returns Tier 1 DB sub-agents capable of producing at least one requested task.
+    Accepts mixes of raw string keys and PlannerTaskType enums.
+    """
+    return _filter_agents(_DB_AGENT_FACTORIES, task_keys, tier="db")
+
+
+def get_web_agents_for_tasks(task_keys: Iterable[Any]):
+    """
+    Returns Tier 2 web sub-agents capable of producing at least one requested task.
+    Accepts mixes of raw string keys and PlannerTaskType enums.
+    """
+    return _filter_agents(_WEB_AGENT_FACTORIES, task_keys, tier="web")
+
+
+def get_agents_for_tasks(task_keys: Iterable[Any]):
+    """
+    Returns unique sub-agents (all tiers) covering at least one requested task.
+    Backward compatible — transparently supports mixes of raw strings and enums.
+    """
+    return _filter_agents(_AGENT_FACTORIES, task_keys, tier="all")
+
+
+def _filter_agents(factories, task_keys: Iterable[Any], tier: str = "all"):
+    """Filter a factory list to agents covering at least one requested task key."""
+    requested_strings = {
+        k.value if hasattr(k, "value") else str(k) for k in task_keys
+    }
+    agents = []
+    for agent in [factory() for factory in factories]:
+        agent_strings = {
+            k.value if hasattr(k, "value") else str(k) for k in agent.result_keys
+        }
+        if agent_strings.intersection(requested_strings):
+            agents.append(agent)
+
+    logger.info(
+        "Task registry [tier=%s] selected agents=%s for tasks=%s",
+        tier,
+        [getattr(a, "agent_name", a.__class__.__name__) for a in agents],
+        sorted(list(requested_strings)),
+    )
+    return agents
+
+
+# ── Dual-format task → agent map ─────────────────────────────────────────────
 
 def get_task_to_agent_map() -> Dict[Any, object]:
     """
@@ -49,59 +120,22 @@ def get_task_to_agent_map() -> Dict[Any, object]:
 
     for agent in get_planner_agents():
         for key in agent.result_keys:
-            # Extract the canonical string value safely
             str_key = key.value if hasattr(key, "value") else str(key)
-            
-            # Explicitly map the string form
             mapping[str_key] = agent
-            
-            # Explicitly map the native Enum object form to guarantee runtime interoperability
             try:
                 enum_key = PlannerTaskType(str_key)
                 mapping[enum_key] = agent
             except ValueError:
-                # If a custom task component is supplied outside the core Enum space, map as-is
                 mapping[key] = agent
 
     logger.info(
-        "Task registry built with dual-format normalization. Registered total accessible key variants: %d",
+        "Task registry built with dual-format normalization. "
+        "Registered total accessible key variants: %d",
         len(mapping),
     )
-
     return mapping
 
 
-def get_agents_for_tasks(task_keys: Iterable[Any]):
-    """
-    Returns unique sub-agents capable of producing at least one requested task.
-    Transparently supports mixes of raw string task keys and PlannerTaskType Enums.
-    """
-    # Normalize all requested task keys to strings for unified set intersection checks
-    requested_strings = {
-        k.value if hasattr(k, "value") else str(k) for k in task_keys
-    }
-    agents = []
-
-    for agent in get_planner_agents():
-        # Normalize agent capability arrays to strings
-        agent_strings = {
-            k.value if hasattr(k, "value") else str(k) for k in agent.result_keys
-        }
-        
-        if agent_strings.intersection(requested_strings):
-            agents.append(agent)
-
-    logger.info(
-        "Task registry selected agents=%s for requested tasks=%s",
-        [getattr(agent, "agent_name", agent.__class__.__name__) for agent in agents],
-        sorted(list(requested_strings)),
-    )
-
-    return agents
-
-
 def planner_task_values(tasks: Iterable[PlannerTaskType]) -> List[str]:
-    """
-    Converts PlannerTaskType values into their string task keys defensively.
-    """
+    """Converts PlannerTaskType values into their string task keys defensively."""
     return [task.value if hasattr(task, "value") else str(task) for task in tasks]

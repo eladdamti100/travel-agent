@@ -36,6 +36,7 @@ from src.agents.planner_dependencies import (
 )
 from src.agents.planner_scheduler import build_scheduler_result, completed_tasks_from
 from src.agents.sub_agents.replanning_agent import analyze_replanning
+from src.agents.db_supervisor import DBSupervisor
 from src.agents.web_supervisor import WebSupervisor
 from src.config.city_registry import COUNTRY_BY_CITY as _DESTINATION_COUNTRY_BY_CITY
 from src.config.settings import settings
@@ -360,7 +361,8 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     return updates
 
 
-_web_supervisor = WebSupervisor()
+_db_supervisor = DBSupervisor()
+_web_supervisor = WebSupervisor(db_supervisor=_db_supervisor)
 
 
 async def run_sub_agents_async(
@@ -369,9 +371,11 @@ async def run_sub_agents_async(
     allowed_tasks: Optional[Set[str]] = None,
 ) -> Dict[str, str]:
     """
-    Thin wrapper — sub-agent routing now lives in WebSupervisor (web_supervisor.py),
-    which selects agents via the task registry, vets traffic at the network
-    boundary through the Cyber Agent, runs them in parallel, and merges results.
+    Delegates to WebSupervisor, which coordinates both tiers:
+      - DBSupervisor  → Tier 1 DB agents (TransportAgent, StayAgent, ExperienceAgent)
+      - WebSupervisor → Tier 2 web agents (TransportWebAgent, StayWebAgent,
+                        ExperienceWebAgent, ManagerWebAgent)
+    CyberAgent Zero-Trust steps 1-2 (outbound) and 4-6 (inbound) wrap both tiers.
     """
     return await _web_supervisor.dispatch(
         context=context,
