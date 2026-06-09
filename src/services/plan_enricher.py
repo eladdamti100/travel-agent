@@ -90,9 +90,32 @@ async def calculate_cost_if_possible(
     if context.duration_days is None:
         return None
 
+    import json as _j
+
     flight_price = extract_lowest_price_from_json(
         task_results.get(PlannerTaskType.FETCH_FLIGHTS.value, "")
     )
+
+    # Also check live SerpAPI flights (stored separately under fetch_live_flights)
+    if not flight_price:
+        live_flights_raw = task_results.get("fetch_live_flights", "")
+        if live_flights_raw:
+            try:
+                live_flights = _j.loads(live_flights_raw)
+                if isinstance(live_flights, list) and live_flights:
+                    prices = [
+                        f.get("price") for f in live_flights
+                        if isinstance(f.get("price"), (int, float))
+                    ]
+                    if prices:
+                        flight_price = float(min(prices))
+                        logger.info(
+                            "Cost calculation: using live SerpAPI flight price. price=%.2f",
+                            flight_price,
+                        )
+            except (ValueError, TypeError):
+                pass
+
     hotel_price = extract_lowest_price_from_json(
         task_results.get(PlannerTaskType.FETCH_HOTELS.value, ""),
         price_key="price_per_night",

@@ -92,8 +92,9 @@ class ManagerWebAgent(BaseSubAgent):
             }),
             PlannerTaskType.WEB_RESEARCH_TAVILY.value: web_research_tavily.ainvoke({
                 "query": (
-                    f"Top traveler alerts and seasonal cultural tips "
-                    f"for {target_city} {context.travel_month or ''}"
+                    f"{target_city} travel guide: local culture etiquette customs, "
+                    f"metro transport tips getting around, safety alerts scams to avoid, "
+                    f"must-see landmarks local food highlights"
                 )
             }),
         }

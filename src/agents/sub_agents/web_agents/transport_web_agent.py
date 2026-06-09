@@ -43,11 +43,17 @@ _SYSTEM_PROMPT = (
     "You are a specialized transport research agent for the Marco AI Travel Planner. "
     "You have two tools. For each planning request you MUST call BOTH:\n\n"
     "  1. geocode_location      — get the precise GPS coordinates of the destination city\n"
-    "  2. tavily_transport_search — find live flight prices, ground transport options, "
-    "and current visa / entry requirements\n\n"
-    "Call geocode_location first, then tavily_transport_search. "
+    "  2. tavily_transport_search — search for live flight prices and visa requirements\n\n"
+    "Call geocode_location first, then tavily_transport_search.\n\n"
+    "For FLIGHTS: Search Google Flights (flights.google.com), Skyscanner (skyscanner.com), "
+    "and Kayak (kayak.com) for current round-trip prices. Report the cheapest options "
+    "with airline names and approximate price ranges (e.g. '$350–$500').\n\n"
+    "For VISA / ENTRY REQUIREMENTS: Search only official government and embassy sources — "
+    "the destination country's official immigration or foreign affairs website, or the "
+    "origin country's embassy/consulate page. Do NOT use travel blogs or aggregator sites "
+    "for visa information. State clearly whether a visa is required, visa-free, or e-visa.\n\n"
     "Report findings concisely: coordinates, flight price ranges, airport-to-city "
-    "transport options, and any critical visa or travel advisory notes."
+    "transport options, and the definitive visa status with source URL."
 )
 
 
@@ -75,17 +81,26 @@ class TransportWebAgent(BaseSubAgent):
             logger.info("transport_web_agent. destination_city=None skipping=True")
             return result
 
+        origin = context.origin_country or context.origin_airport or "abroad"
+        month_str = f" in {context.travel_month}" if context.travel_month else ""
+        budget_str = (
+            "${:,.0f}".format(context.total_budget)
+            if context.total_budget else "unspecified"
+        )
         query = (
             f"Research the destination {context.destination_city}:\n"
             f"  1. Call geocode_location(city='{context.destination_city}') "
             f"to get its GPS coordinates.\n"
             f"  2. Call tavily_transport_search with query: "
-            f"'live flights transport visa from {context.origin_country or 'abroad'} "
-            f"to {context.destination_city} "
-            f"{context.travel_month or ''}'\n\n"
-            f"Budget: {'${:,.0f}'.format(context.total_budget) if context.total_budget else 'unspecified'}. "
-            f"Report coordinates, flight price ranges, airport-to-city options, "
-            f"and current entry requirements."
+            f"'Google Flights Skyscanner cheapest round-trip flights from {origin} "
+            f"to {context.destination_city}{month_str} site:google.com/flights OR "
+            f"site:skyscanner.com OR site:kayak.com'\n"
+            f"  Also search: '{origin} passport visa requirements "
+            f"{context.destination_city} official embassy site'\n\n"
+            f"Budget: {budget_str}. "
+            f"Report GPS coordinates, cheapest round-trip flight prices (with airline), "
+            f"airport-to-city transport options, and definitive visa status "
+            f"(visa-free / e-visa / visa required) from official sources only."
         )
 
         try:

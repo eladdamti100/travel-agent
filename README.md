@@ -9,11 +9,11 @@ Marco accepts natural-language trip requests, validates them through a multi-age
 ## Features
 
 - **Natural-language input** — "Plan a 7-day trip from TLV to Paris for $3000"
-- **Hierarchical multi-agent pipeline** — 7 sub-agents in two tiers run concurrently inside a `WebSupervisor` boundary, combining fast deterministic DB results with live web intelligence in a single parallel wave
-- **Zero-Trust security layer** — `WebSupervisor` + `CyberAgent` enforce a 6-step pipeline on every dispatch: Lakera Guard v2 outbound injection check, regex sanitization, Google Safe Browsing inbound URL scan, **Microsoft Presidio PII redaction** (fully local, no API key), and malicious-content regex scan
-- **Tier 1 DB agents** — `TransportAgent`, `StayAgent`, `ExperienceAgent` serve SQLite-backed flight, hotel, activity, weather, and event data deterministically
-- **Tier 2 Hierarchical Web Agents** — `TransportWebAgent`, `StayWebAgent`, `ExperienceWebAgent`, `ManagerWebAgent` run autonomous LLM ReAct loops for live pricing, events, geocoding, and currency data
-- **Smart Replanner** — detects parameter changes and re-runs only the affected agents (e.g. changing `origin_airport` re-runs flights and `transport_live_research`, while reusing hotels and activities from cache)
+- **Dual Supervisor Architecture** — `WebSupervisor` acts as the security-aware coordinator enforcing the full 6-step `CyberAgent` Zero-Trust pipeline; a dedicated `DBSupervisor` exclusively dispatches the three Tier 1 DB agents while `WebSupervisor._dispatch_web_agents()` runs the four Tier 2 web agents; both tiers execute concurrently in a single `asyncio.gather` wave, combining fast deterministic SQLite results with live web intelligence
+- **Zero-Trust security layer** — `WebSupervisor` + `CyberAgent` enforce a 6-step pipeline on every dispatch: Lakera Guard v2 outbound injection check, regex sanitization, Google Safe Browsing inbound URL scan, **Microsoft Presidio PII redaction** (fully local, no API key), and malicious-content regex scan; `DBSupervisor` has no `CyberAgent` of its own — it operates inside the `WebSupervisor` security perimeter
+- **Tier 1 DB agents** — `TransportAgent`, `StayAgent`, `ExperienceAgent` serve SQLite-backed flight, hotel, activity, weather, and event data deterministically (dispatched via `DBSupervisor`)
+- **Tier 2 Hierarchical Web Agents** — `TransportWebAgent`, `StayWebAgent`, `ExperienceWebAgent`, `ManagerWebAgent` run autonomous LLM ReAct loops for live pricing, events, geocoding, and currency data (dispatched via `_dispatch_web_agents()`)
+- **Smart Replanner** — detects parameter changes and re-runs only the affected agents (e.g. changing `origin_airport` re-runs flights and `transport_live_research`, while reusing hotels and activities from cache); `allowed_tasks` is passed to both tiers, each filtering independently
 - **Semantic caching** — 384-dim cosine similarity (MiniLM-L6-v2, threshold ≥ 0.85) serves repeated requests instantly, with background `ThreadPoolExecutor` writes that never block the user
 - **HITL (Human-in-the-Loop)** — the agent asks for missing trip details before planning, then resumes; users can approve, edit, or cancel the final plan
 - **Deterministic plan critic** — budget + completeness gate with configurable auto-replan cap
@@ -145,13 +145,11 @@ Session ID: mysessionADMIN00
 
 ## Testing
 
-The system has passed a **77/77 Regression & Integration Audit**, confirming that all legacy mechanisms (HITL resume, Replanner, Semantic Cache) integrate correctly with the Epic 3 Hierarchical Web Agents and Zero-Trust security pipeline.
-
 ```bash
 # Run the full test suite
 pytest
 
-# Audit suite — the four core legacy + Epic 3 integration checks
+# Audit suite — core integration checks
 pytest tests/test_validator.py \
        tests/test_hitl_resume.py \
        tests/test_cache_store.py \
@@ -176,7 +174,7 @@ pytest tests/test_p0_fixes.py -v
 | `test_validator.py` | 3-stage validation (regex → vector → LLM) catches Blocked Scope and Prompt Injection without crashing |
 | `test_hitl_resume.py` | HITL state recovery: `resume_hitl_context` merges clarification replies into `pending_trip_context` and clears the pause flag |
 | `test_cache_store_check.py` | `DEFAULT_HIT_THRESHOLD = 0.85` (inclusive); `cache_store._executor` is a `ThreadPoolExecutor` singleton; `run_cache_store` returns immediately (fire-and-forget) |
-| `test_web_supervisor.py` | All 7 sub-agents dispatched via `asyncio.gather`; outbound context sanitized; inbound results pass CyberAgent inspection |
+| `test_web_supervisor.py` | Dual Supervisor routing: DB + web tier dispatch, cross-tier result merging, failed-tier isolation, CyberAgent integration, vetted context forwarded to `DBSupervisor` |
 | `test_planner_dependency_graph.py` | `diff_changed_tasks`: `origin_airport` change invalidates `fetch_flights` **and** `transport_live_research` (Tier 2), while `fetch_hotels` is preserved; dual-format task registry resolves both string and enum keys |
 
 ---
@@ -196,19 +194,20 @@ Master Orchestrator → cache_check / preferences_memory / researcher
 Master Planner (wave scheduler)
   │
   ▼
-WebSupervisor ─── CyberAgent (6-step Zero-Trust pipeline)
+WebSupervisor ─── CyberAgent (6-step Zero-Trust: Steps 1-2 outbound · Steps 4-6 inbound)
   │
-  ├─ asyncio.gather ────────────────────────────────────────┐
-  │                                                          │
-  │  Tier 1 DB Agents              Tier 2 Web Agents        │
-  │  ┌─────────────────┐           ┌───────────────────┐    │
-  │  │ TransportAgent  │           │ TransportWebAgent │    │
-  │  │ StayAgent       │           │ StayWebAgent      │    │
-  │  │ ExperienceAgent │           │ ExperienceWebAgent│    │
-  │  └─────────────────┘           │ ManagerWebAgent   │    │
-  │                                └───────────────────┘    │
-  └──────────────────────────────────────────────────────────┘
-  │ merged results
+  ├─ asyncio.gather ────────────────────────────────────────────────────────────┐
+  │                                                                              │
+  │  DBSupervisor (Tier 1)                  _dispatch_web_agents (Tier 2)       │
+  │  ┌───────────────────────────┐          ┌───────────────────────────────┐   │
+  │  │ asyncio.gather            │          │ asyncio.gather                │   │
+  │  │  TransportAgent           │          │  TransportWebAgent            │   │
+  │  │  StayAgent                │          │  StayWebAgent                 │   │
+  │  │  ExperienceAgent          │          │  ExperienceWebAgent           │   │
+  │  │  (no CyberAgent)          │          │  ManagerWebAgent              │   │
+  │  └───────────────────────────┘          └───────────────────────────────┘   │
+  └──────────────────────────────────────────────────────────────────────────────┘
+  │ merged results (both tiers + existing_results)
   ▼
 Critic (deterministic budget gate)
   │
@@ -228,7 +227,8 @@ For developer conventions, exact invariants, and security pipeline details, see 
 | P0 — Blocking fixes | `asyncio` safety, stale state reset, HITL loop cap, initial test suite | Done |
 | P1 — High priority | City registry, settings module, planner decomposition, token tracking | Done |
 | P2 — Important | Dead code removal, typed state, logging standards, mock tests, semantic cache | Done |
-| **Epic 3 — Hierarchical Agents & Security** | `WebSupervisor` + `CyberAgent` Zero-Trust pipeline, 4 Hierarchical Web Agents, **Microsoft Presidio** PII redaction (local), Lakera Guard v2, `diff_changed_tasks` cascade fix, **77/77 Regression Audit passed** | **Done** |
+| **Epic 3 — Hierarchical Agents & Security** | `WebSupervisor` + `CyberAgent` Zero-Trust pipeline, 4 Hierarchical Web Agents, **Microsoft Presidio** PII redaction (local), Lakera Guard v2, `diff_changed_tasks` cascade fix, Regression Audit passed | **Done** |
+| **Dual Supervisor Architecture** | `DBSupervisor` for Tier 1 DB agents, `dispatch_tracker.py` for thread-safe CLI status, tier-split task registry, full test coverage | **Done** |
 | P4 — Future | FastAPI/HTTP server (`src/api/` stub exists), `AsyncSqliteSaver` migration | Planned |
 
 ---
