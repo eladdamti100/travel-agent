@@ -143,7 +143,6 @@ export default function App() {
   useEffect(() => { const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, nodeState.active]);
 
-  // מאזין למעבר סשנים - מנקה וטוען מחדש כשמשתמש בוחר טיול ישן
   useEffect(() => {
     if (activeSession) {
       fetchState(activeSession);
@@ -187,7 +186,6 @@ export default function App() {
                                 vals.awaiting_user_clarification || 
                                 (vals.critique_result && !vals.planner_status?.includes('completed'));
                                 
-      // בדיקה אם הטיול כבר אושר בעבר מהקאש (שמור ב-localStorage)
       let isCacheHandled = false;
       try {
         const resolved = JSON.parse(localStorage.getItem('resolvedSessions') || '[]');
@@ -253,7 +251,14 @@ export default function App() {
   };
 
   const handleRefresh = () => { fetchState(activeSession); setMenuOpen(false); };
-  const handlePrint = () => { window.print(); setMenuOpen(false); };
+  
+  const handlePrint = (e) => {
+    e.stopPropagation(); 
+    setMenuOpen(false);
+    setTimeout(() => {
+        window.print();
+    }, 250);
+  };
 
   const executeChat = async (userContent) => {
     setPrompt(''); 
@@ -326,7 +331,6 @@ export default function App() {
         setHitlPending(false);
         setShowUpdateInput(false);
         
-        // שמירת הסטטוס המקומי כדי שההודעה לא תקפוץ שוב בעתיד
         try {
           const resolved = JSON.parse(localStorage.getItem('resolvedSessions') || '[]');
           if (!resolved.includes(activeSession)) {
@@ -484,39 +488,42 @@ export default function App() {
           .menu-item:hover { background:${dark?'rgba(255,255,255,0.04)':'rgba(2,132,199,0.04)'}; }
           .menu-danger { color:${t.red}; }
 
-          @media print {
-            html, body, #root, div[style*="display:flex"] { height: auto !important; overflow: visible !important; display: block !important; }
-            .no-print { display:none !important; }
-            div[style*="flex:1"] { overflow: visible !important; height: auto !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
-            .bubble { border:1px solid #ddd !important; background:#fafafa !important; color:#000 !important; page-break-inside:avoid; }
-            .bg-canvas, .world-dots, .plane-trail { display:none !important; }
+           @media print {
+                .no-print, .sidebar, .left-panel header, .right-panel header, .btn, .input-wrap, .bg-canvas, .world-dots, .plane-trail { 
+                    display: none !important; 
+                }
+
+                /* פותחים את ה-Container של התוכן */
+                body, html, #root { height: auto !important; overflow: visible !important; }
+                
+                /* מוודאים שהתוכן המרכזי תופס את כל הדף */
+                .left-panel, .right-panel { 
+                    display: block !important; 
+                    width: 100% !important; 
+                    overflow: visible !important; 
+                    position: static !important; 
+                }
+
+                /* עיצוב הבועות והכרטיסיות להדפסה */
+                .bubble, .dynamic-card { 
+                    border: 1px solid #ccc !important; 
+                    background: #fff !important; 
+                    color: #000 !important; 
+                    margin-bottom: 15px !important; 
+                    page-break-inside: avoid !important;
+                    display: block !important;
+                    width: 100% !important;
+                }
+
+                /* תיקון טקסט בתוך הבועות */
+                .bubble *, .dynamic-card * { 
+                    color: #000 !important; 
+                }
           }
 
           /* --- התצוגה ה"סקסית" החדשה של רשימות מתוך קאש --- */
           .cache-modal-md { display: flex; flex-direction: column; gap: 16px; font-family: inherit; }
           .cache-modal-md ul, .cache-modal-md ol { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
-          .cache-modal-md li { 
-            background: ${dark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)'}; 
-            padding: 14px 18px; 
-            border-radius: 12px; 
-            border-left: 4px solid ${t.accent}; 
-            font-size: 14.5px; 
-            font-weight: 500; 
-            color: ${t.text}; 
-            display: flex; 
-            flex-direction: column; 
-            gap: 4px; 
-            transition: all 0.25s ease;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.02);
-          }
-          .cache-modal-md li:hover { 
-            transform: translateX(5px); 
-            background: ${dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'}; 
-            border-color: ${t.green};
-          }
-          .cache-modal-md li strong { color: ${t.accent}; font-size: 14px; letter-spacing: 0; }
-          .cache-modal-md p { color: ${t.text}; font-size: 14.5px; line-height: 1.6; margin: 0; }
-
           .sexy-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; width: 100%; }
           .sexy-list-item { 
             background: ${dark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)'}; 
@@ -653,7 +660,7 @@ export default function App() {
                     <div style={{ position:'absolute', right:0, top:'calc(100% + 8px)', width:210, background:t.surfaceHi, border:`1px solid ${t.border}`, borderRadius:12, boxShadow:`0 12px 40px ${dark?'rgba(0,0,0,0.5)':'rgba(0,0,0,0.1)'}`, overflow:'hidden', zIndex:100 }}>
                       <div className="menu-item" onClick={handleRefresh}><span>Refresh Session</span></div>
                       <div style={{ height:1, background:t.border }} />
-                      <div className="menu-item" onClick={handlePrint}><span>Print Itinerary</span></div>
+                      <div className="menu-item" onClick={(e) => handlePrint(e)}><span>Print Itinerary</span></div>
                       <div style={{ height:1, background:t.border }} />
                       <div className="menu-item menu-danger" onClick={handleReset}><span>Erase All Data</span></div>
                     </div>
@@ -763,13 +770,11 @@ export default function App() {
                           <input className="form-input" placeholder="e.g. Israeli" value={formCitizenship} onChange={e => setFormCitizenship(e.target.value)} required />
                         </div>
                         <div>
-                          {/* הוספתי REQUIRED */}
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>DATES / DURATION</label>
                           <input className="form-input" placeholder="e.g. Oct 12-18 or '5 Days'" value={formDates} onChange={e => setFormDates(e.target.value)} required />
                         </div>
                         
                         <div>
-                          {/* הוספתי REQUIRED */}
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>BUDGET</label>
                           <input className="form-input" placeholder="e.g. $3000" value={formBudget} onChange={e => setFormBudget(e.target.value)} required />
                         </div>
@@ -958,7 +963,6 @@ export default function App() {
                         for (let i = 0; i < lines.length; i++) {
                           const line = lines[i];
                           
-                          // 1. זיהוי כותרות Markdown רגילות (###)
                           const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
                           if (headingMatch) {
                             const level = headingMatch[1].length;
@@ -971,13 +975,12 @@ export default function App() {
                               buffer = []; 
                               continue; 
                             } else if (capturing && captureMode === 'header' && level <= captureLevel) {
-                              break; // עוצרים כשהגענו לכותרת חדשה
+                              break;
                             } else if (capturing && captureMode === 'bold') {
                               break;
                             }
                           }
 
-                          // 2. זיהוי כותרות "מזויפות" (טקסט מודגש כמו **Hotels:**)
                           const boldMatch = line.match(/^\s*[-*]?\s*\*\*([^*]+)\*\*\s*:?/);
                           if (boldMatch && !headingMatch) {
                             const boldText = boldMatch[1].toLowerCase();
@@ -987,7 +990,6 @@ export default function App() {
                               captureMode = 'bold';
                               buffer = [];
                             } else if (capturing && captureMode === 'bold') {
-                              // עוצרים אם הגענו לטקסט מודגש אחר שלא שייך לנושא שלנו!
                               if (!target.some(lbl => boldText.includes(lbl))) {
                                 break; 
                               }
@@ -999,7 +1001,6 @@ export default function App() {
                           }
                         }
 
-                        // 3. Fallback אם לא מצאנו שום כותרת רשמית
                         if (buffer.length === 0) {
                           for (let i = 0; i < lines.length; i++) {
                             const normalized = lines[i].toLowerCase();
@@ -1023,36 +1024,87 @@ export default function App() {
 
                       if (!rawData) return <div style={{ padding: 20, textAlign: 'center', color: t.muted, background: t.surface, borderRadius: 16, border: `1px dashed ${t.border}` }}>No detailed information available yet.</div>;
 
+                      // --- 🌟 מנוע העיצוב החדש והסקסי למאמרים (Cache Hits) 🌟 ---
+                      const renderCacheString = (text) => {
+                        const lines = text.split('\n');
+                        const elements = [];
+                        let listBuffer = [];
+
+                        const flushList = () => {
+                          if (listBuffer.length > 0) {
+                            elements.push(
+                              <div className="sexy-list" key={`list-${elements.length}`} style={{ marginBottom: '16px' }}>
+                                {listBuffer.map((item, idx) => {
+                                  const parts = item.split(/(\*\*.*?\*\*|\$\d+(?:\.\d{2})?(?:\/night)?)/g);
+                                  return (
+                                    <div key={idx} className="sexy-list-item">
+                                      <span className="sexy-list-item-title">
+                                        {parts.map((part, pIdx) => {
+                                          if (part.startsWith('$')) return <span key={pIdx} style={{color: t.green, fontWeight: 800}}>{part}</span>;
+                                          if (part.startsWith('**') && part.endsWith('**')) return <strong key={pIdx} style={{color: t.text, fontWeight: 700}}>{part.slice(2, -2)}</strong>;
+                                          return part;
+                                        })}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                            listBuffer = [];
+                          }
+                        };
+
+                        lines.forEach((line, index) => {
+                          const trimmed = line.trim();
+                          if (!trimmed) {
+                            flushList();
+                            return;
+                          }
+
+                          // זיהוי רשימות
+                          if (trimmed.match(/^[-*]\s+/) || trimmed.match(/^\d+\.\s+/)) {
+                            listBuffer.push(trimmed.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, ''));
+                          } else {
+                            flushList();
+                            if (trimmed.startsWith('### ')) {
+                              elements.push(<h3 key={index} style={{ fontSize: 16, fontWeight: 600, margin: '16px 0 8px', color: t.text }}>{trimmed.replace(/^###\s+/, '').replace(/\*\*/g, '')}</h3>);
+                            } else if (trimmed.startsWith('## ')) {
+                              elements.push(<h2 key={index} style={{ fontSize: 18, fontWeight: 700, margin: '20px 0 10px', color: t.accent }}>{trimmed.replace(/^##\s+/, '').replace(/\*\*/g, '')}</h2>);
+                            } else if (trimmed.startsWith('# ')) {
+                              elements.push(<h1 key={index} style={{ fontSize: 22, fontWeight: 800, margin: '24px 0 12px', color: t.text }}>{trimmed.replace(/^#\s+/, '').replace(/\*\*/g, '')}</h1>);
+                            } else {
+                              if (trimmed.match(/^\*\*.*?\*\*\s*$/) || trimmed.match(/^\*\*.*?\*\*:/)) {
+                                  elements.push(<div key={index} style={{ fontSize: 15, fontWeight: 700, margin: '16px 0 6px', color: t.accent }}>{trimmed.replace(/\*\*/g, '')}</div>);
+                              } else {
+                                  elements.push(<div key={index} style={{ fontSize: 14.5, color: t.text, lineHeight: 1.6, marginBottom: '8px' }}>
+                                    {trimmed.split(/(\*\*.*?\*\*|\$\d+(?:\.\d{2})?(?:\/night)?)/g).map((part, pIdx) => {
+                                      if (part.startsWith('$')) return <span key={pIdx} style={{color: t.green, fontWeight: 800}}>{part}</span>;
+                                      if (part.startsWith('**') && part.endsWith('**')) return <strong key={pIdx} style={{color: t.text}}>{part.slice(2, -2)}</strong>;
+                                      return part;
+                                    })}
+                                  </div>);
+                              }
+                            }
+                          }
+                        });
+                        flushList();
+                        return <>{elements}</>;
+                      };
+                      // --------------------------------------------------------
+
                       let data = rawData;
                       
+                      // כאן אנחנו משתמשים במנוע החדש שלנו לטקסט!
                       if (typeof rawData === 'string') {
                         try { 
                           data = JSON.parse(rawData); 
                         } catch (e) {
-                          const extractedObj = {};
-                          let hasValidKeys = false;
-                          let currentKey = null;
-
-                          rawData.split('\n').forEach(line => {
-                            const match = line.match(/^[-*]?\s*\*\*([^*]+)\*\*\s*:?\s*(.*)$/);
-                            if (match) {
-                              currentKey = match[1].trim().replace(/:$/, '');
-                              extractedObj[currentKey] = match[2] ? match[2].trim() : '';
-                              hasValidKeys = true;
-                            } else if (currentKey && line.trim()) {
-                              extractedObj[currentKey] += (extractedObj[currentKey] ? '\n' : '') + line.trim();
-                            }
-                          });
-
-                          if (hasValidKeys) {
-                            data = [extractedObj]; 
-                          } else {
-                            return <div className="cache-modal-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(rawData) }} />;
-                          }
+                          // אם זה טקסט רגיל (ולא JSON נקי) -> הפעל את העיצוב המודרני:
+                          return <div className="cache-modal-md">{renderCacheString(rawData)}</div>;
                         }
                       }
 
-                      // פונקציה שהופכת רשימות של טקסט ל"כרטיסיות" יפות (Sexy UI)
+                      // פונקציה שהופכת רשימות של טקסט ל"כרטיסיות" מתוך JSON נקי (Miss)
                       const renderValue = (k, v) => {
                         if (v === null || v === undefined || String(v).trim() === '') {
                           return <span style={{ color: t.muted, opacity: 0.5 }}>—</span>;
@@ -1064,7 +1116,7 @@ export default function App() {
                         
                         const strVal = String(v).trim();
                         
-                        // בדיקה אם הטקסט מכיל רשימה (נקודות, מקפים וכו') - והפיכתו לממשק מעוצב
+                        // בדיקה אם הטקסט מכיל רשימה (נקודות, מקפים וכו')
                         if (strVal.includes('\n- ') || strVal.includes('\n* ') || strVal.startsWith('- ') || strVal.startsWith('* ')) {
                           const lines = strVal.split('\n').filter(l => l.trim());
                           return (
@@ -1073,7 +1125,6 @@ export default function App() {
                                 const cleanLine = line.replace(/^[-*]\s*/, '').trim();
                                 if (!cleanLine) return null;
                                 
-                                // איתור מחירים ($) וצביעתם בירוק תוך כדי
                                 const parts = cleanLine.split(/(\$\d+(?:\.\d{2})?(?:\/night)?)/);
                                 
                                 return (
