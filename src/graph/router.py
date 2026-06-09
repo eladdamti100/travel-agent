@@ -46,7 +46,17 @@ def route_after_orchestrator(state: AgentState) -> str:
 
     Unknown routes are treated as cache_check because that is the safest
     default for full trip-planning requests.
+
+    Cache bypass rules:
+      awaiting_user_clarification — primary bypass is validator →
+        resume_hitl_context → master_planner; this guard is belt-and-suspenders
+        in case that flag is still True when the orchestrator is reached.
+      force_replan — the user is modifying an existing plan; the new query is
+        virtually guaranteed to miss, so skip the embedding lookup entirely.
     """
+    if state.get("awaiting_user_clarification") or state.get("force_replan"):
+        return "master_planner"
+
     route = state.get("orchestrator_route", "cache_check")
 
     if route == "preferences_memory":

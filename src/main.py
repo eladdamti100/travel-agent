@@ -386,13 +386,20 @@ def run() -> None:
 
                 _stream_graph(Command(resume=user_response))
 
-            print_status(
-                city=accumulated.get("current_city"),
-                budget=accumulated.get("total_budget"),
-                tool_count=accumulated.get("tool_call_count", 0),
-                cache_status=accumulated.get("cache_status"),
-                planning_mode=accumulated.get("planning_mode"),
-            )
+            # Only show the status line for full-planning and replanning turns.
+            # Researcher queries, preference updates, HITL clarification requests,
+            # and other non-planning paths produce no meaningful city/budget/cache
+            # summary, so suppressing avoids a noisy blank or partial status bar.
+            _planning_mode = accumulated.get("planning_mode")
+            _cache_status = accumulated.get("cache_status")
+            if _planning_mode in ("full_planning", "replanning") or _cache_status == "hit":
+                print_status(
+                    city=accumulated.get("current_city"),
+                    budget=accumulated.get("total_budget"),
+                    tool_count=accumulated.get("tool_call_count", 0),
+                    cache_status=_cache_status,
+                    planning_mode=_planning_mode,
+                )
 
             turn_elapsed = time.perf_counter() - turn_start_time
             logger.info(

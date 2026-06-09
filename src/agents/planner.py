@@ -144,7 +144,8 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         )
 
         existing_task_results = replanning_result.preserved_results
-        allowed_tasks = {task.value for task in replanning_result.changed_tasks}
+        # changed_tasks is List[str] from diff_changed_tasks — no .value needed
+        allowed_tasks = set(replanning_result.changed_tasks)
 
         total_results = (
             len(replanning_result.preserved_results)
@@ -158,7 +159,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
 
         logger.info(
             "Planner entered replanning mode. changed_tasks=%s preserved_results=%s",
-            [task.value for task in replanning_result.changed_tasks],
+            replanning_result.changed_tasks,
             list(existing_task_results.keys()),
         )
         logger.info(

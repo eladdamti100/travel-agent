@@ -329,7 +329,10 @@ def diff_changed_tasks(
                 cascaded.add(task)
                 changed = True
 
-    return [t.value for t in cascaded] + extra_keys
+    return [
+        t.value if isinstance(t, PlannerTaskType) else t
+        for t in cascaded
+    ] + extra_keys
 
 
 def _build_hitl_question(missing_requirements: List[MissingRequirement]) -> str:

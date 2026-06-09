@@ -115,6 +115,7 @@ def build_graph(checkpointer=None):
             "preferences_memory": "preferences_memory",
             "researcher":         "researcher",
             "cache_check":        "cache_check",
+            "master_planner":     "master_planner",  # HITL resume bypass guard
         },
     )
 
