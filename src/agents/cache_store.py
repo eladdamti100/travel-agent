@@ -11,11 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.context_enricher import extract_trip_context_deterministic
 from src.graph.state import AgentState
 from src.models.cache import CacheStatus
 from src.services.cache_compression import compress_answer
-from src.services.semantic_cache import build_trip_cache_key, store_cache_entry
+from src.services.semantic_cache import store_cache_entry
 from src.utils.logger import get_logger
 
 logger = get_logger("cache_store")
@@ -95,36 +94,17 @@ def run_cache_store(state: AgentState) -> dict:
 
 def _get_latest_user_query(state: AgentState) -> str:
     """
-    Returns a deterministic structured cache key when possible, otherwise the latest user message.
+    Returns the original planning query captured by cache_checker before HITL.
+
+    cache_checker saves the raw user text to state["planning_query"] at the
+    start of every planning flow — before any HITL messages are added — so
+    store and lookup always use the same text for embedding comparison.
+    Falls back to the latest HumanMessage when planning_query is absent.
     """
-    # Prefer the already-computed trip_context stored in state — it was built
-    # from the original planning query and is more complete than re-extracting
-    # from the latest message (which may be a short HITL reply like "israel").
-    stored = state.get("trip_context") or {}
-    ctx = extract_trip_context_deterministic(state)
-
-    def _pick(field: str):
-        return stored.get(field) or getattr(ctx, field, None)
-
-    logger.info("Cache store TripContext: %s", ctx.model_dump())
-
-    # origin_country is intentionally excluded: the cache_checker runs before
-    # the user provides nationality (HITL clarification), so its lookup key
-    # never contains origin_country. Including it here would produce a
-    # store key that never matches the lookup key.
-    cache_key = build_trip_cache_key({
-        "destination_city": _pick("destination_city"),
-        "duration_days":    _pick("duration_days"),
-        "total_budget":     _pick("total_budget"),
-        "currency":         _pick("currency"),
-        "num_travelers":    _pick("num_travelers"),
-        "origin_airport":   _pick("origin_airport"),
-    })
-
-    logger.info("Cache store query/key: %s", cache_key)
-
-    if cache_key:
-        return cache_key
+    planning_query = state.get("planning_query", "")
+    if planning_query:
+        logger.info("Cache store query (from planning_query): %s", planning_query)
+        return planning_query
 
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):

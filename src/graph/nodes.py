@@ -15,8 +15,6 @@ from src.agents.planner import run_master_planner
 from src.agents.preferences_memory_agent import run_preferences_memory
 from src.agents.researcher import run_researcher
 from src.agents.base import get_model as _get_unbound_model
-from src.agents.validator import InputValidator, ai_validate, validate_input
-from src.agents.vector_guard import is_vector_threat
 from src.config.city_registry import CITY_KEYWORDS as _CITY_MAP
 from src.config.settings import settings
 from src.graph.state import AgentState
@@ -103,16 +101,12 @@ def extract_metadata(state: AgentState) -> dict:
 
 def run_validator(state: AgentState) -> dict:
     """
-    Security guardrail node — validates every user message before orchestration.
+    Security guardrail node — thin wrapper around validate_message().
 
-    Three-stage fast path (fastest first):
-      1. Instant regex — blocks harm/injection/off-topic without any LLM.
-      2. Travel keyword fast-approve — skips the Groq call for obvious travel messages.
-      3. Groq LLM — only for ambiguous messages (~200 ms).
-
-    HITL turns use is_hitl=True: short factual answers (airport codes, nationalities,
-    durations, budgets) are fast-approved; harm and injection checks still run.
+    Full pipeline (regex → vector guard → Groq LLM) lives in validator.py.
     """
+    from src.agents.validator import validate_message
+
     messages = state.get("messages", [])
     if not messages:
         return {"validation_status": "approved"}
@@ -120,32 +114,10 @@ def run_validator(state: AgentState) -> dict:
     last_content = getattr(messages[-1], "content", "")
     is_hitl = bool(state.get("awaiting_user_clarification"))
 
-    regex_result = validate_input(last_content, is_hitl=is_hitl)
-    if not regex_result.approved:
-        logger.info("validator. verdict=%s is_hitl=%s", regex_result.verdict, is_hitl)
-        return {
-            "validation_status": regex_result.verdict.lower(),
-            "messages": [AIMessage(content=regex_result.rejection_message)],
-        }
-
-    if is_hitl:
-        logger.info("validator. status=approved path=hitl_fast_approve")
-        return {"validation_status": "approved"}
-
-    if InputValidator.is_clearly_travel(last_content):
-        if not is_vector_threat(last_content):
-            logger.info("validator. status=approved path=travel_keyword")
-            return {"validation_status": "approved"}
-        logger.info("validator. vector_threat=True routing_to_llm=True")
-
-    result = ai_validate(last_content)
-    if result is None:
-        logger.info("validator. status=approved path=llm_unavailable")
-        return {"validation_status": "approved"}
-
-    logger.info("validator. verdict=%s reason=%s", result.verdict, result.reason)
+    result = validate_message(last_content, is_hitl=is_hitl)
 
     if not result.approved:
+        logger.info("validator. verdict=%s is_hitl=%s", result.verdict, is_hitl)
         return {
             "validation_status": result.verdict.lower(),
             "messages": [AIMessage(content=result.rejection_message)],

@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useReducer, useMemo } from 'react';
 
 const BASE_URL = "http://127.0.0.1:8000";
 
-// --- SVG Icons (Premium Minimalist Style) ---
+// --- SVG Icons ---
 const Icons = {
   Send: ({ size = 16 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>,
   Pencil: ({ size = 14 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>,
@@ -33,6 +33,15 @@ function renderMarkdown(text) {
     .replace(/<p class="md-p"><\/p>/g, '');
 }
 
+const MemoizedMessage = React.memo(({ msg }) => {
+  const renderedContent = useMemo(() => renderMarkdown(msg.content), [msg.content]);
+  return (
+    <div className={`bubble ${msg.role === 'user' ? 'bubble-user' : 'bubble-agent'}`}>
+      {msg.role === 'assistant' ? <div dangerouslySetInnerHTML={{ __html: renderedContent }} /> : msg.content}
+    </div>
+  );
+});
+
 function Spinner() {
   return (
     <svg className="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -62,11 +71,7 @@ function SplashScreen({ onEnter }) {
   const handleEnter = () => { setLeaving(true); setTimeout(() => onEnter(), 700); };
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'linear-gradient(135deg, #0a0f1e 0%, #111827 40%, #1a2540 70%, #0d1424 100%)',
-      transition: 'opacity 0.7s ease, transform 0.7s ease', opacity: leaving ? 0 : visible ? 1 : 0, transform: leaving ? 'scale(1.04)' : 'scale(1)', overflow: 'hidden',
-    }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #0a0f1e 0%, #111827 40%, #1a2540 70%, #0d1424 100%)', transition: 'opacity 0.7s ease, transform 0.7s ease', opacity: leaving ? 0 : visible ? 1 : 0, transform: leaving ? 'scale(1.04)' : 'scale(1)', overflow: 'hidden' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
         .splash-btn { font-family:'Outfit', sans-serif; font-size:15px; font-weight:700; letter-spacing:0.06em; padding:16px 48px; background:linear-gradient(135deg, #0284c7 0%, #38bdf8 100%); color:#fff; border:none; border-radius:50px; cursor:pointer; transition:all 0.2s ease; box-shadow:0 8px 30px rgba(56,189,248,0.35); }
@@ -78,41 +83,37 @@ function SplashScreen({ onEnter }) {
           <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.25em', color:'rgba(56,189,248,0.7)' }}>LUXURY AI TRAVEL CONCIERGE</div>
           <h1 style={{ fontSize:52, fontWeight:800, letterSpacing:'-0.04em', background:'linear-gradient(135deg, #f0f9ff 0%, #38bdf8 50%, #818cf8 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>marco</h1>
         </div>
-        <p style={{ color:'rgba(148,163,184,0.85)', fontSize:15, maxWidth:380, lineHeight:1.7, margin:'0 auto 40px' }}>Design fully personalized itineraries, discover the best routes, and unlock curated experiences — in seconds.</p>
         <button className="splash-btn" onClick={handleEnter}>START CHATTING</button>
       </div>
     </div>
   );
 }
 
+const initialNodeState = { active: [], completed: [], isLoading: false };
+function nodeReducer(state, action) {
+  switch (action.type) {
+    case 'START': return { active: [], completed: [], isLoading: true };
+    case 'NODE': return { ...state, active: [action.node], completed: state.completed.includes(action.node) ? state.completed : [...state.completed, action.node] };
+    case 'DONE': return { ...state, active: [], isLoading: false };
+    case 'RESET': return initialNodeState;
+    case 'SET_HITL': return { ...state, active: ['hitl_approval'], isLoading: true };
+    default: return state;
+  }
+}
+
 export default function App() {
   const [showSplash, setShowSplash]           = useState(true);
-  
-  // FIX: Load active session from localStorage to prevent loss on refresh
-  const [activeSession, setActiveSession]     = useState(() => {
-    try {
-      return localStorage.getItem('activeSession') || crypto.randomUUID();
-    } catch {
-      return crypto.randomUUID();
-    }
-  });
-
-const [sessions, setSessions] = useState(() => {
-  try {
-    const saved = localStorage.getItem('allSessions');
-    return saved ? JSON.parse(saved) : [];
-  } catch {
-    return [];
-  }
-});
-
+  const [activeSession, setActiveSession]     = useState(() => localStorage.getItem('activeSession') || crypto.randomUUID());
+  const [sessions, setSessions]               = useState(() => { try { const saved = localStorage.getItem('allSessions'); return saved ? JSON.parse(saved) : []; } catch { return []; } });
   const [messages, setMessages]               = useState([]);
   const [hitlPending, setHitlPending]         = useState(false);
+  const [graphPaused, setGraphPaused]         = useState(false);
   const [prompt, setPrompt]                   = useState('');
   const [feedback, setFeedback]               = useState('');
-  const [isLoading, setIsLoading]             = useState(false);
-  const [activeNodes, setActiveNodes]         = useState([]);
-  const [completedNodes, setCompletedNodes]   = useState([]);
+  const [showUpdateInput, setShowUpdateInput] = useState(false);
+  const [cacheHitlResolved, setCacheHitlResolved] = useState(false); 
+  const [cacheHitPrompted, setCacheHitPrompted] = useState(false);
+  const [nodeState, dispatchNode]             = useReducer(nodeReducer, initialNodeState);
   const [kpi, setKpi]                         = useState({ cacheStatus: 'Cache Miss', cacheTtl: 'Live Feed' });
   const [criticData, setCriticData]           = useState(null);
   const [menuOpen, setMenuOpen]               = useState(false);
@@ -120,57 +121,39 @@ const [sessions, setSessions] = useState(() => {
   const [theme, setTheme]                     = useState('light');
   const [animationsOn, setAnimationsOn]       = useState(true);
   const [hasStartedChat, setHasStartedChat]   = useState(false);
-  
   const [agentState, setAgentState]           = useState({});
   const [activeCard, setActiveCard]           = useState(null);
   const [panelMode, setPanelMode]             = useState('split');
-
   const [formDest, setFormDest]               = useState('');
   const [formDates, setFormDates]             = useState('');
   const [formBudget, setFormBudget]           = useState('');
   const [formCitizenship, setFormCitizenship] = useState('');
   const [formAirport, setFormAirport]         = useState('');
-
+  const [formPreferences, setFormPreferences] = useState('');
   const [editingSession, setEditingSession]   = useState(null);
   const [editValue, setEditValue]             = useState('');
-  const [sessionNames, setSessionNames] = useState(() => {
-    try { const saved = localStorage.getItem('sessionNames'); return saved ? JSON.parse(saved) : {}; } catch { return {}; }
-  });
+  const [sessionNames, setSessionNames]       = useState(() => { try { const saved = localStorage.getItem('sessionNames'); return saved ? JSON.parse(saved) : {}; } catch { return {}; } });
 
   const abortRef  = useRef(null);
   const bottomRef = useRef(null);
   const menuRef   = useRef(null);
   const dark = theme === 'dark';
 
-  // FIX: Save active session to localStorage whenever it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('activeSession', activeSession);
-    } catch {}
-  }, [activeSession]);
-
-  useEffect(() => { setHasStartedChat(messages.length > 0); }, [messages, activeSession]);
-
-  useEffect(() => {
-    const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, activeNodes]);
+  useEffect(() => { try { localStorage.setItem('activeSession', activeSession); } catch {} }, [activeSession]);
+  useEffect(() => { const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, nodeState.active]);
 
   const fetchSessions = useCallback(async () => {
-  try {
-    const r = await fetch(`${BASE_URL}/sessions`);
-    const d = await r.json();
-    const backendSessions = d.sessions || [];
-    setSessions(prev => {
-      const merged = [...new Set([...prev, ...backendSessions])];
-      try { localStorage.setItem('allSessions', JSON.stringify(merged)); } catch {}
-      return merged;
-    });
-  } catch {}
-}, []);
+    try {
+      const r = await fetch(`${BASE_URL}/sessions`);
+      const d = await r.json();
+      setSessions(prev => {
+        const merged = [...new Set([...prev, ...(d.sessions || [])])];
+        try { localStorage.setItem('allSessions', JSON.stringify(merged)); } catch {}
+        return merged;
+      });
+    } catch {}
+  }, []);
 
   const fetchState = useCallback(async (sid) => {
     try {
@@ -179,6 +162,7 @@ const [sessions, setSessions] = useState(() => {
       const data = await r.json();
       const vals = data.values || {};
       
+      vals._next = data.next || [];
       setAgentState(vals);
 
       const msgs = (vals.messages || []).map(m => {
@@ -186,43 +170,56 @@ const [sessions, setSessions] = useState(() => {
         const role = (m.type === 'human' || String(m.id || '').includes('Human')) ? 'user' : 'assistant';
         return { role, content: String(content) };
       }).filter(m => m.content.trim());
+      
       setMessages(msgs);
-      if (msgs.length > 0) setHasStartedChat(true);
+      
+      const isCacheHit = vals.cache_status && vals.cache_status.toLowerCase() === 'hit';
+      const hasPlanData = !!vals.planner_task_results || !!vals.final_plan || !!vals.planner_structured_results || isCacheHit;
+      
+      if (msgs.length > 0 || hasPlanData) setHasStartedChat(true);
+      
       setKpi({ cacheStatus: vals.cache_status || 'Cache Miss', cacheTtl: vals.cache_ttl || 'Live Feed' });
       const cd = vals.critic_results || vals.critique_result || null;
       setCriticData(cd?.score != null ? cd : null);
-      setHitlPending((data.next || []).length > 0);
-    } catch {}
-  }, []);
+      
+      const isGraphPaused = vals._next.length > 0;
+      setGraphPaused(isGraphPaused);
+      const hasHitlIndication = vals.awaiting_hitl_decision || 
+                                vals.awaiting_user_clarification || 
+                                (vals.critique_result && !vals.planner_status?.includes('completed'));
+      const cacheHitAwaiting = isCacheHit && !isGraphPaused && !cacheHitlResolved;
+      setHitlPending((isGraphPaused && hasHitlIndication) || cacheHitAwaiting);
+    } catch (err) { console.error("Error fetching state:", err); }
+  }, [cacheHitlResolved]);
 
-  useEffect(() => {
-    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
-    setIsLoading(false); setActiveNodes([]); setCompletedNodes([]); setCriticData(null); setMessages([]); setHasStartedChat(false); setPanelMode('split');
-    fetchSessions(); fetchState(activeSession);
-  }, [activeSession]);
+  const checkStatus = (key) => {
+    const isCacheHit = agentState?.cache_status && agentState.cache_status.toLowerCase() === 'hit';
+    const exists = agentState?.planner_task_results?.[key] || agentState?.final_plan?.[key] || agentState?.planner_structured_results?.[key] || (key === 'fetch_weather' && agentState?.trip_context);
+    return (exists || isCacheHit) ? 'Completed' : 'Pending';
+  };
 
-const handleNewPlan = () => {
-  const newId = crypto.randomUUID();
-  setSessions(prev => {
-    const updated = [...new Set([...prev, newId])];
-    try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
-    return updated;
-  });
-  setActiveSession(newId);
-  setFeedback(''); setPrompt(''); setHasStartedChat(false);
-  setPanelMode('split'); setAgentState({}); setActiveCard(null);
-};
+  const handleNewPlan = () => {
+    const newId = crypto.randomUUID();
+    setSessions(prev => {
+      const updated = [...new Set([...prev, newId])];
+      try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+    setActiveSession(newId);
+    setFeedback(''); setPrompt(''); setHasStartedChat(false); setShowUpdateInput(false); setCacheHitlResolved(false); setCacheHitPrompted(false); setGraphPaused(false);
+    setPanelMode('split'); setAgentState({}); setActiveCard(null);
+  };
 
-const handleDelete = async (sid, e) => {
-  e.stopPropagation();
-  await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' });
-  setSessions(prev => {
-    const updated = prev.filter(s => s !== sid);
-    try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
-    return updated;
-  });
-  if (sid === activeSession) handleNewPlan(); else fetchSessions();
-};
+  const handleDelete = async (sid, e) => {
+    e.stopPropagation();
+    await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' });
+    setSessions(prev => {
+      const updated = prev.filter(s => s !== sid);
+      try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+    if (sid === activeSession) handleNewPlan(); else fetchSessions();
+  };
 
   const handleStartEdit = (sid, e) => { e.stopPropagation(); setEditingSession(sid); setEditValue(sessionNames[sid] || sid.substring(0, 8) + '…'); };
 
@@ -239,18 +236,19 @@ const handleDelete = async (sid, e) => {
     await fetch(`${BASE_URL}/sessions`, { method: 'DELETE' }); setMenuOpen(false); handleNewPlan(); fetchSessions();
   };
 
-  const handleRefresh = () => {
-    fetchState(activeSession);
-    setMenuOpen(false);
-  };
-
-  const handlePrint = () => {
-    window.print();
-    setMenuOpen(false);
-  };
+  const handleRefresh = () => { fetchState(activeSession); setMenuOpen(false); };
+  const handlePrint = () => { window.print(); setMenuOpen(false); };
 
   const executeChat = async (userContent) => {
-    setPrompt(''); setMessages(prev => [...prev, { role: 'user', content: userContent }]); setHasStartedChat(true); setIsLoading(true); setActiveNodes([]); setCompletedNodes([]); setCriticData(null);
+    setPrompt(''); 
+    setMessages(prev => [...prev, { role: 'user', content: userContent }]); 
+    setHasStartedChat(true); 
+    dispatchNode({ type: 'START' });
+    setCriticData(null);
+    setShowUpdateInput(false);
+    setCacheHitlResolved(false);
+    setCacheHitPrompted(false);
+    
     const controller = new AbortController(); abortRef.current = controller;
     try {
       const res = await fetch(`${BASE_URL}/chat/stream/${activeSession}?message=${encodeURIComponent(userContent)}`, { signal: controller.signal });
@@ -264,42 +262,81 @@ const handleDelete = async (sid, e) => {
           if (!line.startsWith('data:')) continue;
           try {
             const ev = JSON.parse(line.slice(5).trim());
-            if (ev.type === 'node') { setActiveNodes([ev.node]); setCompletedNodes(prev => prev.includes(ev.node) ? prev : [...prev, ev.node]); }
+            if (ev.type === 'node') dispatchNode({ type: 'NODE', node: ev.node });
             else if (ev.type === 'done') {
               if (ev.reply) setMessages(prev => [...prev, { role: 'assistant', content: ev.reply }]);
-              setHitlPending(!!ev.hitl); setIsLoading(false); setActiveNodes([]); await fetchState(activeSession); await fetchSessions();
-            } else if (ev.type === 'error') { setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${ev.reply}` }]); setIsLoading(false); setActiveNodes([]); }
+              if (ev.cache_matched_query && !cacheHitPrompted) {
+                const promptText = ev.query && ev.query !== ev.cache_matched_query
+                  ? `Cache hit detected. Original request: "${ev.query}". Matched query: "${ev.cache_matched_query}". Please approve, update, or cancel this plan.`
+                  : `Cache hit detected for the matched query: "${ev.cache_matched_query}". Please approve, update, or cancel this plan.`;
+                setMessages(prev => [...prev, { role: 'assistant', content: promptText }]);
+                setCacheHitPrompted(true);
+              }
+              dispatchNode({ type: 'DONE' }); 
+              setTimeout(() => fetchState(activeSession), 300);
+            } else if (ev.type === 'error') { 
+              setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${ev.reply}` }]); 
+              dispatchNode({ type: 'DONE' });
+            }
           } catch {}
         }
       }
     } catch (err) {
       if (err.name !== 'AbortError') setMessages(prev => [...prev, { role: 'assistant', content: 'Connection lost. Please try again.' }]);
-      setIsLoading(false); setActiveNodes([]);
+      dispatchNode({ type: 'DONE' });
     }
   }
 
   const handleSend = e => {
     if (e) e.preventDefault();
-    if (!prompt.trim() || isLoading || hitlPending) return;
+    if (!prompt.trim() || nodeState.isLoading || graphPaused) return;
     executeChat(prompt.trim());
   };
 
   const handleFormSubmit = e => {
     if (e) e.preventDefault();
-    if (!formDest.trim() || !formCitizenship.trim() || !formAirport.trim() || isLoading || hitlPending) return;
-    const content = `Plan a trip to ${formDest.trim()}.${formDates ? ` Dates: ${formDates}.` : ''}${formBudget ? ` Budget: ${formBudget}.` : ''} Citizenship: ${formCitizenship.trim()}. Departure Airport: ${formAirport.trim()}.`;
+    if (!formDest.trim() || !formCitizenship.trim() || !formAirport.trim() || nodeState.isLoading || graphPaused) return;
+    const destWithPrefs = formPreferences ? `${formDest.trim()} (Preferences: ${formPreferences.trim()})` : formDest.trim();
+    const content = `Plan a trip to ${destWithPrefs}.${formDates ? ` Dates: ${formDates}.` : ''}${formBudget ? ` Budget: ${formBudget}.` : ''} Citizenship: ${formCitizenship.trim()}. Departure Airport: ${formAirport.trim()}.`;
     executeChat(content);
   }
 
   const handleHitl = async action => {
-    setIsLoading(true); setActiveNodes(['hitl_approval']);
+    const isPaused = agentState?._next?.length > 0;
+    const isCacheHit = agentState?.cache_status?.toLowerCase() === 'hit';
+
+    if (!isPaused && isCacheHit) {
+        setCacheHitlResolved(true);
+        setHitlPending(false);
+        setShowUpdateInput(false);
+        
+        if (action === 'approve') {
+            setMessages(prev => [...prev, { role: 'assistant', content: 'Plan successfully approved from cache! Have a wonderful trip 🌍' }]);
+        } else if (action === 'reject') {
+            setCacheHitPrompted(false);
+            executeChat(`Please update my plan based on this feedback: ${feedback}`);
+            setFeedback('');
+        } else if (action === 'cancel') {
+            setMessages(prev => [...prev, { role: 'assistant', content: 'Plan review cancelled.' }]);
+        }
+        return;
+    }
+
+    dispatchNode({ type: 'SET_HITL' });
+    setShowUpdateInput(false); 
     try {
       const res = await fetch(`${BASE_URL}/session/${activeSession}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, feedback }) });
       const data = await res.json();
       if (data.reply) setMessages(prev => [...prev, { role: 'assistant', content: data.reply }]);
       setHitlPending(data.hitl || false); setFeedback('');
-    } catch { setMessages(prev => [...prev, { role: 'assistant', content: 'Resume action failed.' }]); } 
-    finally { setIsLoading(false); setActiveNodes([]); await fetchState(activeSession); await fetchSessions(); }
+    } catch { 
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Resume action failed.' }]); 
+    } 
+    finally { 
+      dispatchNode({ type: 'DONE' }); 
+      fetchState(activeSession); 
+      fetchSessions(); 
+    }
   };
 
   const otherSessions = [...new Set([...sessions, activeSession])].filter(s => s !== activeSession);
@@ -402,8 +439,11 @@ const handleDelete = async (sid, e) => {
           
           /* Modals Buttons */
           .btn-green { background:${t.green}; color:#fff; }
+          .btn-green:hover:not(:disabled) { background:#059669; }
           .btn-amber { background:${dark?'rgba(251,191,36,0.12)':'rgba(180,83,9,0.08)'}; color:${t.amber}; border:1px solid ${dark?'rgba(251,191,36,0.25)':'rgba(180,83,9,0.2)'}; }
+          .btn-amber:hover:not(:disabled) { background:${dark?'rgba(251,191,36,0.2)':'rgba(180,83,9,0.15)'}; }
           .btn-red { background:${dark?'rgba(248,113,113,0.08)':'rgba(185,28,28,0.06)'}; color:${t.red}; border:1px solid ${dark?'rgba(248,113,113,0.2)':'rgba(185,28,28,0.18)'}; }
+          .btn-red:hover:not(:disabled) { background:${dark?'rgba(248,113,113,0.15)':'rgba(185,28,28,0.12)'}; }
 
           .input-wrap { display:flex; align-items:center; gap:12px; padding:12px 16px; background:${t.surfaceHi}; border:1px solid ${t.border}; border-radius:14px; transition:border-color 0.2s, box-shadow 0.2s; }
           .input-wrap:focus-within { border-color:${t.accent}; box-shadow:0 4px 20px ${t.accentGlow}; }
@@ -413,9 +453,9 @@ const handleDelete = async (sid, e) => {
           .form-input { width: 100%; padding: 12px 14px; background: ${dark ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.5)'}; border: 1px solid ${t.border}; border-radius: 10px; color: ${t.text}; font-family: inherit; font-size: 14px; outline: none; transition: border-color 0.2s; }
           .form-input:focus { border-color: ${t.accent}; }
 
-          .dynamic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-          .dynamic-card { padding: 14px 16px; border-radius: 12px; border: 1px solid ${t.border}; background: ${t.surfaceHi}; display: flex; flex-direction: column; gap: 6px; transition: transform 0.2s; cursor: pointer; }
-          .dynamic-card:hover { transform: translateY(-2px); border-color: ${t.accent}; box-shadow: 0 10px 30px ${t.accentGlow}; }
+          .dynamic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+          .dynamic-card { padding: 18px 20px; border-radius: 18px; border: 1px solid ${t.border}; background: ${dark ? 'rgba(18, 24, 35, 0.92)' : 'rgba(255, 255, 255, 0.95)'}; display: flex; flex-direction: column; gap: 12px; transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease; cursor: pointer; box-shadow: 0 16px 36px rgba(0,0,0,0.08); }
+          .dynamic-card:hover { transform: translateY(-4px); border-color: ${t.accent}; box-shadow: 0 24px 52px ${dark ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.16)'}; }
 
           .menu-item { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; font-size:13px; cursor:pointer; }
           .menu-item:hover { background:${dark?'rgba(255,255,255,0.04)':'rgba(2,132,199,0.04)'}; }
@@ -428,6 +468,12 @@ const handleDelete = async (sid, e) => {
             .bubble { border:1px solid #ddd !important; background:#fafafa !important; color:#000 !important; page-break-inside:avoid; }
             .bg-canvas, .world-dots, .plane-trail { display:none !important; }
           }
+
+          .cache-modal-md { display: flex; flex-direction: column; gap: 16px; font-family: inherit; }
+          .cache-modal-md ul.md-ul { display: flex; flex-wrap: wrap; gap: 20px 32px; background: ${t.surface}; border: 1px solid ${t.border}; border-radius: 16px; padding: 20px; list-style: none; margin: 0; }
+          .cache-modal-md li { display: flex; flex-direction: column; font-size: 16px; font-weight: 600; color: ${t.text}; }
+          .cache-modal-md li strong { font-size: 11px; text-transform: uppercase; color: ${t.muted}; font-weight: 700; letter-spacing: 0.05em; margin-bottom: 4px; display: inline-block; }
+          .cache-modal-md p { color: ${t.text}; font-size: 14.5px; line-height: 1.6; margin: 0; }
         `}</style>
 
         {/* ── Background layers ── */}
@@ -562,22 +608,20 @@ const handleDelete = async (sid, e) => {
                   <span style={{ fontSize:10, fontWeight:700, color:t.muted, textTransform:'lowercase', letterSpacing:'0.08em' }}>
                     {msg.role === 'user' ? 'GUEST' : 'marco'}
                   </span>
-                  <div className={`bubble ${msg.role==='user'?'bubble-user':'bubble-agent'}`}>
-                    {msg.role === 'assistant' ? <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} /> : msg.content}
-                  </div>
+                  <MemoizedMessage msg={msg} />
                 </div>
               ))}
 
               {/* Status Pills */}
-              {isLoading && (
+              {nodeState.isLoading && (
                 <div className="fade-up" style={{ padding: '18px', background: t.surface, borderRadius: '16px', border: `1px solid ${t.border}` }}>
                    <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, fontWeight:600, color:t.accent, marginBottom: 14 }}>
                     <Spinner /> Orchestrating Itinerary...
                   </div>
                   <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
-                    {Object.keys(NODE_LABELS).filter(node => activeNodes.includes(node) || completedNodes.includes(node)).map(node => {
-                      const isActive = activeNodes.includes(node);
-                      const isDone   = completedNodes.includes(node) && !isActive;
+                    {Object.keys(NODE_LABELS).filter(node => nodeState.active.includes(node) || nodeState.completed.includes(node)).map(node => {
+                      const isActive = nodeState.active.includes(node);
+                      const isDone   = nodeState.completed.includes(node) && !isActive;
                       const { icon, label } = NODE_LABELS[node];
                       return (
                         <span key={node} className={`npill ${isActive?'npill-active':isDone?'npill-done':'npill-waiting'}`}>
@@ -595,9 +639,9 @@ const handleDelete = async (sid, e) => {
             <div style={{ padding: '16px 24px', borderTop: `1px solid ${t.border}`, background: t.surfaceHi }}>
               <form onSubmit={handleSend}>
                 <div className="input-wrap" style={{ borderRadius: '24px', padding: '8px 12px 8px 18px' }}>
-                  <input className="input-field" type="text" value={prompt} onChange={e => setPrompt(e.target.value)} disabled={isLoading || hitlPending} placeholder="Describe your dream destination..." />
-                  <button type="submit" className="btn btn-primary" disabled={isLoading || hitlPending || !prompt.trim()} style={{ padding:'10px', borderRadius: '50%' }}>
-                    {isLoading ? <Spinner /> : <Icons.Send size={18} />}
+                  <input className="input-field" type="text" value={prompt} onChange={e => setPrompt(e.target.value)} disabled={nodeState.isLoading || graphPaused} placeholder="Describe your dream destination..." />
+                  <button type="submit" className="btn btn-primary" disabled={nodeState.isLoading || graphPaused || !prompt.trim()} style={{ padding:'10px', borderRadius: '50%' }}>
+                    {nodeState.isLoading ? <Spinner /> : <Icons.Send size={18} />}
                   </button>
                 </div>
               </form>
@@ -620,7 +664,7 @@ const handleDelete = async (sid, e) => {
             <div style={{ padding: '16px 24px', borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, backdropFilter: 'blur(20px)', height: '65px', minHeight: '65px', position: 'relative', zIndex: 10 }}>
               
               <div style={{ display: 'flex', gap: 16, fontSize: 12, fontWeight: 600, color: t.muted, marginRight: 'auto' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: kpi.cacheStatus==='hit'?t.green:t.amber }}></span> {kpi.cacheStatus}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: kpi.cacheStatus==='Hit' || kpi.cacheStatus==='hit' ? t.green : t.amber }}></span> {kpi.cacheStatus}</span>
                 <span>⏱️ {kpi.cacheTtl}</span>
               </div>
 
@@ -661,10 +705,16 @@ const handleDelete = async (sid, e) => {
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>DATES / DURATION</label>
                           <input className="form-input" placeholder="e.g. Oct 12-18 or '5 Days'" value={formDates} onChange={e => setFormDates(e.target.value)} />
                         </div>
-                        <div style={{ gridColumn: '1 / -1' }}>
+                        
+                        <div>
                           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>BUDGET</label>
                           <input className="form-input" placeholder="e.g. $3000" value={formBudget} onChange={e => setFormBudget(e.target.value)} />
                         </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: t.muted, marginBottom: 6 }}>PREFERENCES</label>
+                          <input className="form-input" placeholder="e.g. Museums, Vegan, Hiking" value={formPreferences} onChange={e => setFormPreferences(e.target.value)} />
+                        </div>
+
                       </div>
                       <button type="submit" className="btn btn-primary" style={{ padding: '12px 24px', width: '100%' }}>Generate Itinerary</button>
                     </form>
@@ -675,6 +725,60 @@ const handleDelete = async (sid, e) => {
               {/* State 2: Active Chat -> Show Dynamic UI Grid */}
               {hasStartedChat && (
                 <div className="fade-up" style={{ maxWidth: 1000, margin: '0 auto' }}>
+                  
+                  {/* --- HITL APPROVAL SECTION --- */}
+                  {hitlPending && (
+                    <div className="glass fade-up" style={{ padding: '24px', borderRadius: '16px', border: `2px solid ${t.accent}`, marginBottom: '24px', background: dark ? 'rgba(2, 132, 199, 0.08)' : 'rgba(2, 132, 199, 0.04)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                        <div style={{ background: t.accent, color: '#fff', padding: '6px', borderRadius: '50%' }}><Icons.Check size={18} /></div>
+                        <h3 style={{ fontSize: 18, fontWeight: 700, color: t.text, margin: 0 }}>Review Required</h3>
+                      </div>
+                      <p style={{ color: t.muted, fontSize: 14, marginBottom: 20 }}>
+                        The itinerary is ready. Please review the details below. You can approve the plan, request modifications, or cancel.
+                      </p>
+
+                      {agentState?.cache_status?.toLowerCase() === 'hit' && agentState?.cache_matched_query && (
+                        <div style={{ marginBottom: 18, padding: '14px 16px', borderRadius: 16, background: dark ? 'rgba(16, 185, 129, 0.1)' : 'rgba(16, 185, 129, 0.12)', border: `1px solid ${t.green}`, color: t.text }}>
+                          <strong>Cache hit:</strong> Matched query: <span style={{ opacity: 0.9 }}>{agentState.cache_matched_query}</span>
+                        </div>
+                      )}
+
+                      {!showUpdateInput ? (
+                        <div style={{ display: 'flex', gap: '12px' }}>
+                          <button className="btn btn-green" onClick={() => handleHitl('approve')} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading}>
+                            Approve
+                          </button>
+                          <button className="btn btn-amber" onClick={() => setShowUpdateInput(true)} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading}>
+                            Update
+                          </button>
+                          <button className="btn btn-red" onClick={() => handleHitl('cancel')} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading}>
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="fade-up">
+                          <textarea
+                            className="form-input"
+                            placeholder="What would you like to change? (e.g., 'Switch to a 5-star hotel')"
+                            value={feedback}
+                            onChange={e => setFeedback(e.target.value)}
+                            style={{ minHeight: '80px', resize: 'vertical', marginBottom: '16px', background: t.surfaceHi }}
+                            autoFocus
+                          />
+                          <div style={{ display: 'flex', gap: '12px' }}>
+                            <button className="btn btn-primary" onClick={() => handleHitl('reject')} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading || !feedback.trim()}>
+                              Submit Update
+                            </button>
+                            <button className="btn btn-ghost" onClick={() => setShowUpdateInput(false)} style={{ padding: '12px' }} disabled={nodeState.isLoading}>
+                              Back
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* --- END OF HITL SECTION --- */}
+
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
                     <h3 style={{ fontSize: 20, fontWeight: 700, color: t.text }}>Itinerary Components</h3>
                     {criticData && (
@@ -686,7 +790,6 @@ const handleDelete = async (sid, e) => {
 
                   {/* Cards */}
                   <div className="dynamic-grid">
-                    
                     {/* Flight Card */}
                     <div className="dynamic-card" onClick={() => setActiveCard('fetch_flights')}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, color: t.accent }}>
@@ -697,7 +800,7 @@ const handleDelete = async (sid, e) => {
                         Click to view flight pathways and routing structures.
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}`, fontSize: 11, fontWeight: 600 }}>
-                        Status: {agentState?.planner_task_results?.fetch_flights ? 'Completed' : 'Pending'}
+                        Status: {checkStatus('fetch_flights')}
                       </div>
                     </div>
 
@@ -712,7 +815,7 @@ const handleDelete = async (sid, e) => {
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}`, display: 'flex', justifyContent: 'space-between', fontSize: 11, fontWeight: 600 }}>
                         <span>Status:</span>
-                        <span>{agentState?.planner_task_results?.fetch_hotels ? 'Completed' : 'Pending'}</span>
+                        <span>{checkStatus('fetch_hotels')}</span>
                       </div>
                     </div>
 
@@ -726,7 +829,7 @@ const handleDelete = async (sid, e) => {
                         Click to view weather matrix and local events.
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}`, fontSize: 11, fontWeight: 600 }}>
-                        Status: {agentState?.planner_task_results?.fetch_weather ? 'Completed' : 'Pending'}
+                        Status: {checkStatus('fetch_weather')}
                       </div>
                     </div>
 
@@ -735,7 +838,8 @@ const handleDelete = async (sid, e) => {
               )}
 
             </div>
-{/* ── CARD DETAILS MODAL ── */}
+            
+            {/* ── CARD DETAILS MODAL ── */}
             {activeCard && (
               <div className="fade-up" style={{
                 position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
@@ -767,19 +871,133 @@ const handleDelete = async (sid, e) => {
 
                   <div style={{ color: t.text, fontSize: 14, lineHeight: 1.7 }}>
                     {(() => {
-                      const rawData = agentState?.planner_task_results?.[activeCard] 
+                      const isCacheHit = agentState?.cache_status && agentState.cache_status.toLowerCase() === 'hit';
+                      const cacheAnswer = agentState?.cache_answer;
+                      let rawData = agentState?.planner_task_results?.[activeCard] 
                         || agentState?.final_plan?.[activeCard] 
-                        || agentState?.planner_structured_results?.[activeCard];
+                        || agentState?.planner_structured_results?.[activeCard]
+                        || (activeCard === 'fetch_weather' ? agentState?.trip_context : null);
+
+                      const extractCacheSection = (text, card) => {
+                        const labels = {
+                          fetch_flights: ['flights', 'flight', 'airfare', 'טיסות', 'טיסה', 'aviation', 'airline', 'depart', 'return'],
+                          fetch_hotels: ['hotels', 'hotel', 'accommodations', 'stay', 'lodging', 'מלונות', 'מלון', 'לינה'],
+                          fetch_weather: ['weather', 'climate', 'forecast', 'environment', 'context', 'סביבה', 'מזג אוויר', 'activities', 'experience', 'restaurants', 'transport', 'events', 'attractions', 'itinerary', 'plan', 'budget']
+                        };
+                        
+                        const target = labels[card] || [];
+                        const lines = String(text).split(/\r?\n/);
+                        let capturing = false;
+                        let buffer = [];
+                        let captureMode = null;
+                        let captureLevel = 0;
+
+                        for (let i = 0; i < lines.length; i++) {
+                          const line = lines[i];
+                          
+                          // 1. זיהוי כותרות Markdown רגילות (###)
+                          const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+                          if (headingMatch) {
+                            const level = headingMatch[1].length;
+                            const title = headingMatch[2].toLowerCase();
+                            
+                            if (target.some(lbl => title.includes(lbl))) {
+                              capturing = true;
+                              captureMode = 'header';
+                              captureLevel = level;
+                              buffer = []; 
+                              continue; 
+                            } else if (capturing && captureMode === 'header' && level <= captureLevel) {
+                              break; // עוצרים כשהגענו לכותרת חדשה
+                            } else if (capturing && captureMode === 'bold') {
+                              break;
+                            }
+                          }
+
+                          // 2. זיהוי כותרות "מזויפות" (טקסט מודגש כמו **Hotels:**)
+                          const boldMatch = line.match(/^\s*[-*]?\s*\*\*([^*]+)\*\*\s*:?/);
+                          if (boldMatch && !headingMatch) {
+                            const boldText = boldMatch[1].toLowerCase();
+                            
+                            if (!capturing && target.some(lbl => boldText.includes(lbl))) {
+                              capturing = true;
+                              captureMode = 'bold';
+                              buffer = [];
+                            } else if (capturing && captureMode === 'bold') {
+                              // עוצרים אם הגענו לטקסט מודגש אחר שלא שייך לנושא שלנו!
+                              if (!target.some(lbl => boldText.includes(lbl))) {
+                                break; 
+                              }
+                            }
+                          }
+
+                          if (capturing) {
+                            buffer.push(line);
+                          }
+                        }
+
+                        // 3. Fallback אם לא מצאנו שום כותרת רשמית
+                        if (buffer.length === 0) {
+                          for (let i = 0; i < lines.length; i++) {
+                            const normalized = lines[i].toLowerCase();
+                            if (target.some(lbl => normalized.includes(lbl))) {
+                              for (let j = i; j < lines.length; j++) {
+                                if (lines[j].trim() === '' && lines[j+1] && lines[j+1].trim() === '') break;
+                                buffer.push(lines[j]);
+                              }
+                              break;
+                            }
+                          }
+                        }
+
+                        if (buffer.length > 0) return buffer.join('\n').trim();
+                        return null;
+                      };
+
+                      if (!rawData && isCacheHit && typeof cacheAnswer === 'string') {
+                        rawData = extractCacheSection(cacheAnswer, activeCard);
+                      }
 
                       if (!rawData) return <div style={{ padding: 20, textAlign: 'center', color: t.muted, background: t.surface, borderRadius: 16, border: `1px dashed ${t.border}` }}>No detailed information available yet.</div>;
 
                       let data = rawData;
+                      
                       if (typeof rawData === 'string') {
-                        try { data = JSON.parse(rawData); } 
-                        catch (e) { return <div className="glass" style={{ padding: 20 }} dangerouslySetInnerHTML={{ __html: renderMarkdown(rawData) }} />; }
+                        try { 
+                          data = JSON.parse(rawData); 
+                        } catch (e) {
+                          const extractedObj = {};
+                          let hasValidKeys = false;
+                          let currentKey = null;
+
+                          rawData.split('\n').forEach(line => {
+                            const match = line.match(/^[-*]?\s*\*\*([^*]+)\*\*\s*:?\s*(.*)$/);
+                            if (match) {
+                              currentKey = match[1].trim().replace(/:$/, '');
+                              extractedObj[currentKey] = match[2] ? match[2].trim() : '';
+                              hasValidKeys = true;
+                            } else if (currentKey && line.trim()) {
+                              extractedObj[currentKey] += (extractedObj[currentKey] ? '\n' : '') + line.trim();
+                            }
+                          });
+
+                          if (hasValidKeys) {
+                            data = [extractedObj]; 
+                          } else {
+                            return <div className="cache-modal-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(rawData) }} />;
+                          }
+                        }
                       }
 
-                      // If data is an Array (e.g. Flights list)
+                      const renderValue = (k, v) => {
+                        if (v === null || v === undefined || String(v).trim() === '') {
+                          return <span style={{ color: t.muted, opacity: 0.5 }}>—</span>;
+                        }
+                        if (k.toLowerCase() === 'price' && typeof v === 'number') return `$${v}`;
+                        if (typeof v === 'object') return JSON.stringify(v);
+                        return String(v);
+                      };
+
                       if (Array.isArray(data)) {
                         return (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -787,12 +1005,12 @@ const handleDelete = async (sid, e) => {
                               <div key={i} style={{ padding: '20px', display: 'flex', flexWrap: 'wrap', gap: '20px 32px', background: t.surface, border: `1px solid ${t.border}`, borderRadius: 16 }}>
                                 {typeof item === 'object' && item !== null ? (
                                   Object.entries(item).map(([k, v]) => (
-                                    <div key={k} style={{ display: 'flex', flexDirection: 'column' }}>
+                                    <div key={k} style={{ display: 'flex', flexDirection: 'column', flex: '1 1 200px' }}>
                                       <span style={{ fontSize: 11, textTransform: 'uppercase', color: t.muted, fontWeight: 700, letterSpacing: '0.05em', marginBottom: 4 }}>
                                         {k.replace(/_/g, ' ')}
                                       </span>
-                                      <span style={{ fontSize: 16, fontWeight: 600, color: k.toLowerCase() === 'price' ? t.green : t.text }}>
-                                        {k.toLowerCase() === 'price' && typeof v === 'number' ? `$${v}` : typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                      <span style={{ fontSize: 15, fontWeight: 600, color: k.toLowerCase() === 'price' ? t.green : t.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                                        {renderValue(k, v)}
                                       </span>
                                     </div>
                                   ))
@@ -805,17 +1023,16 @@ const handleDelete = async (sid, e) => {
                         );
                       }
 
-                      // If data is a single Object
                       if (typeof data === 'object' && data !== null) {
                         return (
                           <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 16, padding: '20px', display: 'flex', flexWrap: 'wrap', gap: '20px 32px' }}>
                             {Object.entries(data).map(([k, v]) => (
-                              <div key={k} style={{ display: 'flex', flexDirection: 'column' }}>
+                              <div key={k} style={{ display: 'flex', flexDirection: 'column', flex: '1 1 200px' }}>
                                 <span style={{ fontSize: 11, textTransform: 'uppercase', color: t.muted, fontWeight: 700, letterSpacing: '0.05em', marginBottom: 4 }}>
                                   {k.replace(/_/g, ' ')}
                                 </span>
-                                <span style={{ fontSize: 16, fontWeight: 600, color: t.text }}>
-                                  {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                <span style={{ fontSize: 15, fontWeight: 600, color: k.toLowerCase() === 'price' ? t.green : t.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                                  {renderValue(k, v)}
                                 </span>
                               </div>
                             ))}
@@ -823,7 +1040,6 @@ const handleDelete = async (sid, e) => {
                         );
                       }
 
-                      // Fallback for simple strings/primitives
                       return <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 14, background: t.surface, padding: 20, borderRadius: 16 }}>{String(data)}</div>;
                     })()}
                   </div>

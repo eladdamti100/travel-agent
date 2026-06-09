@@ -12,6 +12,7 @@ from src.tools.db_tools import (
     fetch_flights,
     get_visa_requirement,
 )
+from src.tools.calc_tools import _fetch_live_flights_sync
 from src.utils.logger import get_logger
 
 logger = get_logger("transport_agent")
@@ -61,22 +62,54 @@ class TransportAgent(BaseSubAgent):
         result: PlannerToolResults,
     ) -> None:
         """
-        Fetch matching flights when origin and destination are available.
+        Fetch flights — tries SerpAPI Google Flights first, falls back to DB.
         """
         if not context.origin_airport or not context.destination_city:
             return
 
+        import json as _json
+        from src.tools.calc_tools import _CITY_TO_IATA
+
+        dest_iata = _CITY_TO_IATA.get(
+            (context.destination_city or "").lower(),
+            (context.destination_city or "")[:3].upper(),
+        )
+
+        # ── Try live SerpAPI prices first ─────────────────────────────────────
+        live = await asyncio.to_thread(
+            _fetch_live_flights_sync,
+            context.origin_airport.upper(),
+            dest_iata,
+        )
+
+        if live:
+            # Store live flights under a separate key → routed to Section 2 (Web Data)
+            normalised = [
+                {
+                    "airline":  f["airline"],
+                    "price":    f["price"],
+                    "duration": f.get("duration", ""),
+                    "source":   "Google Flights (live)",
+                }
+                for f in live
+            ]
+            result.raw_results["fetch_live_flights"] = _json.dumps(normalised, indent=2)
+            logger.info(
+                "TransportAgent: %d live SerpAPI flights stored for %s -> %s",
+                len(live), context.origin_airport, context.destination_city,
+            )
+            return
+
+        # ── Fallback: DB flights ──────────────────────────────────────────────
         raw = await asyncio.to_thread(
             fetch_flights.invoke,
             {
-                "origin": context.origin_airport,
+                "origin":      context.origin_airport,
                 "destination": context.destination_city,
             },
         )
-
         result.raw_results["fetch_flights"] = raw
-
-        logger.info("Transport agent fetched flights.")
+        logger.info("TransportAgent: using DB flights (SerpAPI unavailable).")
 
     async def _handle_visa(
         self,

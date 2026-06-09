@@ -325,13 +325,14 @@ def test_cache_key_currency_and_properties():
     assert _key(destination_city="Paris", duration_days=7) == \
            build_trip_cache_key_from_context(destination_city="Paris", duration_days=7)
 
-    # Structured key bypasses semantic search
+    # Structured key produces a cache miss (nothing stored)
     query = f"key_version:{_CACHE_KEY_VERSION} | destination_city:paris | duration:week"
     with patch("src.services.semantic_cache.initialize_cache_db"), \
          patch("src.services.semantic_cache._cleanup_cache"), \
-         patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]):
+         patch("src.services.semantic_cache.embed_text", return_value=[1.0, 0.0]), \
+         patch("src.services.semantic_cache._load_embedding_index", return_value=[]):
         result = find_cached_answer(query)
-    assert result.status == CacheStatus.MISS and "structured key" in result.reason.lower()
+    assert result.status == CacheStatus.MISS
 
 
 # ── New fixes + misc ──────────────────────────────────────────────────────────

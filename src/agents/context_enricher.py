@@ -21,6 +21,7 @@ The master planner should:
 """
 
 import re
+from datetime import date, timedelta
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -67,14 +68,19 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
         else None
     )
 
+    duration_days = _extract_duration_days(text)
+    travel_start_date = _extract_travel_start_date(text)
+    travel_end_date = _compute_travel_end_date(travel_start_date, duration_days)
+
     context = TripContext(
         origin_airport=_extract_origin_airport(latest_message),
         origin_country=_extract_origin_country(text),
         destination_city=destination_city,
         destination_country=destination_country,
-        duration_days=_extract_duration_days(text),
+        duration_days=duration_days,
         total_budget=_extract_total_budget(text) or state.get("total_budget"),
         currency=_extract_currency(latest_message) or state.get("currency"),
+        travel_month=_extract_travel_month(text),
         num_travelers=_extract_num_travelers(text) or state.get("num_travelers"),
         preferred_airline=state.get("preferred_airline"),
         food_preference=state.get("food_preference"),
@@ -83,6 +89,8 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
         flight_preference=_extract_flight_preference(text),
         activity_preference=_extract_activity_preference(text),
         travel_style=_extract_travel_style(text),
+        travel_start_date=travel_start_date,
+        travel_end_date=travel_end_date,
         extraction_source="deterministic",
         slm_enriched=False,
     )
@@ -621,3 +629,117 @@ def _extract_travel_style(text: str) -> Optional[str]:
         return "family"
 
     return None
+
+
+_MONTH_NAMES = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+# Canonical month names (for travel_month field).
+_MONTH_CANONICAL = {
+    1: "january", 2: "february", 3: "march", 4: "april",
+    5: "may", 6: "june", 7: "july", 8: "august",
+    9: "september", 10: "october", 11: "november", 12: "december",
+}
+
+
+def _extract_travel_month(text: str) -> Optional[str]:
+    """Returns the first month name mentioned in text (lowercase English)."""
+    for name in _MONTH_NAMES:
+        if re.search(r"\b" + name + r"\b", text, re.IGNORECASE):
+            return _MONTH_CANONICAL[_MONTH_NAMES[name]]
+    return None
+
+
+def _extract_travel_start_date(text: str) -> Optional[str]:
+    """
+    Extracts a specific travel start date and returns an ISO string (YYYY-MM-DD).
+
+    Recognises:
+      - ISO:          2026-06-15
+      - DD/MM/YYYY:   15/06/2026
+      - "June 15" / "15 June" / "15th of June" / "June 15th"
+    When no year is present the nearest future occurrence is assumed.
+    """
+    today = date.today()
+
+    # ISO format — most unambiguous
+    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError:
+            pass
+
+    # DD/MM/YYYY or similar slash/dot separators
+    m = re.search(r"\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b", text)
+    if m:
+        d1, d2, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if d1 > 12:
+            # Unambiguous: d1 must be the day (DD/MM/YYYY)
+            try:
+                return date(yr, d2, d1).isoformat()
+            except ValueError:
+                pass
+        else:
+            # Ambiguous: try DD/MM first (dominant format), fall back to MM/DD
+            try:
+                return date(yr, d2, d1).isoformat()
+            except ValueError:
+                pass
+            try:
+                return date(yr, d1, d2).isoformat()
+            except ValueError:
+                pass
+
+    # "June 15" / "June 15th" / "15 June" / "15th of June"
+    for name, month_num in _MONTH_NAMES.items():
+        m = re.search(
+            r"\b" + name + r"\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+            text, re.IGNORECASE,
+        )
+        if m:
+            day = int(m.group(1))
+            try:
+                d = date(today.year, month_num, day)
+                if d < today:
+                    d = date(today.year + 1, month_num, day)
+                return d.isoformat()
+            except ValueError:
+                pass
+
+        m = re.search(
+            r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?" + name + r"\b",
+            text, re.IGNORECASE,
+        )
+        if m:
+            day = int(m.group(1))
+            try:
+                d = date(today.year, month_num, day)
+                if d < today:
+                    d = date(today.year + 1, month_num, day)
+                return d.isoformat()
+            except ValueError:
+                pass
+
+    return None
+
+
+def _compute_travel_end_date(
+    start_date: Optional[str],
+    duration_days: Optional[int],
+) -> Optional[str]:
+    """
+    Returns the trip end date as ISO string when both start and duration are known.
+    """
+    if not start_date or not duration_days:
+        return None
+    try:
+        return (date.fromisoformat(start_date) + timedelta(days=duration_days - 1)).isoformat()
+    except (ValueError, TypeError):
+        return None

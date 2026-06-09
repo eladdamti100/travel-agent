@@ -81,6 +81,7 @@ class AgentState(TypedDict):
     cache_matched_query: str
     cache_answer: str
     force_replan: bool
+    planning_query: str  # raw user text captured by cache_checker before HITL
 
     # trip context — stored as dict so LangGraph can JSON-serialise it;
     # deserialise with: TripContext(**state["trip_context"])

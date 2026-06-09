@@ -35,11 +35,8 @@ from src.agents.planner_dependencies import (
     check_planner_dependencies,
 )
 from src.agents.planner_scheduler import build_scheduler_result, completed_tasks_from
-from src.agents.sub_agents.experience_agent import ExperienceAgent
 from src.agents.sub_agents.replanning_agent import analyze_replanning
-from src.agents.sub_agents.stay_agent import StayAgent
-from src.agents.sub_agents.transport_agent import TransportAgent
-from src.agents.sub_agents.web_agent import WebAgent
+from src.agents.web_supervisor import WebSupervisor
 from src.config.city_registry import COUNTRY_BY_CITY as _DESTINATION_COUNTRY_BY_CITY
 from src.config.settings import settings
 from src.graph.state import AgentState
@@ -200,7 +197,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
             "Enrichment failed or timed out (%s). Falling back to deterministic context.",
             type(_enrichment_raw).__name__,
         )
-        enrichment_result = ContextEnrichmentResult()
+        enrichment_result = ContextEnrichmentResult(trip_context=deterministic_context)
     else:
         enrichment_result = _enrichment_raw
 
@@ -338,80 +335,24 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     return updates
 
 
+_web_supervisor = WebSupervisor()
+
+
 async def run_sub_agents_async(
     context: TripContext,
     existing_results: Optional[Dict[str, str]] = None,
     allowed_tasks: Optional[Set[str]] = None,
 ) -> Dict[str, str]:
     """
-    Runs planner sub-agents in parallel and safely merges their independent results.
-
-    Agents whose result keys are all already present in existing_results are skipped.
-    When allowed_tasks is provided, only agents that can produce one of those tasks run.
+    Thin wrapper — sub-agent routing now lives in WebSupervisor (web_supervisor.py),
+    which selects agents via the task registry, vets traffic at the network
+    boundary through the Cyber Agent, runs them in parallel, and merges results.
     """
-    covered = set(existing_results or {})
-
-    agents = [
-        agent
-        for agent in [TransportAgent(), StayAgent(), ExperienceAgent(), WebAgent()]
-        if not all(key in covered for key in agent.result_keys)
-        and (
-            allowed_tasks is None
-            or any(key in allowed_tasks for key in agent.result_keys)
-        )
-    ]
-
-    logger.info(
-        "Planner selected sub-agents: %s",
-        [
-            getattr(agent, "agent_name", agent.__class__.__name__)
-            for agent in agents
-        ],
+    return await _web_supervisor.dispatch(
+        context=context,
+        existing_results=existing_results,
+        allowed_tasks=allowed_tasks,
     )
-
-    logger.info(
-        "Planner sub-agent selection context. covered=%s allowed_tasks=%s",
-        sorted(covered),
-        sorted(allowed_tasks) if allowed_tasks is not None else None,
-    )
-
-    merged_raw_results: Dict[str, str] = {**(existing_results or {})}
-
-    if not agents:
-        logger.info(
-            "Planner skipped all sub-agents — all required results already preserved."
-        )
-        return merged_raw_results
-
-    logger.info(
-        "Planner running sub-agents in parallel. count=%d",
-        len(agents),
-    )
-
-    results = await asyncio.gather(
-        *[agent.run(context=context) for agent in agents],
-        return_exceptions=True,
-    )
-
-    for agent, result in zip(agents, results):
-        if isinstance(result, Exception):
-            logger.error(
-                "Sub-agent failed. agent=%s error_type=%s error=%s",
-                getattr(agent, "agent_name", agent.__class__.__name__),
-                type(result).__name__,
-                result,
-            )
-            continue
-
-        logger.info(
-            "Sub-agent completed. agent=%s result_keys=%s",
-            getattr(agent, "agent_name", agent.__class__.__name__),
-            list(result.raw_results.keys()),
-        )
-
-        merged_raw_results.update(result.raw_results)
-
-    return merged_raw_results
 
 
 _MAX_TRAVEL_PREF_ENTRIES = 10

@@ -1,0 +1,169 @@
+"""
+Planner-only tools — available exclusively inside the master planner.
+
+These tools produce final deliverables (PDF exports, formatted summaries)
+and must not be exposed to the researcher or orchestrator agents.
+"""
+
+import json
+import os
+import re
+import textwrap
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from langchain_core.tools import tool
+
+from src.utils.logger import get_logger
+
+logger = get_logger("planner_tools")
+
+_OUTPUT_DIR = Path(__file__).parent.parent.parent / "data" / "exports"
+
+
+def _ensure_output_dir() -> Path:
+    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return _OUTPUT_DIR
+
+
+def _safe_filename(text: str) -> str:
+    """Convert a city name into a safe filename fragment."""
+    return re.sub(r"[^a-zA-Z0-9_\-]", "_", text.strip().lower())
+
+
+def _ascii_safe(text: str) -> str:
+    """Replace Unicode characters that Helvetica cannot render."""
+    return (
+        text
+        .replace("—", "--")   # em dash
+        .replace("–", "-")    # en dash
+        .replace("’", "'")    # right single quote
+        .replace("‘", "'")    # left single quote
+        .replace("“", '"')    # left double quote
+        .replace("”", '"')    # right double quote
+        .replace("…", "...")  # ellipsis
+        .replace("é", "e")    # é
+        .replace("è", "e")    # è
+        .replace("à", "a")    # à
+        .replace("→", "->")   # arrow
+        .replace("←", "<-")
+        .encode("ascii", errors="replace").decode("ascii")
+    )
+
+
+# ── export_plan_to_pdf ────────────────────────────────────────────────────────
+
+@tool
+def export_plan_to_pdf(
+    plan_text: str,
+    destination_city: str,
+    traveler_name: Optional[str] = None,
+) -> str:
+    """
+    Export a completed travel plan to a PDF file.
+
+    PLANNER-ONLY: This tool is only available inside the master planner.
+    It should be called after the final plan text is assembled.
+
+    plan_text:        The full travel plan as a plain-text string.
+    destination_city: Destination city name (used in the filename and header).
+    traveler_name:    Optional traveler name printed on the cover page.
+
+    Returns a JSON object with the output file path and status.
+    """
+    if not plan_text or not plan_text.strip():
+        return json.dumps({"status": "error", "reason": "plan_text is empty"})
+
+    if not destination_city or not destination_city.strip():
+        return json.dumps({"status": "error", "reason": "destination_city is required"})
+
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        logger.error("export_plan_to_pdf: fpdf2 not installed. Run: pip install fpdf2")
+        return json.dumps({
+            "status": "error",
+            "reason": "fpdf2 library not installed. Install with: pip install fpdf2",
+        })
+
+    try:
+        output_dir = _ensure_output_dir()
+        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        city_slug  = _safe_filename(destination_city)
+        filename   = f"travel_plan_{city_slug}_{timestamp}.pdf"
+        filepath   = output_dir / filename
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+
+        # ── Cover header ──────────────────────────────────────────────────────
+        pdf.set_font("Helvetica", "B", 22)
+        pdf.set_text_color(30, 60, 120)
+        pdf.cell(0, 14, f"Travel Plan - {destination_city.title()}", new_x="LMARGIN", new_y="NEXT", align="C")
+
+        pdf.set_font("Helvetica", "", 11)
+        pdf.set_text_color(100, 100, 100)
+        if traveler_name:
+            pdf.cell(0, 8, f"Prepared for: {traveler_name}", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.cell(0, 8, f"Generated: {datetime.now().strftime('%B %d, %Y %H:%M')}", new_x="LMARGIN", new_y="NEXT", align="C")
+
+        pdf.ln(6)
+        pdf.set_draw_color(200, 210, 230)
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        pdf.ln(8)
+
+        # ── Plan body ─────────────────────────────────────────────────────────
+        pdf.set_font("Helvetica", "", 11)
+        pdf.set_text_color(30, 30, 30)
+
+        for raw_line in plan_text.splitlines():
+            line = _ascii_safe(raw_line.rstrip())
+
+            # Section headers (markdown ## or **)
+            if line.startswith("## ") or (line.startswith("**") and line.endswith("**")):
+                pdf.ln(4)
+                pdf.set_font("Helvetica", "B", 13)
+                pdf.set_text_color(30, 60, 120)
+                header = line.lstrip("#").strip().strip("*")
+                pdf.cell(0, 9, header, new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font("Helvetica", "", 11)
+                pdf.set_text_color(30, 30, 30)
+
+            # Bullet points
+            elif line.startswith("- ") or line.startswith("* "):
+                body = line[2:].strip()
+                for wrapped in textwrap.wrap(body, width=95):
+                    pdf.cell(6)
+                    pdf.cell(0, 7, f"- {wrapped}", new_x="LMARGIN", new_y="NEXT")
+
+            # Empty line
+            elif not line:
+                pdf.ln(3)
+
+            # Normal paragraph text
+            else:
+                for wrapped in textwrap.wrap(line, width=95) or [""]:
+                    pdf.cell(0, 7, wrapped, new_x="LMARGIN", new_y="NEXT")
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        pdf.ln(10)
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(150, 150, 150)
+        pdf.cell(0, 6, "Generated by Marco AI Travel Planner", new_x="LMARGIN", new_y="NEXT", align="C")
+
+        pdf.output(str(filepath))
+
+        logger.info("export_plan_to_pdf. status=success path=%s", filepath)
+        return json.dumps({
+            "status": "success",
+            "file": str(filepath),
+            "filename": filename,
+            "destination": destination_city,
+            "size_kb": round(filepath.stat().st_size / 1024, 1),
+        })
+
+    except Exception as exc:
+        logger.error("export_plan_to_pdf. status=exception error=%s", exc)
+        return json.dumps({"status": "error", "reason": str(exc)})

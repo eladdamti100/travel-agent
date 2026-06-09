@@ -1,11 +1,92 @@
 """
-Calculation tools — pure arithmetic, no database or API calls.
+Calculation tools — pure arithmetic and trip package building.
 """
 
 import json
+import os
+import sqlite3
+from datetime import date, timedelta
+from pathlib import Path
 from typing import Optional
 
+import httpx
 from langchain_core.tools import tool
+
+_DB_PATH = Path(__file__).parent.parent.parent / "data" / "travel_agency.db"
+
+_CITY_TO_IATA = {
+    "paris":    "CDG",
+    "london":   "LHR",
+    "tokyo":    "NRT",
+    "new york": "JFK",
+    "berlin":   "BER",
+}
+
+
+def _db_query(sql: str, params: tuple = ()) -> list:
+    """Run a read-only SQLite query, return list of dicts."""
+    if not _DB_PATH.exists():
+        return []
+    try:
+        with sqlite3.connect(_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def _fetch_live_flights_sync(origin: str, dest_iata: str) -> list:
+    """
+    Synchronous SerpAPI Google Flights call.
+    Returns list of dicts: [{airline, price, duration}]
+    Falls back to empty list on any error.
+    """
+    api_key = os.getenv("SERPAPI_KEY", "")
+    if not api_key or api_key.startswith("your_"):
+        return []
+
+    dep_date = (date.today() + timedelta(days=30)).strftime("%Y-%m-%d")
+
+    try:
+        response = httpx.get(
+            "https://serpapi.com/search.json",
+            params={
+                "engine":        "google_flights",
+                "departure_id":  origin.upper(),
+                "arrival_id":    dest_iata.upper(),
+                "outbound_date": dep_date,
+                "currency":      "USD",
+                "adults":        "1",
+                "type":          "2",
+                "api_key":       api_key,
+            },
+            timeout=10.0,
+        )
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+        if "error" in data:
+            return []
+
+        offers = (data.get("best_flights") or []) + (data.get("other_flights") or [])
+        results = []
+        for offer in offers[:5]:
+            price    = offer.get("price", 0)
+            flights  = offer.get("flights", [{}])
+            airline  = flights[0].get("airline", "Unknown")
+            dur_mins = offer.get("total_duration", 0)
+            hrs, mins = divmod(dur_mins, 60)
+            results.append({
+                "airline":  airline,
+                "price":    int(price),
+                "duration": f"{hrs}h {mins:02d}m",
+            })
+        return results
+
+    except Exception:
+        return []
 
 # Flight distances in km between supported city pairs (symmetric)
 _FLIGHT_DISTANCES_KM: dict = {
@@ -272,4 +353,263 @@ def distance_travel_time(origin_city: str, destination_city: str) -> str:
         "distance_km": distance_km,
         "estimated_flight_time": f"{hours}h {minutes:02d}m",
         "note": "Estimate based on ~900 km/h cruising speed. Actual times vary by airline and route.",
+    }, indent=2)
+
+
+# ── generate_daily_itinerary ──────────────────────────────────────────────────
+
+_DEFAULT_MORNING = [
+    "Explore the city centre and main landmark",
+    "Visit the national museum",
+    "Walking tour of the old town",
+    "Day trip to a nearby attraction",
+]
+_DEFAULT_AFTERNOON = [
+    "Lunch at a local restaurant, afternoon shopping",
+    "Art gallery and café break",
+    "Park walk and local market",
+    "Boat tour / city tour bus",
+]
+_DEFAULT_EVENING = [
+    "Dinner at a recommended local restaurant",
+    "Evening show / theatre / concert",
+    "Sunset viewpoint and night market",
+    "Jazz bar / rooftop dining experience",
+]
+
+
+@tool
+def generate_daily_itinerary(
+    destination_city: str,
+    duration_days: int,
+    activities: str = "",
+    daily_budget_usd: float = 0.0,
+) -> str:
+    """
+    Build a structured day-by-day itinerary for a trip.
+
+    destination_city:  Target destination (e.g. "Tokyo").
+    duration_days:     Number of trip days (1-30).
+    activities:        Comma-separated list of planned activities (optional).
+    daily_budget_usd:  Per-day spending budget in USD (optional, 0 = unspecified).
+
+    Returns a JSON array with one entry per day: morning, afternoon, evening, budget note.
+    """
+    try:
+        duration_days = int(duration_days)
+        daily_budget_usd = float(daily_budget_usd)
+    except (ValueError, TypeError) as e:
+        return f"Error: invalid input — {e}"
+
+    if duration_days <= 0 or duration_days > 30:
+        return "Error: duration_days must be between 1 and 30."
+
+    # Parse user-provided activities into a queue
+    activity_list = [a.strip() for a in activities.split(",") if a.strip()] if activities else []
+
+    itinerary = []
+    for day in range(1, duration_days + 1):
+        idx = (day - 1) % 4
+        morning   = activity_list.pop(0) if activity_list else _DEFAULT_MORNING[idx]
+        afternoon = activity_list.pop(0) if activity_list else _DEFAULT_AFTERNOON[idx]
+        evening   = _DEFAULT_EVENING[idx]
+
+        day_entry: dict = {
+            "day": day,
+            "morning": morning,
+            "afternoon": afternoon,
+            "evening": evening,
+        }
+
+        if daily_budget_usd > 0:
+            day_entry["budget_note"] = f"~${daily_budget_usd:.0f} available for food, transport, and entrance fees"
+
+        if day == 1:
+            day_entry["note"] = "Arrival day — check in, rest, light exploration."
+        elif day == duration_days:
+            day_entry["note"] = "Departure day — check out, last-minute shopping, head to airport."
+
+        itinerary.append(day_entry)
+
+    return json.dumps({
+        "destination": destination_city,
+        "duration_days": duration_days,
+        "itinerary": itinerary,
+    }, indent=2)
+
+
+# ── generate_trip_packages ────────────────────────────────────────────────────
+
+@tool
+def generate_trip_packages(
+    destination_city: str,
+    origin_airport: str,
+    duration_days: int,
+    num_travelers: int = 1,
+) -> str:
+    """
+    Generate 3 fully-priced trip packages (Budget / Standard / Premium).
+
+    Pulls real prices from the database for flights, hotels, and activities,
+    then builds a day-by-day itinerary for each tier with a full cost breakdown.
+
+    destination_city: e.g. "Paris", "Tokyo", "London"
+    origin_airport:   3-letter IATA code, e.g. "TLV", "JFK"
+    duration_days:    Trip length in days (1-30)
+    num_travelers:    Number of travelers (default 1)
+
+    Returns JSON with 3 packages. Each package contains:
+      - tier name (Budget / Standard / Premium)
+      - flight option with price
+      - hotel option with price per night
+      - selected activities with prices
+      - total cost breakdown
+      - day-by-day itinerary with activities
+    """
+    try:
+        duration_days  = int(duration_days)
+        num_travelers  = int(num_travelers)
+    except (ValueError, TypeError) as e:
+        return f"Error: invalid input — {e}"
+
+    if duration_days <= 0 or duration_days > 30:
+        return "Error: duration_days must be between 1 and 30."
+    if num_travelers <= 0:
+        return "Error: num_travelers must be at least 1."
+
+    dest = destination_city.strip().lower()
+    orig = origin_airport.strip().lower()
+    dest_iata = _CITY_TO_IATA.get(dest, dest.upper()[:3])
+
+    # ── Live flights via SerpAPI (falls back to DB if unavailable) ────────────
+    live_flights = _fetch_live_flights_sync(orig.upper(), dest_iata)
+
+    # ── Pull from DB ──────────────────────────────────────────────────────────
+    flights = _db_query(
+        "SELECT airline, price, flight_number FROM flights "
+        "WHERE LOWER(origin)=? AND LOWER(destination)=? ORDER BY price ASC",
+        (orig, dest),
+    )
+    hotels = _db_query(
+        "SELECT name, price_per_night, stars FROM hotels "
+        "WHERE LOWER(city)=? ORDER BY price_per_night ASC",
+        (dest,),
+    )
+    activities = _db_query(
+        "SELECT name, category, price FROM activities "
+        "WHERE LOWER(city)=? ORDER BY price ASC",
+        (dest,),
+    )
+
+    # Merge: prefer live prices, fill gaps with DB
+    if live_flights:
+        # Normalise live to same shape as DB rows
+        flights = [
+            {"airline": f["airline"], "price": f["price"],
+             "flight_number": "", "duration": f["duration"]}
+            for f in live_flights
+        ]
+        source = "live (Google Flights)"
+    elif flights:
+        for f in flights:
+            f.setdefault("duration", "")
+        source = "database"
+    else:
+        flights = [
+            {"airline": "Economy carrier", "price": 400,
+             "flight_number": "N/A", "duration": ""},
+            {"airline": "Major airline",   "price": 650,
+             "flight_number": "N/A", "duration": ""},
+        ]
+        source = "static fallback"
+    if not hotels:
+        hotels = [
+            {"name": "Budget hostel",     "price_per_night": 60,  "stars": 2},
+            {"name": "Standard hotel",    "price_per_night": 130, "stars": 3},
+            {"name": "Luxury hotel",      "price_per_night": 350, "stars": 5},
+        ]
+    if not activities:
+        activities = [
+            {"name": "City walking tour", "category": "Sightseeing", "price": 0},
+            {"name": "Local museum",      "category": "Culture",     "price": 15},
+            {"name": "Guided city tour",  "category": "Tour",        "price": 45},
+        ]
+
+    def _safe(lst, idx):
+        return lst[min(idx, len(lst) - 1)]
+
+    # ── Define 3 tiers ────────────────────────────────────────────────────────
+    # (flight_index, hotel_index, max_activities)
+    tiers = [
+        ("Budget",   0, 0, 2),
+        ("Standard", 0, min(1, len(hotels) - 1), 3),
+        ("Premium",  min(1, len(flights) - 1), min(2, len(hotels) - 1), min(5, len(activities))),
+    ]
+
+    packages = []
+    for tier_name, fi, hi, acts_count in tiers:
+        flight   = _safe(flights, fi)
+        hotel    = _safe(hotels, hi)
+        sel_acts = activities[:acts_count]
+
+        flight_total     = flight["price"] * num_travelers
+        hotel_total      = hotel["price_per_night"] * duration_days
+        activities_total = sum(a["price"] for a in sel_acts) * num_travelers
+        total            = flight_total + hotel_total + activities_total
+
+        # Build itinerary — use selected activities as morning slots
+        itinerary = []
+        act_queue = [a["name"] for a in sel_acts]
+        for day in range(1, duration_days + 1):
+            idx = (day - 1) % 4
+            morning   = act_queue.pop(0) if act_queue else _DEFAULT_MORNING[idx]
+            afternoon = _DEFAULT_AFTERNOON[idx]
+            evening   = _DEFAULT_EVENING[idx]
+            entry: dict = {"day": day, "morning": morning,
+                           "afternoon": afternoon, "evening": evening}
+            if day == 1:
+                entry["note"] = "Arrival day — check in, rest, light exploration."
+            elif day == duration_days:
+                entry["note"] = "Departure day — check out, head to airport."
+            itinerary.append(entry)
+
+        packages.append({
+            "tier": tier_name,
+            "flight": {
+                "airline":          flight["airline"],
+                "flight_number":    flight.get("flight_number", ""),
+                "duration":         flight.get("duration", ""),
+                "price_per_person": flight["price"],
+                "total_usd":        flight_total,
+                "source":           source,
+            },
+            "hotel": {
+                "name":           hotel["name"],
+                "stars":          hotel.get("stars", ""),
+                "price_per_night": hotel["price_per_night"],
+                "total_usd":      hotel_total,
+            },
+            "activities": [
+                {"name": a["name"], "category": a["category"],
+                 "price_per_person": a["price"]}
+                for a in sel_acts
+            ],
+            "cost_summary": {
+                "flights_usd":    flight_total,
+                "hotel_usd":      hotel_total,
+                "activities_usd": activities_total,
+                "total_usd":      total,
+                "per_day_usd":    round(total / duration_days, 2),
+                "per_person_usd": round(total / num_travelers, 2),
+            },
+            "daily_itinerary": itinerary,
+        })
+
+    return json.dumps({
+        "destination":   destination_city,
+        "origin":        origin_airport.upper(),
+        "duration_days": duration_days,
+        "num_travelers": num_travelers,
+        "flight_source": source,
+        "packages":      packages,
     }, indent=2)

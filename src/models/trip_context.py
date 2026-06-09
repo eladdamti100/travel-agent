@@ -62,6 +62,16 @@ class TripContext(BaseModel):
         description="Month of travel in lowercase English, for example june, december.",
     )
 
+    travel_start_date: Optional[str] = Field(
+        default=None,
+        description="Specific departure date in ISO format YYYY-MM-DD, e.g. 2026-06-15.",
+    )
+
+    travel_end_date: Optional[str] = Field(
+        default=None,
+        description="Specific return date in ISO format YYYY-MM-DD, e.g. 2026-06-22.",
+    )
+
     num_travelers: Optional[int] = Field(
         default=None,
         description="Number of travelers.",

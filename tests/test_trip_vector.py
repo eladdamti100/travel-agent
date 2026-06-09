@@ -1,4 +1,10 @@
-"""Tests for the multi-dimensional travel vector space (missions 1.4 / 1.5)."""
+"""Tests for the multi-dimensional travel vector space (missions 1.4 / 1.5).
+
+Mission 2.1 changed build_trip_vector to return a pure 384-d text embedding.
+Structured dimensions (travel_style, food, etc.) are no longer concatenated
+into the vector — they are enforced by SQLite pre-filtering instead.  Tests
+that rely on the old 411-d hybrid behavior are marked xfail.
+"""
 
 import numpy as np
 import pytest
@@ -31,8 +37,9 @@ def _cov(ctx):
 # ── Vector properties ────────────────────────────────────────────────────────
 
 def test_vector_shape_dtype_and_unit_norm():
+    # Mission 2.1: vector is now 384-d (pure text embedding), not 411-d.
     vec, cov = build_trip_vector(_EMB, {})
-    assert vec.shape == (411,)
+    assert vec.shape == (384,)
     assert vec.dtype == np.float32
     assert abs(np.linalg.norm(vec) - 1.0) < 1e-5
     assert isinstance(cov, float)
@@ -49,10 +56,13 @@ def test_same_context_identical_vectors():
     assert np.allclose(_v(ctx), _v(ctx))
 
 def test_missing_context_zeros_structured_dims():
+    # Mission 2.1: coverage is still computed; vector is 384-d with no tail.
     vec, cov = build_trip_vector(_EMB, {})
     assert cov == 0.0
-    assert np.all(vec[384:] == 0.0)
+    assert vec.shape == (384,)
 
+@pytest.mark.xfail(reason="Mission 2.1: structured dims removed from vector; "
+                           "food difference enforced by SQLite pre-filter now.")
 def test_food_none_different_from_explicit_none():
     """food=None (missing) must differ from food='none' (no restriction)."""
     assert not np.allclose(_v({}), _v({"food_preference": "none"}))
@@ -60,6 +70,7 @@ def test_food_none_different_from_explicit_none():
 
 # ── Structured dimensions differentiate ─────────────────────────────────────
 
+@pytest.mark.xfail(reason="Mission 2.1: structured dims removed from vector.")
 @pytest.mark.parametrize("field,a,b", [
     ("travel_style",  "budget",   "luxury"),
     ("num_travelers", 1,          4),
@@ -80,11 +91,14 @@ def test_abbreviated_month_same_as_full(abbrev, full):
 
 # ── Edge cases ───────────────────────────────────────────────────────────────
 
+@pytest.mark.xfail(reason="Mission 2.1: vector is now pure text embedding — "
+                           "structured fields no longer lower similarity.")
 def test_full_vs_empty_similarity_below_threshold():
     full_ctx = {"travel_style": "luxury", "num_travelers": 2, "activity_preference": "museums",
                 "travel_month": "july", "food_preference": "none", "flight_preference": "business"}
     assert float(np.dot(_v(full_ctx), _v({}))) < 0.85
 
+@pytest.mark.xfail(reason="Mission 2.1: structured dims removed from vector.")
 def test_complementary_fields_lower_similarity_than_matching():
     v_style = _v({"travel_style": "luxury"})
     assert float(np.dot(v_style, _v({"travel_style": "luxury"}))) > \

@@ -433,3 +433,44 @@ def validate_input(user_message: str, *, is_hitl: bool = False) -> ValidationRes
 
     # ── Normal (non-HITL) path ────────────────────────────────────────────────
     return InputValidator.validate(user_message)
+
+
+def validate_message(message: str, *, is_hitl: bool = False) -> ValidationResult:
+    """
+    Full validation pipeline for a single user message.
+
+    Stages (fastest → slowest):
+      1. Recall / HITL shortcut    — instant, no regex
+      2. Regex harm + injection    — microseconds
+      3. City + off-topic          — microseconds
+      4. Vector guard              — ~50 ms (embedding model, reuses semantic cache)
+         Travel keyword + score < threshold → APPROVED, skip LLM
+         Travel keyword + score ≥ threshold → suspicious, fall through to LLM
+      5. Groq LLM                  — ~200 ms, only for ambiguous messages
+
+    This function owns the entire pipeline so nodes.py stays a thin wrapper.
+    """
+    # Stages 1-3 (HITL-aware regex pipeline)
+    result = validate_input(message, is_hitl=is_hitl)
+    if not result.approved:
+        return result
+
+    # HITL replies that passed regex are done — skip vector + LLM
+    if is_hitl:
+        return result
+
+    # Stage 4: travel keyword fast-approve with vector guard gate
+    if InputValidator.is_clearly_travel(message):
+        from src.agents.vector_guard import is_vector_threat
+        if not is_vector_threat(message):
+            logger.info("validate_message: approved via travel keyword + vector clear")
+            return result  # already APPROVED from validate_input
+        logger.info("validate_message: vector threat detected — routing to LLM")
+
+    # Stage 5: Groq LLM for ambiguous or vector-suspicious messages
+    llm_result = ai_validate(message)
+    if llm_result is not None:
+        return llm_result
+
+    logger.info("validate_message: LLM unavailable — approved by regex")
+    return result
