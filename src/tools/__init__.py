@@ -53,6 +53,9 @@ from src.tools.web_api_tools import (
     fetch_local_transport_live,
     geocode_location,
     live_currency_conversion,
+    tavily_general_research,
+    tavily_reviews_search,
+    tavily_transport_search,
     web_research_tavily,
 )
 
@@ -101,6 +104,14 @@ EXTERNAL_WEB_API_TOOLS = [
     web_search,
 ]
 
+# Domain-specific Tavily search wrappers used by the hierarchical web-agent team.
+# Each prepends a keyword prefix that steers Tavily toward a specific data class.
+HIERARCHICAL_WEB_AGENT_TOOLS = [
+    tavily_transport_search,   # → TransportWebAgent  (flights, visa, transport)
+    tavily_reviews_search,     # → StayWebAgent        (hotel reviews, pricing)
+    tavily_general_research,   # → ExperienceWebAgent  (culture, tips, alerts)
+]
+
 # Only exposed to the master planner — not the orchestrator or researcher.
 PLANNER_ONLY_TOOLS = [
     export_plan_to_pdf,
@@ -108,14 +119,20 @@ PLANNER_ONLY_TOOLS = [
 
 # ─── CONSOLIDATED MASTER TOOL PORTFOLIO ─────────────────────────────────────
 
-ALL_TOOLS = DATABASE_DRIVEN_TOOLS + COMPUTATIONAL_CORE_TOOLS + EXTERNAL_WEB_API_TOOLS
+ALL_TOOLS = (
+    DATABASE_DRIVEN_TOOLS
+    + COMPUTATIONAL_CORE_TOOLS
+    + EXTERNAL_WEB_API_TOOLS
+    + HIERARCHICAL_WEB_AGENT_TOOLS
+)
 
 logger.info(
-    "Tool registry ready. total=%d db=%d calc=%d web=%d planner_only=%d",
+    "Tool registry ready. total=%d db=%d calc=%d web=%d hierarchical=%d planner_only=%d",
     len(ALL_TOOLS),
     len(DATABASE_DRIVEN_TOOLS),
     len(COMPUTATIONAL_CORE_TOOLS),
     len(EXTERNAL_WEB_API_TOOLS),
+    len(HIERARCHICAL_WEB_AGENT_TOOLS),
     len(PLANNER_ONLY_TOOLS),
 )
 
@@ -126,5 +143,6 @@ __all__ = [
     "DATABASE_DRIVEN_TOOLS",
     "COMPUTATIONAL_CORE_TOOLS",
     "EXTERNAL_WEB_API_TOOLS",
+    "HIERARCHICAL_WEB_AGENT_TOOLS",
     "PLANNER_ONLY_TOOLS",
 ]

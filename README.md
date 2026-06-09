@@ -10,18 +10,24 @@ Marco accepts natural-language trip requests, validates them through a multi-age
 
 - **Natural-language input** — "Plan a 7-day trip from TLV to Paris for $3000"
 - **Multi-agent pipeline** — orchestrator → validator → planner → critic → human approval
+- **Security layer** — Zero-Trust 6-step pipeline: `WebSupervisor` + `CyberAgent` check outbound fields via Lakera Guard v2 (regex fallback), sanitize them, then scan inbound results via Google Safe Browsing, Microsoft Presidio PII redaction, and malicious-content regex
+- **Hierarchical web agent team** — four specialised web agents (`TransportWebAgent`, `StayWebAgent`, `ExperienceWebAgent`, `ManagerWebAgent`) run concurrently inside `WebSupervisor.dispatch()`, replacing the monolithic `WebAgent`
 - **Real-time web enrichment** — live currency, events, geocoding, Tavily research
 - **HITL (Human-in-the-Loop)** — the agent asks for missing trip details, then resumes; users can approve, edit, or cancel the final plan
 - **Semantic caching** — similar requests return cached plans (cosine similarity, MiniLM-L6-v2)
+- **PDF export** — completed plans can be exported to PDF via `export_plan_to_pdf`
 - **Dual LLM providers** — Groq (fast, cheap) or Gemini (capable), switchable via `.env`
 - **Session memory** — preferences (airline, diet, style) persist across conversations
 - **Token tracking** — input/output tokens and estimated cost logged per LLM call
+- **LangSmith tracing** — optional observability via `LANGSMITH_API_KEY` + `LANGSMITH_TRACING=true`
 
 ---
 
 ## Supported Destinations
 
 **Paris · London · Tokyo · New York · Berlin**
+
+Adding a new destination requires entries in `src/config/city_registry.py` and SQLite rows in `src/utils/db_init.py`. No other files need changing.
 
 ---
 
@@ -51,7 +57,17 @@ OPENCAGE_API_KEY=your_key
 TICKETMASTER_API_KEY=your_key
 EXCHANGERATE_API_KEY=your_key
 TAVILY_API_KEY=your_key
+
+# Optional — security hardening (regex/fail-open fallbacks active without these)
+# LAKERA_API_KEY=your_key          # Lakera Guard v2 prompt-injection detection
+# GOOGLE_SAFE_BROWSING_KEY=your_key  # URL safety scan on inbound web results
+
+# Optional — LangSmith observability
+# LANGSMITH_API_KEY=your_key
+# LANGSMITH_TRACING=true
 ```
+
+> Microsoft Presidio PII redaction runs fully locally — no API key needed. After installing requirements, run `python -m spacy download en_core_web_sm` (or `en_core_web_lg` for best accuracy).
 
 ### 3. Run
 
@@ -108,73 +124,20 @@ Marco: Plan approved! Saving to cache.
 
 ---
 
-## Architecture
+## Admin Mode
+
+Append `ADMIN00` to the session ID prompt to enable the async reviewer, which critiques the approved plan and appends its analysis to the terminal output:
 
 ```
-run.py
-  └─ src/main.py              REPL + HITL approval prompt
-       └─ src/graph/
-            ├─ workflow.py    StateGraph + SqliteSaver (12 nodes)
-            ├─ nodes.py       node functions
-            ├─ router.py      conditional edge functions
-            └─ state.py       AgentState TypedDict
+Session ID: mysessionADMIN00
 ```
-
-### Graph Flow
-
-```
-START → extract_metadata → validator
-          │ blocked        → END
-          │ HITL resume    → resume_hitl_context → master_planner
-          └─ approved      → master_orchestrator
-                               ├─ preferences_memory → summarizer → END
-                               ├─ researcher → END
-                               └─ cache_check
-                                    ├─ hit  → END
-                                    └─ miss → master_planner
-                                                  └─ critic
-                                                       ├─ fail (<2x) → master_planner (auto-replan)
-                                                       └─ pass       → hitl_approval
-                                                                           ├─ approved  → cache_store → summarizer → END
-                                                                           ├─ edit      → master_planner (with feedback)
-                                                                           └─ cancelled → END
-```
-
-### Key Modules
-
-| Layer | Module | Purpose |
-|---|---|---|
-| **Config** | `src/config/settings.py` | All env vars & thresholds (Pydantic BaseSettings) |
-| **Config** | `src/config/city_registry.py` | City/airport/currency maps — single source of truth |
-| **Agents** | `src/agents/planner.py` | Master planner orchestration (466 lines) |
-| **Agents** | `src/agents/critic.py` | Deterministic budget + completeness gate |
-| **Agents** | `src/agents/hitl_feedback_parser.py` | Free-text edit → TripContext overrides |
-| **Services** | `src/services/plan_formatter.py` | Deterministic Section 1 & 2 builders (no LLM) |
-| **Services** | `src/services/plan_generator.py` | Section 3 LLM call (notes & assumptions) |
-| **Services** | `src/services/plan_enricher.py` | Web fallback + cost calculation |
-| **Utils** | `src/utils/token_tracker.py` | Token + cost logging per LLM call |
-
----
-
-## Configuration
-
-All settings live in `src/config/settings.py` (Pydantic `BaseSettings`):
-
-| Setting | Env Var | Default |
-|---|---|---|
-| LLM provider | `LLM_PROVIDER` | `gemini` |
-| LLM model override | `LLM_MODEL` | provider default |
-| Cache similarity threshold | `CACHE_HIT_THRESHOLD` | `0.85` |
-| SLM enrichment timeout (s) | `ENRICHMENT_TIMEOUT_SECONDS` | `10.0` |
-| Max auto-replan attempts | `MAX_CRITIC_ATTEMPTS` | `2` |
-| Max user edit cycles | `MAX_HITL_EDIT_ATTEMPTS` | `3` |
 
 ---
 
 ## Testing
 
 ```bash
-# Full suite (354 passing)
+# Full suite
 pytest
 
 # Fully offline web API tests — zero HTTP calls, zero API cost
@@ -182,27 +145,10 @@ pytest tests/test_web_api_mocked.py -v
 
 # P0 regression tests
 pytest tests/test_p0_fixes.py -v
+
+# Epic 3 pre-flight smoke test (59 assertions — runs from project root)
+python -m tests.preflight_check
 ```
-
----
-
-## Admin Mode
-
-Append `ADMIN00` to the session ID prompt to enable the async reviewer:
-
-```
-Session ID: mysessionADMIN00
-```
-
-The reviewer agent critiques the approved plan and appends its analysis to the terminal output.
-
----
-
-## Adding a New Destination
-
-1. Add entries to `src/config/city_registry.py` (`CITY_KEYWORDS`, `AIRPORT_BY_CITY`, `COUNTRY_BY_CITY`, `CURRENCY_BY_CITY`).
-2. Add SQLite rows in `src/utils/db_init.py` for flights, hotels, activities, visa, weather.
-3. No other files need changing.
 
 ---
 
@@ -210,10 +156,11 @@ The reviewer agent critiques the approved plan and appends its analysis to the t
 
 | Phase | Focus | Status |
 |---|---|---|
-| P0 — Blocking fixes | `asyncio` safety, stale state, HITL loop cap, test suite | ✅ Done |
-| P1 — High priority | City registry, settings module, planner decomposition, token tracking | ✅ Done |
-| P2 — Important | Dead code removal, typed state, logging standards, mock tests | ✅ Done |
-| P3 — Nice to have | Health check, env configs, fuzzing tests, LLM guards, FastAPI | 🔄 In progress |
+| P0 — Blocking fixes | `asyncio` safety, stale state, HITL loop cap, test suite | Done |
+| P1 — High priority | City registry, settings module, planner decomposition, token tracking | Done |
+| P2 — Important | Dead code removal, typed state, logging standards, mock tests | Done |
+| P3 — Epic 3 | `WebSupervisor`/`CyberAgent` Zero-Trust pipeline, hierarchical web agent team (4 agents), Presidio PII redaction, Lakera Guard v2, `diff_changed_tasks` cascade fix | Done |
+| P4 — Future | FastAPI/HTTP server (`src/api/` stub exists), `AsyncSqliteSaver` migration | Planned |
 
 ---
 

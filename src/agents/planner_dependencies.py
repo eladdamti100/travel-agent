@@ -22,6 +22,14 @@ from src.models.trip_context import REQUIRED_TRIP_FIELDS, TripContext
 
 _PLANNER_TASK_VALUE_SET: frozenset = frozenset(item.value for item in PlannerTaskType)
 
+# Raw result keys produced by the hierarchical web agents that are NOT PlannerTaskType
+# members; they must be explicitly included in full-replan invalidation lists.
+_WEB_AGENT_EXTRA_KEYS: tuple = (
+    "transport_live_research",
+    "stay_live_research",
+    "experience_web_research",
+)
+
 _TASK_REQUIREMENTS: Dict[PlannerTaskType, Tuple[str, ...]] = {
     PlannerTaskType.FETCH_FLIGHTS: ("origin_airport", "destination_city"),
     PlannerTaskType.FETCH_HOTELS: ("destination_city",),
@@ -246,31 +254,31 @@ def _build_planner_task(
 def diff_changed_tasks(
     old_context: TripContext,
     new_context: TripContext,
-) -> List[PlannerTaskType]:
+) -> List[str]:
     """
-    Returns every task that must be re-run when context changes, including
+    Returns every task key that must be re-run when context changes, including
     cascade invalidation through the dependency graph.
 
-    Two reasons a task is invalidated:
-      1. Direct  — one of its own required context fields changed.
-      2. Cascade — it depends on another task that was directly invalidated
-                   (e.g. CALCULATE_TRIP_COST depends on FETCH_FLIGHTS, so if
-                   FETCH_FLIGHTS is re-run its downstream tasks must also re-run).
+    Returns strings (task values), not PlannerTaskType enums, so that raw
+    web-agent result keys (e.g. 'transport_live_research') can be included
+    alongside enum-backed keys.
 
-    Fields that did not change → their tasks stay cached (no re-run).
-
-    Examples:
-        origin_airport changed   → FETCH_FLIGHTS (direct)
-                                 → CALCULATE_TRIP_COST (cascade: needs new flight price)
-
-        destination_city changed → FETCH_FLIGHTS, FETCH_HOTELS, FETCH_ACTIVITIES (direct)
-                                 → CALCULATE_TRIP_COST (cascade)
-
-        total_budget changed     → no task has total_budget as a required field,
-                                   so nothing is re-run (budget is used only in
-                                   the final answer prompt, not in tool calls)
+    Invalidation rules:
+      destination_city changed → full replan: all PlannerTaskType values
+                                 + all web-agent extra keys
+      origin_airport changed   → FETCH_FLIGHTS (direct) + CALCULATE_TRIP_COST
+                                 (cascade) + CHECK_VISA (explicit) +
+                                 transport_live_research (web-agent key)
+      total_budget changed     → CALCULATE_TRIP_COST + LIVE_CURRENCY_CONVERSION
+                                 (explicit; total_budget is not a tool-call field)
+      any other tracked field  → direct invalidation + cascade
     """
-    # Step 1 — find which context fields actually changed
+    # ── Case 1: destination changed → full replan ─────────────────────────
+    if (getattr(old_context, "destination_city", None)
+            != getattr(new_context, "destination_city", None)):
+        return [t.value for t in PlannerTaskType] + list(_WEB_AGENT_EXTRA_KEYS)
+
+    # ── Step 1: find changed tracked fields ───────────────────────────────
     all_tracked_fields: set = set()
     for fields in _TASK_REQUIREMENTS.values():
         all_tracked_fields.update(fields)
@@ -281,19 +289,30 @@ def diff_changed_tasks(
         if getattr(old_context, field, None) != getattr(new_context, field, None)
     }
 
-    if not changed_fields:
-        return []
-
-    # Step 2 — find tasks directly invalidated by changed fields
+    # ── Step 2: directly invalidated PlannerTaskType tasks ────────────────
     directly_invalidated: set = {
         task_type
         for task_type, required_fields in _TASK_REQUIREMENTS.items()
         if any(f in changed_fields for f in required_fields)
     }
 
-    # Step 3 — cascade: any task that depends_on an invalidated task is also
-    # invalidated, regardless of whether its own context fields changed.
-    # Build a map: task → list of tasks it depends on (from _TASK_DEPENDENCIES).
+    # ── Case 2: origin_airport changed → also invalidate visa + web key ──
+    extra_keys: List[str] = []
+    if (getattr(old_context, "origin_airport", None)
+            != getattr(new_context, "origin_airport", None)):
+        directly_invalidated.add(PlannerTaskType.CHECK_VISA)
+        extra_keys.append("transport_live_research")
+
+    # ── Case 3: total_budget changed → force cost + currency recalc ──────
+    if (getattr(old_context, "total_budget", None)
+            != getattr(new_context, "total_budget", None)):
+        directly_invalidated.add(PlannerTaskType.CALCULATE_TRIP_COST)
+        directly_invalidated.add(PlannerTaskType.LIVE_CURRENCY_CONVERSION)
+
+    if not directly_invalidated and not extra_keys:
+        return []
+
+    # ── Step 3: cascade through dependency graph ──────────────────────────
     _TASK_DEPENDENCIES: Dict[PlannerTaskType, List[PlannerTaskType]] = {
         PlannerTaskType.CALCULATE_TRIP_COST: [
             PlannerTaskType.FETCH_FLIGHTS,
@@ -310,7 +329,7 @@ def diff_changed_tasks(
                 cascaded.add(task)
                 changed = True
 
-    return list(cascaded)
+    return [t.value for t in cascaded] + extra_keys
 
 
 def _build_hitl_question(missing_requirements: List[MissingRequirement]) -> str:

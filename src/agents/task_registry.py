@@ -10,7 +10,10 @@ from typing import Dict, Iterable, List, Set, Any
 from src.agents.sub_agents.experience_agent import ExperienceAgent
 from src.agents.sub_agents.stay_agent import StayAgent
 from src.agents.sub_agents.transport_agent import TransportAgent
-from src.agents.sub_agents.web_agent import WebAgent
+from src.agents.sub_agents.web_agents.experience_web_agent import ExperienceWebAgent
+from src.agents.sub_agents.web_agents.manager_web_agent import ManagerWebAgent
+from src.agents.sub_agents.web_agents.stay_web_agent import StayWebAgent
+from src.agents.sub_agents.web_agents.transport_web_agent import TransportWebAgent
 from src.models.planner import PlannerTaskType
 from src.utils.logger import get_logger
 
@@ -18,10 +21,15 @@ logger = get_logger("task_registry")
 
 
 _AGENT_FACTORIES = [
-    TransportAgent,
-    StayAgent,
-    ExperienceAgent,
-    WebAgent,
+    # ── DB-backed agents (fast, deterministic) ──────────────────────────────
+    TransportAgent,      # fetch_flights, check_visa
+    StayAgent,           # fetch_hotels
+    ExperienceAgent,     # activities, restaurants, weather, events, local transport
+    # ── Hierarchical web agent team (live APIs, Epic 3) ──────────────────────
+    TransportWebAgent,   # GEOCODE_LOCATION + transport_live_research
+    StayWebAgent,        # stay_live_research
+    ExperienceWebAgent,  # FETCH_LIVE_EVENTS + FETCH_BREWERIES + experience_web_research
+    ManagerWebAgent,     # LIVE_CURRENCY_CONVERSION + FETCH_COUNTRY_METADATA + WEB_RESEARCH_TAVILY
 ]
 
 

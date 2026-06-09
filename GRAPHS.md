@@ -1,50 +1,62 @@
-# Travel Agent Ecosystem: Technical Architecture & Execution Matrix
+# Marco AI Travel Planner — Architectural Topology
+
+> Visual and flow documentation for the Marco system.
+> For code conventions and invariants, see CLAUDE.md. For setup, see README.md.
+
+---
 
 ## 1. System Topology (LangGraph Architecture)
-*This graph maps the full routing pipeline — safety guardrails, intent dispatch, HITL checkpoint, and the four-sub-agent async planning core.*
+
+*Full routing pipeline — safety guardrails, intent dispatch, HITL checkpoint, and the WebSupervisor/CyberAgent Zero-Trust security boundary around the seven-sub-agent hierarchical async planning core.*
 
 ```mermaid
 graph TD
-    classDef startEnd fill:#A2C2E8,stroke:#333,stroke-width:2px,rx:10px,ry:10px;
+    classDef startEnd fill:#A2C2E8,stroke:#333,stroke-width:2px;
     classDef process fill:#F0F4F8,stroke:#4A6B82,stroke-width:2px;
     classDef router fill:#FFEAA7,stroke:#D6A2E8,stroke-width:2px;
     classDef cache fill:#D4EDDA,stroke:#28A745,stroke-width:2px;
     classDef async fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px;
     classDef hitl fill:#FFF3CD,stroke:#FFC107,stroke-width:2px;
-    classDef web fill:#FCE4EC,stroke:#E91E63,stroke-width:2px;
+    classDef security fill:#FCE4EC,stroke:#E91E63,stroke-width:2px;
 
     START((START)):::startEnd
 
-    EXTRACT[Extract Metadata + Modification Detection]:::process
-    VALIDATOR[3-Stage Validator]:::process
-    VALID_ROUTE{Approved?}:::router
+    EXTRACT[extract_metadata\nresets 20 per-turn fields]:::process
+    VALIDATOR[validator\n3-stage: regex → vector → LLM]:::process
+    VALID_ROUTE{validation_status?}:::router
 
-    HITL_RESUME[Resume HITL Context]:::hitl
-    ORCH[Master Orchestrator]:::process
-    ORCH_ROUTE{Route}:::router
+    HITL_RESUME[resume_hitl_context\nmerges clarification reply into pending TripContext]:::hitl
+    ORCH[master_orchestrator\nclassifies intent]:::process
+    ORCH_ROUTE{orchestrator_route?}:::router
 
-    PREFS[Preferences Memory Agent]:::process
-    RESEARCHER[Researcher ReAct Agent]:::process
+    PREFS[preferences_memory]:::process
+    RESEARCHER[researcher\nReAct agent]:::async
 
-    CACHE_CHECK[Exact + Semantic Cache Check]:::cache
-    CACHE_ROUTE{Cache Result}:::router
+    CACHE_CHECK[cache_check\nembedding similarity lookup]:::cache
+    CACHE_ROUTE{cache_status?}:::router
 
-    PLANNER[Master Planner]:::process
-    HITL_GATE{Required Fields\nMissing?}:::hitl
+    PLANNER[master_planner\nwave scheduler]:::process
+    PLANNER_ROUTE{planner_status?}:::router
+
+    SUPERVISOR[WebSupervisor\nroutes tasks, owns CyberAgent]:::security
+    CYBER[CyberAgent\nsanitize outbound · inspect inbound · circuit breaker]:::security
 
     TRANSPORT[TransportAgent]:::async
     STAY[StayAgent]:::async
     EXPERIENCE[ExperienceAgent]:::async
-    WEBAGENT[WebAgent]:::web
+    TWEB[TransportWebAgent]:::async
+    SWEB[StayWebAgent]:::async
+    EWEB[ExperienceWebAgent]:::async
+    MWEB[ManagerWebAgent]:::async
 
-    WAVE1[Wave 1 · asyncio.gather]:::async
-    WAVE2[Wave 2 · Dependent Tasks]:::async
+    CRITIC[critic\ndeterministic budget + completeness gate]:::process
+    CRITIC_ROUTE{passed AND\nattempts < cap?}:::router
 
-    FINAL[Synthesize Final Travel Plan]:::process
+    HITL_APPROVAL[hitl_approval\nLangGraph interrupt — user approves/edits/cancels]:::hitl
+    HITL_ROUTE{hitl_decision?}:::router
 
-    CACHE_STORE[Cache Store]:::cache
-    SUMMARIZER[Conversation Summarizer]:::async
-    REVIEWER[Async Reviewer — Admin Only]:::async
+    CACHE_STORE[cache_store\npersist to semantic_cache.db]:::cache
+    SUMMARIZER[summarizer\ncompacts history when > 10 messages]:::async
 
     END((END)):::startEnd
 
@@ -52,9 +64,9 @@ graph TD
     EXTRACT --> VALIDATOR
     VALIDATOR --> VALID_ROUTE
 
-    VALID_ROUTE -- Blocked --> END
-    VALID_ROUTE -- HITL Resume --> HITL_RESUME
-    VALID_ROUTE -- Approved --> ORCH
+    VALID_ROUTE -- blocked --> END
+    VALID_ROUTE -- HITL resume\nawaitng_user_clarification=True --> HITL_RESUME
+    VALID_ROUTE -- approved --> ORCH
 
     HITL_RESUME --> PLANNER
 
@@ -67,36 +79,40 @@ graph TD
     RESEARCHER --> END
 
     CACHE_CHECK --> CACHE_ROUTE
-    CACHE_ROUTE -- HIT --> END
-    CACHE_ROUTE -- MISS --> PLANNER
+    CACHE_ROUTE -- hit --> END
+    CACHE_ROUTE -- miss --> PLANNER
 
-    PLANNER --> HITL_GATE
-    HITL_GATE -- Missing Fields --> END
+    PLANNER --> PLANNER_ROUTE
+    PLANNER_ROUTE -- missing_required_info\nHITL question in messages --> END
+    PLANNER_ROUTE -- ready / partial_ready --> CRITIC
 
-    HITL_GATE -- All Fields Present --> WAVE1
-    WAVE1 --> TRANSPORT
-    WAVE1 --> STAY
-    WAVE1 --> EXPERIENCE
-    WAVE1 --> WEBAGENT
+    PLANNER --> SUPERVISOR
+    SUPERVISOR --> CYBER
+    CYBER -- sanitize outbound context\nfields TripContext --> SUPERVISOR
+    SUPERVISOR --> TRANSPORT & STAY & EXPERIENCE & TWEB & SWEB & EWEB & MWEB
+    TRANSPORT & STAY & EXPERIENCE & TWEB & SWEB & EWEB & MWEB --> SUPERVISOR
+    SUPERVISOR -- inspect inbound\nresults CyberAgent --> PLANNER
 
-    TRANSPORT --> WAVE2
-    STAY --> WAVE2
-    EXPERIENCE --> WAVE2
-    WEBAGENT --> WAVE2
+    CRITIC --> CRITIC_ROUTE
+    CRITIC_ROUTE -- failed AND\nattempts < MAX_CRITIC_ATTEMPTS --> PLANNER
+    CRITIC_ROUTE -- passed OR\ncap reached --> HITL_APPROVAL
 
-    WAVE2 --> FINAL
-    FINAL --> CACHE_STORE
-    FINAL --> REVIEWER
+    HITL_APPROVAL --> HITL_ROUTE
+    HITL_ROUTE -- approved --> CACHE_STORE
+    HITL_ROUTE -- edit --> PLANNER
+    HITL_ROUTE -- cancelled --> END
 
     CACHE_STORE --> SUMMARIZER
     SUMMARIZER --> END
-    REVIEWER --> END
 ```
+
+> **Reviewer note**: The `reviewer` agent (admin mode plan critique) is **not a graph node**. It is invoked asynchronously from `main.py` after the plan is displayed, outside the LangGraph lifecycle.
 
 ---
 
 ## 2. Async Task Dependency DAG (Master Planner Scheduling)
-*Wave 1 tasks execute concurrently via `asyncio.gather`. Wave 2 tasks execute only after their declared input dependencies have resolved.*
+
+*Wave 1 tasks execute concurrently via `asyncio.gather` inside `WebSupervisor.dispatch()`. Wave 2 tasks execute only after their declared input dependencies have resolved.*
 
 ```mermaid
 graph TD
@@ -105,6 +121,7 @@ graph TD
     classDef webTask fill:#FCE4EC,stroke:#E91E63,stroke-width:2px;
     classDef calcTask fill:#FFF3E0,stroke:#FFB74D,stroke-width:2px;
     classDef finalStyle fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px;
+    classDef securityStyle fill:#FCE4EC,stroke:#E91E63,stroke-width:1px,stroke-dasharray:4;
 
     subgraph TC [TripContext Inputs]
         OA[origin_airport]:::contextStyle
@@ -113,6 +130,11 @@ graph TD
         DD[duration_days]:::contextStyle
         TB[total_budget]:::contextStyle
         TM[travel_month]:::contextStyle
+    end
+
+    subgraph SEC [WebSupervisor + CyberAgent Security Boundary]
+        CYBER_OUT[CyberAgent.sanitize_outbound\nstrips injection from TripContext fields]:::securityStyle
+        CYBER_IN[CyberAgent.inspect_inbound\nredacts malicious content in results]:::securityStyle
     end
 
     subgraph W1S [Wave 1 · SQLite Sub-Agents]
@@ -127,11 +149,23 @@ graph TD
         AT[airport_transfer_info]:::sqliteTask
     end
 
-    subgraph W1W [Wave 1 · WebAgent]
+    subgraph W1TW [Wave 1 · TransportWebAgent]
         GL[geocode_location]:::webTask
+        TLR[transport_live_research]:::webTask
+    end
+
+    subgraph W1SW [Wave 1 · StayWebAgent]
+        SLR[stay_live_research]:::webTask
+    end
+
+    subgraph W1EW [Wave 1 · ExperienceWebAgent]
         LE[fetch_live_events]:::webTask
-        LC[live_currency_conversion]:::webTask
         FB[fetch_breweries]:::webTask
+        EWR[experience_web_research]:::webTask
+    end
+
+    subgraph W1MW [Wave 1 · ManagerWebAgent]
+        LC[live_currency_conversion]:::webTask
         CM[fetch_country_metadata]:::webTask
         WT[web_research_tavily]:::webTask
     end
@@ -139,6 +173,13 @@ graph TD
     subgraph W2 [Wave 2 · Dependent Calculations]
         CTC[calculate_trip_cost]:::calcTask
     end
+
+    TC --> CYBER_OUT
+    CYBER_OUT --> W1S
+    CYBER_OUT --> W1TW
+    CYBER_OUT --> W1SW
+    CYBER_OUT --> W1EW
+    CYBER_OUT --> W1MW
 
     OA & DC --> FF
     OC & DC --> CV
@@ -151,125 +192,70 @@ graph TD
     DC --> AT
 
     DC --> GL
+    DC --> TLR
+    DC & DD --> SLR
     DC & TM --> LE
-    OC --> LC
     DC --> FB
+    DC --> EWR
+    OC --> LC
     DC --> CM
     DC --> WT
 
+    W1S --> CYBER_IN
+    W1TW --> CYBER_IN
+    W1SW --> CYBER_IN
+    W1EW --> CYBER_IN
+    W1MW --> CYBER_IN
+
+    CYBER_IN --> W2
+
     FF & FH & FA & TB --> CTC
 
-    SYNTH[Synthesize Structured Trip Plan]:::finalStyle
+    SYNTH[Synthesize Structured Trip Plan\nplan_formatter → plan_generator → FinalPlan]:::finalStyle
     CTC & CV & GL & CM & LC --> SYNTH
 ```
 
 ---
 
-## 3. AgentState Schema Layout
+## 3. Wave Scheduling Breakdown
 
-*`AgentState` is the single shared ledger threaded through every graph node via LangGraph's `StateGraph`. Nodes read only the fields they require and write only the fields they own. All fields are optional at runtime.*
-
-| Field | Type | Written By | Purpose |
-|---|---|---|---|
-| `messages` | `Annotated[list, add_messages]` | All nodes | Full conversation history |
-| `current_city` | `str` | `extract_metadata` | Destination detected in latest message |
-| `total_budget` | `float` | `extract_metadata` | Budget detected in latest message |
-| `tool_call_count` | `int` | `extract_metadata`, `agent` | Incremented per tool call; circuit breaker reads it |
-| `force_replan` | `bool` | `extract_metadata` | Bypasses cache hit when trip parameters are modified |
-| `validation_status` | `str` | `validator` | `"approved"` or a `BLOCKED_*` verdict |
-| `orchestrator_route` | `str` | `master_orchestrator` | `"preferences_memory"` · `"research"` · `"cache_check"` |
-| `orchestrator_reason` | `str` | `master_orchestrator` | Short explanation for the chosen route |
-| `preferred_airline` | `str` | `preferences_memory` | Persisted across sessions via `SqliteSaver` |
-| `food_preference` | `str` | `preferences_memory` | Persisted |
-| `num_travelers` | `int` | `preferences_memory` | Persisted |
-| `travel_preferences` | `str` | `preferences_memory` | Free-form persisted preferences |
-| `is_admin` | `bool` | `main.py` | Session ID ending `ADMIN00` enables plan reviewer |
-| `conversation_summary` | `str` | `summarizer` | Compact past-context injected when history > 10 messages |
-| `cache_status` | `str` | `cache_checker` | `"hit"` · `"miss"` |
-| `cache_similarity_score` | `float` | `cache_checker` | Best cosine similarity score found |
-| `cache_matched_query` | `str` | `cache_checker` | Matched cache key |
-| `cache_answer` | `str` | `cache_checker` | Cached plan text on a hit |
-| `trip_context` | `dict` | `master_planner`, `resume_hitl_context` | Serialized `TripContext` |
-| `context_enrichment_status` | `str` | `master_planner` | `"completed"` · `"failed"` |
-| `planner_status` | `str` | `master_planner` | `"ready"` · `"partial_ready"` · `"missing_required_info"` |
-| `planner_task_results` | `dict` | `master_planner` | Raw string results keyed by task type value |
-| `planner_structured_results` | `dict` | `master_planner` | Typed `PlannerToolResults` (flights, hotels, etc.) |
-| `planner_dependency_graph` | `dict` | `master_planner` | Serialized `PlannerDependencyGraph` |
-| `planner_scheduler_result` | `dict` | `master_planner` | Serialized `SchedulerResult` with execution waves |
-| `planning_mode` | `str` | `master_planner` | `"full_planning"` · `"replanning"` |
-| `awaiting_user_clarification` | `bool` | `master_planner` | `True` when planner is paused for HITL |
-| `pending_trip_context` | `dict` | `master_planner` | Partial `TripContext` saved at HITL pause |
-| `pending_missing_fields` | `List[str]` | `master_planner` | Required fields still absent at HITL pause |
-| `pending_hitl_question` | `str` | `master_planner` | Clarification question shown to the user |
-| `pending_planner_task_results` | `dict` | `master_planner` | Task results collected before the HITL pause |
-
-### State Flow Between Key Nodes
-
-```text
-extract_metadata
-    writes → current_city, total_budget, tool_call_count, force_replan
-
-validator
-    reads  → messages
-    writes → validation_status
-
-master_orchestrator
-    reads  → messages, validation_status
-    writes → orchestrator_route, orchestrator_reason
-
-cache_checker
-    reads  → messages, trip_context, force_replan
-    writes → cache_status, cache_similarity_score, cache_matched_query, cache_answer
-
-master_planner
-    reads  → messages, cache_status, force_replan, preferred_airline,
-             food_preference, num_travelers, travel_preferences,
-             awaiting_user_clarification, pending_trip_context,
-             pending_planner_task_results, pending_missing_fields
-    writes → trip_context, context_enrichment_status, planner_status,
-             planner_task_results, planner_structured_results,
-             planner_dependency_graph, planner_scheduler_result,
-             planning_mode, awaiting_user_clarification,
-             pending_trip_context, pending_missing_fields,
-             pending_hitl_question, pending_planner_task_results
-
-resume_hitl_context
-    reads  → pending_trip_context, pending_planner_task_results,
-             pending_missing_fields, messages
-    writes → trip_context, planner_task_results, awaiting_user_clarification
-```
-
----
-
-## 4. Wave Scheduling Breakdown
-
-*The `planner_scheduler.py` module converts the dependency DAG into ordered execution waves. The planner iterates until all tasks are either complete or blocked by persistent missing inputs.*
+*`planner_scheduler.py` converts the dependency DAG into ordered execution waves. The planner iterates until all tasks are either complete or blocked by persistent missing inputs.*
 
 ### Wave Classification
 
 | Wave | Trigger | Task Count | Executed By |
 |---|---|---|---|
-| **Wave 1** | All required TripContext fields present | 15 (9 SQLite + 6 web) | `asyncio.gather` across 4 sub-agents |
+| **Wave 1** | All required TripContext fields present | 15+ (9 SQLite + 6 PlannerTaskType web + 3 free-form web research) | `WebSupervisor.dispatch()` → `asyncio.gather` across 7 sub-agents |
 | **Wave 2** | `FETCH_FLIGHTS`, `FETCH_HOTELS`, `FETCH_ACTIVITIES` all complete | 1 (`CALCULATE_TRIP_COST`) | `asyncio.gather` (single task) |
 
 ### Wave 1 Execution Layout
 
-All Wave 1 tasks are dispatched simultaneously. Each sub-agent runs its assigned tasks independently and returns a `PlannerToolResults` object; all four results are merged after `asyncio.gather` resolves.
+All Wave 1 tasks are dispatched simultaneously. Each sub-agent runs its assigned tasks independently and returns a `PlannerToolResults` object. `WebSupervisor` merges all seven after `asyncio.gather` resolves, then passes the merged dict through the full Zero-Trust inbound pipeline (URL check → Presidio PII redaction → regex inspection).
 
 ```text
-asyncio.gather(
-    TransportAgent.run()   →  FETCH_FLIGHTS, CHECK_VISA
-    StayAgent.run()        →  FETCH_HOTELS
-    ExperienceAgent.run()  →  FETCH_ACTIVITIES, FETCH_RESTAURANTS,
-                               LOCAL_TRANSPORT_GUIDE, FETCH_WEATHER,
-                               EVENTS_FINDER, AIRPORT_TRANSFER_INFO
-    WebAgent.run()         →  GEOCODE_LOCATION, FETCH_LIVE_EVENTS,
-                               LIVE_CURRENCY_CONVERSION, FETCH_BREWERIES,
-                               FETCH_COUNTRY_METADATA, WEB_RESEARCH_TAVILY
-)
+WebSupervisor.dispatch()
+  Step 1: CyberAgent.check_prompt_injection(TripContext fields)  ← Lakera v2 / regex fallback
+  Step 2: CyberAgent.sanitize_outbound(TripContext fields)       ← regex strip, always runs
+  Step 3: asyncio.gather(
+      TransportAgent.run()       →  fetch_flights, check_visa
+      StayAgent.run()            →  fetch_hotels
+      ExperienceAgent.run()      →  fetch_activities, fetch_restaurants,
+                                     local_transport_guide, fetch_weather,
+                                     events_finder, airport_transfer_info
+      TransportWebAgent.run()    →  geocode_location, transport_live_research
+      StayWebAgent.run()         →  stay_live_research
+      ExperienceWebAgent.run()   →  fetch_live_events, fetch_breweries,
+                                     experience_web_research
+      ManagerWebAgent.run()      →  live_currency_conversion, fetch_country_metadata,
+                                     web_research_tavily
+  )
+  Step 4: CyberAgent.check_urls(merged URLs)                     ← Google Safe Browsing / fail-open
+  Step 5: CyberAgent.redact_sensitive_data(each result)          ← Presidio local PII redaction
+  Step 6: CyberAgent.inspect_inbound(merged_raw_results)         ← regex malicious-content scan
+  → merged Dict[str, str]
 ```
 
-Each `WebAgent` task enforces a 4-second hard timeout. On timeout or API failure, the wave continues uninterrupted — the failed tool returns a structured fallback payload, and the merge step treats it as a partial result.
+Each web agent task enforces a 4-second hard timeout. On timeout or API failure the wave continues uninterrupted — the failed tool returns a structured fallback payload, and `WebSupervisor` treats it as a partial result. The `CyberAgent` circuit breaker opens after 3 consecutive failures per service and remains open for a 120-second cooldown.
 
 ### Wave 2 Execution Layout
 
@@ -299,17 +285,21 @@ asyncio.gather(
 | `EVENTS_FINDER` | 1 | `ExperienceAgent` | SQLite `events` table |
 | `LOCAL_TRANSPORT_GUIDE` | 1 | `ExperienceAgent` | SQLite `transport` table |
 | `AIRPORT_TRANSFER_INFO` | 1 | `ExperienceAgent` | SQLite `transport` table |
-| `GEOCODE_LOCATION` | 1 | `WebAgent` | OpenCage API |
-| `FETCH_LIVE_EVENTS` | 1 | `WebAgent` | Ticketmaster API |
-| `LIVE_CURRENCY_CONVERSION` | 1 | `WebAgent` | ExchangeRate-API |
-| `FETCH_BREWERIES` | 1 | `WebAgent` | Open Brewery DB |
-| `FETCH_COUNTRY_METADATA` | 1 | `WebAgent` | RestCountries API |
-| `WEB_RESEARCH_TAVILY` | 1 | `WebAgent` | Tavily AI Search |
+| `GEOCODE_LOCATION` | 1 | `TransportWebAgent` | OpenCage API |
+| `FETCH_LIVE_EVENTS` | 1 | `ExperienceWebAgent` | Ticketmaster API |
+| `LIVE_CURRENCY_CONVERSION` | 1 | `ManagerWebAgent` | ExchangeRate-API |
+| `FETCH_BREWERIES` | 1 | `ExperienceWebAgent` | Open Brewery DB |
+| `FETCH_COUNTRY_METADATA` | 1 | `ManagerWebAgent` | RestCountries API |
+| `WEB_RESEARCH_TAVILY` | 1 | `ManagerWebAgent` | Tavily AI Search |
 | `CALCULATE_TRIP_COST` | 2 | calc tools | Derived from Wave 1 results |
+
+> **Note**: Three additional result keys are produced by the hierarchical web tier but are **not** `PlannerTaskType` enum members: `transport_live_research` (TransportWebAgent), `stay_live_research` (StayWebAgent), and `experience_web_research` (ExperienceWebAgent). These are free-form Tavily research keys injected directly into `planner_task_results`. `diff_changed_tasks` returns them as plain strings alongside enum `.value` strings.
+
+> **Invariant**: every `PlannerTaskType` member must have a corresponding entry in `_TASK_REQUIREMENTS` in `planner_dependencies.py`. The dependency checker iterates all enum members at runtime; a missing entry raises `KeyError`. The dict uses `.get(task_type, ())` as a defensive fallback.
 
 ---
 
-## 5. Conditional Edge Topology
+## 4. Conditional Edge Topology
 
 *All routing decisions are implemented as pure functions in `src/graph/router.py`. Each function receives the current `AgentState` snapshot and returns the string name of the next node.*
 
@@ -317,9 +307,9 @@ asyncio.gather(
 
 | Condition | Next Node |
 |---|---|
+| `validation_status != "approved"` | `END` (rejection message already in `messages`) |
 | `validation_status == "approved"` AND `awaiting_user_clarification == True` | `resume_hitl_context` |
-| `validation_status == "approved"` | `master_orchestrator` |
-| `validation_status` starts with `"BLOCKED"` | `END` |
+| `validation_status == "approved"` (default) | `master_orchestrator` |
 
 ### Edge: `master_orchestrator` → next node
 
@@ -327,23 +317,48 @@ asyncio.gather(
 |---|---|
 | `orchestrator_route == "preferences_memory"` | `preferences_memory` |
 | `orchestrator_route == "research"` | `researcher` |
-| `orchestrator_route == "cache_check"` | `cache_check` |
+| `orchestrator_route == "cache_check"` (default / unknown) | `cache_check` |
 
 ### Edge: `cache_check` → next node
 
 | Condition | Next Node |
 |---|---|
-| `cache_status == "hit"` AND `force_replan == False` | `END` |
-| `cache_status == "miss"` OR `force_replan == True` | `master_planner` |
+| `cache_status == "hit"` | `END` (cached answer already in `messages`) |
+| `cache_status == "miss"` (default) | `master_planner` |
+
+> `force_replan=True` is honored inside the `cache_checker` itself — it returns `cache_status = "miss"` even when a high-similarity entry is found. The router only ever reads `cache_status`.
 
 ### Edge: `master_planner` → next node
 
 | Condition | Next Node |
 |---|---|
-| `planner_status == "missing_required_info"` | `END` (HITL question emitted into `messages`) |
-| `planner_status == "ready"` or `"partial_ready"` | `cache_store` |
+| `planner_status == "missing_required_info"` | `END` (HITL question emitted into `messages`; `awaiting_user_clarification` set to `True`) |
+| `planner_status == "ready"` or `"partial_ready"` | `critic` |
+| `planner_status == "timeout"` | `END` (timeout message emitted into `messages`) |
+
+### Edge: `critic` → next node
+
+| Condition | Next Node |
+|---|---|
+| `critique_result.passed == False` AND `critic_attempts < MAX_CRITIC_ATTEMPTS` | `master_planner` (auto-replan with critic suggestions injected into prompt) |
+| `critique_result.passed == True` OR `critic_attempts >= MAX_CRITIC_ATTEMPTS` | `hitl_approval` |
+
+### Edge: `hitl_approval` → next node
+
+| Condition | Next Node |
+|---|---|
+| `hitl_decision == "approved"` | `cache_store` |
+| `hitl_decision == "edit"` AND `hitl_edit_attempts <= MAX_HITL_EDIT_ATTEMPTS` | `master_planner` |
+| `hitl_decision == "edit"` AND `hitl_edit_attempts > MAX_HITL_EDIT_ATTEMPTS` | `END` (cap message already emitted by `hitl_approval_node`) |
+| `hitl_decision == "cancelled"` | `END` |
 
 ### Edge: `cache_store` → next node
+
+| Condition | Next Node |
+|---|---|
+| Always | `summarizer` |
+
+### Edge: `preferences_memory` → next node
 
 | Condition | Next Node |
 |---|---|
@@ -353,43 +368,141 @@ asyncio.gather(
 
 | Condition | Next Node |
 |---|---|
-| `is_admin == True` | `reviewer` |
-| Default | `END` |
+| Always | `END` |
+
+> Admin-mode reviewer is called from `main.py` before returning to the REPL — it is not a graph edge.
 
 ---
 
-## 6. Task Registry — Dual-Format Normalization
+## 5. State Flow Between Key Nodes
 
-*`src/agents/task_registry.py` maps every `PlannerTaskType` enum member to its owning sub-agent. It accepts both serialized string task names (from JSON checkpoint state) and native enum instances (from the in-memory planner DAG), enabling seamless interoperability between components.*
+*Explicit read/write mapping for all 12 nodes. A node should only write fields listed here.*
 
 ```text
-Accepted input forms:
-  "fetch_flights"                    ← raw string from JSON/checkpoint deserialization
-  PlannerTaskType.FETCH_FLIGHTS      ← native enum from planner dependency graph
+extract_metadata
+    reads  → messages (last message for city/budget/modification detection)
+    writes → current_city, total_budget, tool_call_count, force_replan,
+             critic_attempts, hitl_decision, hitl_feedback, hitl_edit_attempts,
+             orchestrator_route, orchestrator_reason,
+             cache_status, cache_answer, cache_matched_query, cache_similarity_score,
+             planner_status, planner_task_results, planner_structured_results,
+             planner_dependency_graph, planner_scheduler_result,
+             context_enrichment_status, used_web_source, final_plan
 
-Resolved output:
-  Sub-agent class reference + bound tool callable
+validator
+    reads  → messages (last message content), awaiting_user_clarification
+    writes → validation_status, messages (rejection AIMessage on block)
+
+resume_hitl_context
+    reads  → pending_trip_context, messages (for deterministic re-extraction)
+    writes → trip_context, awaiting_user_clarification (→ False)
+
+master_orchestrator
+    reads  → messages, validation_status, conversation_summary
+    writes → orchestrator_route, orchestrator_reason
+
+preferences_memory
+    reads  → messages
+    writes → preferred_airline, food_preference, num_travelers, travel_preferences,
+             messages (preference update AIMessage)
+
+researcher
+    reads  → messages, conversation_summary
+    writes → messages (answer AIMessage)
+
+cache_check
+    reads  → messages, trip_context, force_replan
+    writes → cache_status, cache_similarity_score, cache_matched_query, cache_answer,
+             planning_query, messages (cached answer AIMessage on hit)
+
+master_planner
+    reads  → messages, cache_status, force_replan,
+             preferred_airline, food_preference, num_travelers, travel_preferences,
+             awaiting_user_clarification, pending_trip_context,
+             pending_planner_task_results, pending_missing_fields,
+             trip_context, critic_attempts, critique_result, hitl_feedback
+    writes → trip_context, context_enrichment_status, planner_status,
+             planner_task_results, planner_structured_results,
+             planner_dependency_graph, planner_scheduler_result,
+             planning_mode, used_web_source, final_plan,
+             awaiting_user_clarification, pending_trip_context,
+             pending_missing_fields, pending_hitl_question,
+             pending_planner_task_results,
+             messages (plan AIMessage or HITL question AIMessage)
+
+critic
+    reads  → messages (plan text in last AIMessage), trip_context,
+             planner_structured_results, planner_task_results
+    writes → critic_attempts, critique_result
+
+hitl_approval
+    reads  → critique_result, hitl_edit_attempts
+    writes → hitl_decision, hitl_feedback, force_replan, hitl_edit_attempts,
+             messages (cap-exceeded AIMessage when edit limit hit)
+
+cache_store
+    reads  → messages, trip_context, planner_task_results, used_web_source
+    writes → (no AgentState fields — side-effect only: persists to semantic_cache.db)
+
+summarizer
+    reads  → messages, is_admin
+    writes → conversation_summary
 ```
 
-This dual-format normalization was introduced to fix a `KeyError` crash that occurred when replanned tasks arrived as raw strings after HITL resume deserialized the pending state from the SqliteSaver checkpoint.
+---
 
-| `PlannerTaskType` | Resolved Sub-Agent |
+## 6. CyberAgent Security Model
+
+*The `CyberAgent` operates at the network boundary between the planner and all external APIs. It has three independent subsystems.*
+
+### Outbound Sanitization
+
+Before `WebSupervisor` dispatches any sub-agent, it calls `CyberAgent.sanitize_outbound()` on the four free-text `TripContext` fields that flow into external tool calls:
+
+| Field | Risk |
 |---|---|
-| `FETCH_FLIGHTS` | `TransportAgent` |
-| `CHECK_VISA` | `TransportAgent` |
-| `FETCH_HOTELS` | `StayAgent` |
-| `FETCH_ACTIVITIES` | `ExperienceAgent` |
-| `FETCH_RESTAURANTS` | `ExperienceAgent` |
-| `LOCAL_TRANSPORT_GUIDE` | `ExperienceAgent` |
-| `FETCH_WEATHER` | `ExperienceAgent` |
-| `EVENTS_FINDER` | `ExperienceAgent` |
-| `AIRPORT_TRANSFER_INFO` | `ExperienceAgent` |
-| `CALCULATE_TRIP_COST` | calc tools (via `ExperienceAgent`) |
-| `GEOCODE_LOCATION` | `WebAgent` |
-| `FETCH_LIVE_EVENTS` | `WebAgent` |
-| `LIVE_CURRENCY_CONVERSION` | `WebAgent` |
-| `FETCH_BREWERIES` | `WebAgent` |
-| `FETCH_COUNTRY_METADATA` | `WebAgent` |
-| `WEB_RESEARCH_TAVILY` | `WebAgent` |
+| `destination_city` | Prompt injection via crafted city names |
+| `destination_country` | Same |
+| `origin_country` | Same |
+| `origin_airport` | Same |
 
-> **Invariant**: every `PlannerTaskType` member must have a corresponding entry in `_TASK_REQUIREMENTS` in `planner_dependencies.py`. The dependency checker iterates all enum members at runtime; a missing entry raises `KeyError`. The dict uses `.get(task_type, ())` as a defensive fallback for forward compatibility.
+Matches are redacted (replaced with a space) and logged at WARNING. The sanitized `TripContext` is passed to sub-agents; the original is never modified.
+
+### Inbound Inspection
+
+After all sub-agents return, `WebSupervisor` calls `CyberAgent.inspect_inbound()` on the merged `raw_results` dict before the planner trusts the data. Patterns detected:
+
+| Category | Examples |
+|---|---|
+| Script injection | `<script>`, `<iframe>`, `javascript:`, `onerror=` |
+| Code execution | `eval()`, `exec()`, `os.system()`, `subprocess.` |
+| Shell commands | `; rm -rf`, `curl http`, `wget http` |
+| SQL injection | `UNION SELECT`, `DROP TABLE` |
+| Server-side | `<?php` |
+
+Matches are redacted in-place as `[redacted]` and logged at WARNING.
+
+### Circuit Breaker
+
+Per-service failure tracking with automatic cooldown:
+
+| Parameter | Value |
+|---|---|
+| Failure threshold | 3 consecutive failures → circuit opens |
+| Cooldown period | 120 seconds |
+| Recovery | First success after cooldown resets counter |
+| Effect | `is_degraded(service)` returns `True`; callers skip live calls and use static fallback data |
+
+Circuit state is module-level (shared across all `CyberAgent` instances in a process), protected by a `threading.Lock`.
+
+### Optional Async External Security APIs
+
+`CyberAgent` exposes three async methods that call external APIs when configured. All are fail-safe: missing keys or network errors fall back to a local strategy (never crash the planner).
+
+| Method | External Service | Env Key | Fallback |
+|---|---|---|---|
+| `check_prompt_injection(text)` | Lakera Guard v2 — `POST /v2/guard` with `{"messages": [{"role": "user", "content": text}]}` | `LAKERA_API_KEY` | Compiled injection regex (always available) |
+| `check_urls(urls)` | Google Safe Browsing v4 — `POST threatMatches:find` | `GOOGLE_SAFE_BROWSING_KEY` | Empty list (fail-open — never block legitimate content) |
+| `redact_sensitive_data(text)` | Microsoft Presidio (local spaCy model) — no API key | *(none — local)* | Original text unmodified when spaCy model not installed |
+
+`check_prompt_injection` and `check_urls` are called from `WebSupervisor.dispatch()` (steps 1 and 4) and from `researcher.py` around the ReAct loop. `redact_sensitive_data` is called on every merged result string before the regex inspection pass (step 5).
