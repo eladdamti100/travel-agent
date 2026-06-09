@@ -46,6 +46,8 @@ class TestCacheStore:
 
         state = _make_state(
             cache_status=CacheStatus.MISS.value,
+            # trip_context must carry destination_city or run_cache_store exits early.
+            trip_context={"destination_city": "Paris"},
             messages=[
                 HumanMessage(content="Plan a trip to Paris"),
                 AIMessage(content="Here is your complete Paris trip plan!"),
