@@ -63,6 +63,7 @@ def extract_metadata(state: AgentState) -> dict:
         "context_enrichment_status": "",
         "used_web_source": False,
         "final_plan": {},
+        "over_budget": False,
     }
 
     if not messages:
@@ -278,6 +279,7 @@ def hitl_approval_node(state: AgentState) -> dict:
     user_response = interrupt({
         "type": "plan_approval",
         "critique": state.get("critique_result", {}),
+        "over_budget": state.get("over_budget", False),
     })
 
     decision = user_response.get("decision", "approved") if isinstance(user_response, dict) else "approved"

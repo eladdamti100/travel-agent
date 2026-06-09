@@ -213,13 +213,21 @@ def fmt_activities(raw: str) -> List[str]:
 def fmt_restaurants(raw: str) -> List[str]:
     try:
         items = json.loads(raw)
-        if not isinstance(items, list):
+        if not isinstance(items, list) or not items:
             return []
-        return [
-            f"- Restaurant: {r.get('name', '—')} ({r.get('cuisine', '—')}), "
-            f"{r.get('price_range', '—')}, ★{r.get('rating', '—')}"
-            for r in items[:3]
-        ]
+        rows = items[:5]
+        # Header + separator + data rows as a Markdown table for aligned columns
+        header = "| Restaurant | Cuisine | Price | Rating |"
+        sep    = "|---|---|---|---|"
+        lines: List[str] = [header, sep]
+        for r in rows:
+            name    = r.get("name", "—")
+            cuisine = r.get("cuisine", "—")
+            price   = r.get("price_range", "—")
+            rating  = r.get("rating", "—")
+            stars   = f"★ {rating}" if rating and rating != "—" else "—"
+            lines.append(f"| {name} | {cuisine} | {price} | {stars} |")
+        return lines
     except (json.JSONDecodeError, TypeError):
         return []
 
@@ -319,19 +327,22 @@ def build_web_section(web_results: Dict[str, str]) -> str:
     parts: List[str] = ["# Section 2 — Live Web Data\n"]
     has_any = False
 
-    # Live flights from SerpAPI Google Flights
+    # Live flights from SerpAPI Google Flights — sorted cheapest first
     live_flights_raw = web_results.get("fetch_live_flights", "")
     if live_flights_raw:
         try:
             live_flights = json.loads(live_flights_raw)
             if isinstance(live_flights, list) and live_flights:
-                parts.append("**Live Flights (Google Flights)**")
-                for f in live_flights[:5]:
+                live_flights_sorted = sorted(
+                    live_flights, key=lambda f: f.get("price", 999_999)
+                )
+                parts.append("**Live Flights**  *(Source: Google Flights — sorted cheapest first)*")
+                for f in live_flights_sorted[:5]:
                     price    = f.get("price", "?")
                     airline  = f.get("airline", "?")
                     duration = f.get("duration", "")
                     dur_str  = f"  |  {duration}" if duration else ""
-                    parts.append(f"- {airline}: ${price}{dur_str}")
+                    parts.append(f"- {airline}: **${price}**{dur_str}")
                 parts.append("")
                 has_any = True
         except (json.JSONDecodeError, TypeError):
@@ -511,8 +522,34 @@ def build_web_section(web_results: Dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def parse_tavily_bullets(raw: str, max_bullets: int = 4) -> List[str]:
-    """Strips noise and returns clean bullet-point strings from a Tavily result."""
+_TAVILY_CATEGORIES: Dict[str, tuple] = {
+    "Culture & Customs": (
+        "culture", "custom", "tradition", "etiquette", "religion",
+        "festival", "dress code", "tip", "tipping",
+    ),
+    "Transport Tips": (
+        "metro", "subway", "train", "bus", "taxi", "uber", "transport",
+        "transit", "navigate", "getting around", "airport", "rail pass",
+    ),
+    "Safety & Travel Alerts": (
+        "safety", "safe", "crime", "scam", "alert", "warning", "danger",
+        "pickpocket", "emergency", "police", "health", "medical",
+    ),
+    "Local Highlights": (
+        "must-see", "landmark", "attraction", "visit", "museum", "park",
+        "food", "restaurant", "cuisine", "neighbourhood", "neighborhood",
+        "market", "shopping", "view", "beach",
+    ),
+}
+
+
+def parse_tavily_bullets(raw: str, max_bullets: int = 6) -> List[str]:
+    """
+    Parses Tavily web research into structured categorical bullets.
+
+    Categories: Culture & Customs, Transport Tips, Safety & Travel Alerts,
+    Local Highlights. Uncategorised sentences go under an 'Other' bucket.
+    """
     _today = datetime.date.today()
     _past_year_re = re.compile(r"\b(20\d{2})\b")
 
@@ -537,14 +574,42 @@ def parse_tavily_bullets(raw: str, max_bullets: int = 4) -> List[str]:
                 if len(s) > 30 and not is_noisy_line(s) and not _sentence_is_stale(s):
                     sentences.append(s)
 
+    # Deduplicate
     seen: set = set()
-    bullets: List[str] = []
+    unique: List[str] = []
     for s in sentences:
         key = s[:60].lower()
         if key not in seen:
             seen.add(key)
-            bullets.append(f"- {s}")
-        if len(bullets) >= max_bullets:
+            unique.append(s)
+
+    # Categorize
+    buckets: Dict[str, List[str]] = {cat: [] for cat in _TAVILY_CATEGORIES}
+    buckets["Other"] = []
+    for s in unique:
+        low = s.lower()
+        assigned = False
+        for cat, keywords in _TAVILY_CATEGORIES.items():
+            if any(kw in low for kw in keywords):
+                buckets[cat].append(s)
+                assigned = True
+                break
+        if not assigned:
+            buckets["Other"].append(s)
+
+    output: List[str] = []
+    total = 0
+    for cat in list(_TAVILY_CATEGORIES.keys()) + ["Other"]:
+        items = buckets.get(cat, [])
+        if not items:
+            continue
+        output.append(f"*{cat}*")
+        for s in items[:2]:
+            output.append(f"  - {s}")
+            total += 1
+            if total >= max_bullets:
+                break
+        if total >= max_bullets:
             break
 
-    return bullets
+    return output

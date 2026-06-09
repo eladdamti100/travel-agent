@@ -19,6 +19,7 @@ Security flow (Zero-Trust boundary):
 
 import asyncio
 import re
+import threading
 from typing import Dict, Optional, Set
 
 from src.agents.cyber_agent import CyberAgent
@@ -27,6 +28,26 @@ from src.models.trip_context import TripContext
 from src.utils.logger import get_logger
 
 logger = get_logger("web_supervisor")
+
+# ── Thread-safe active-dispatch tracker (read by main.py status monitor) ──────
+_dispatch_lock = threading.Lock()
+_dispatch_active: set = set()
+
+
+def get_active_dispatch_agents() -> list:
+    """Returns a sorted snapshot of agent names currently running in dispatch()."""
+    with _dispatch_lock:
+        return sorted(_dispatch_active)
+
+
+def _mark_agent_started(name: str) -> None:
+    with _dispatch_lock:
+        _dispatch_active.add(name)
+
+
+def _mark_agent_done(name: str) -> None:
+    with _dispatch_lock:
+        _dispatch_active.discard(name)
 
 # TripContext free-text fields vetted by the Cyber Agent before any sub-agent runs.
 _OUTBOUND_CONTEXT_FIELDS = (
@@ -123,8 +144,16 @@ class WebSupervisor:
         vetted_context = self._sanitize_context(context)
 
         # ── Step 3: Parallel sub-agent dispatch ───────────────────────────────
+        async def _run_tracked(agent):
+            name = getattr(agent, "agent_name", agent.__class__.__name__)
+            _mark_agent_started(name)
+            try:
+                return await agent.run(context=vetted_context)
+            finally:
+                _mark_agent_done(name)
+
         results = await asyncio.gather(
-            *[agent.run(context=vetted_context) for agent in agents],
+            *[_run_tracked(agent) for agent in agents],
             return_exceptions=True,
         )
 

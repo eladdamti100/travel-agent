@@ -5,6 +5,7 @@ AI Travel Planner interactive terminal entrypoint.
 import concurrent.futures
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -102,9 +103,12 @@ def is_rate_limit_error(error: str) -> bool:
     )
 
 
-def _prompt_plan_approval(critique: dict) -> dict:
+def _prompt_plan_approval(critique: dict, over_budget: bool = False) -> dict:
     """
     Shows the critic summary and prompts the user to Approve, Edit, or Cancel.
+
+    When over_budget=True, the [A] Approve option is hidden — the user must
+    either edit their parameters or cancel.
 
     Returns {"decision": "approved"|"edit"|"cancelled", "feedback": str}.
     """
@@ -114,34 +118,57 @@ def _prompt_plan_approval(critique: dict) -> dict:
     suggestions = critique.get("suggestions", [])
 
     console.print()
+
+    if over_budget:
+        title = "[red bold]Budget Exceeded — Action Required[/red bold]"
+        header = (
+            "[bold white]The trip cost exceeds your budget.[/bold white]\n\n"
+            "[yellow]Approve is not available — please edit your parameters or cancel.[/yellow]"
+        )
+    else:
+        title = "[cyan bold]Human Approval Required — Critic Review[/cyan bold]"
+        header = (
+            "[bold white]The graph is paused — waiting for your decision.[/bold white]\n\n"
+            f"[bold]Score:[/bold] {score}/10\n"
+            f"[bold]Summary:[/bold] {reason}"
+        )
+
     console.print(Panel(
-        "[bold white]The graph is paused — waiting for your decision.[/bold white]\n\n"
-        f"[bold]Score:[/bold] {score}/10\n"
-        f"[bold]Summary:[/bold] {reason}\n"
+        header
         + (
-            "\n[bold]Issues:[/bold]\n" + "\n".join(f"  • {i}" for i in issues)
-            if issues else ""
+            "\n\n[bold]Issues:[/bold]\n" + "\n".join(f"  • {i}" for i in issues)
+            if issues and not over_budget else ""
         )
         + (
             "\n[bold]Suggestions:[/bold]\n" + "\n".join(f"  → {s}" for s in suggestions)
-            if suggestions else ""
+            if suggestions and not over_budget else ""
         ),
-        title="[cyan bold]Human Approval Required — Critic Review[/cyan bold]",
-        border_style="cyan",
+        title=title,
+        border_style="red" if over_budget else "cyan",
     ))
     console.print()
-    console.print(
-        "  [green bold][A] Approve[/green bold] — accept this plan and save it\n"
-        "  [yellow bold][E] Edit[/yellow bold]   — describe what to change, the agent will replan\n"
-        "  [red bold][C] Cancel[/red bold] — discard this plan and start over\n"
-    )
+
+    if over_budget:
+        console.print(
+            "  [yellow bold][E] Edit[/yellow bold]   — increase budget, shorten trip, or change destination\n"
+            "  [red bold][C] Cancel[/red bold] — discard this search and start over\n"
+        )
+    else:
+        console.print(
+            "  [green bold][A] Approve[/green bold] — accept this plan and save it\n"
+            "  [yellow bold][E] Edit[/yellow bold]   — describe what to change, the agent will replan\n"
+            "  [red bold][C] Cancel[/red bold] — discard this plan and start over\n"
+        )
+
+    valid_choices = ("e", "edit", "c", "cancel", "cancelled")
+    if not over_budget:
+        valid_choices = ("a", "approve", "approved") + valid_choices
+    prompt_label = "[bold cyan]Your choice (E / C)[/bold cyan]" if over_budget else "[bold cyan]Your choice (A / E / C)[/bold cyan]"
 
     while True:
-        choice = Prompt.ask(
-            "[bold cyan]Your choice (A / E / C)[/bold cyan]",
-        ).strip().lower()
+        choice = Prompt.ask(prompt_label).strip().lower()
 
-        if choice in ("a", "approve", "approved"):
+        if not over_budget and choice in ("a", "approve", "approved"):
             return {"decision": "approved", "feedback": ""}
 
         if choice in ("c", "cancel", "cancelled"):
@@ -153,7 +180,8 @@ def _prompt_plan_approval(critique: dict) -> dict:
             ).strip()
             return {"decision": "edit", "feedback": feedback}
 
-        console.print("[dim]Please enter A, E, or C.[/dim]")
+        hint = "E or C" if over_budget else "A, E, or C"
+        console.print(f"[dim]Please enter {hint}.[/dim]")
 
 
 def _run_reviewer_async(plan_text: str, *, is_admin: bool) -> None:
@@ -272,7 +300,35 @@ def run() -> None:
             """Stream one graph pass, return (final_plan_text, interrupt_payload)."""
             nonlocal final_plan_text, pending_interrupt, _critic_replan_in_progress
 
+            from src.agents.web_supervisor import get_active_dispatch_agents
+
+            _stop_monitor = threading.Event()
+
+            def _agent_monitor():
+                _AGENT_LABELS = {
+                    "transport_agent":     "Transport DB",
+                    "stay_agent":          "Stay DB",
+                    "experience_agent":    "Experience DB",
+                    "transport_web_agent": "Transport Web",
+                    "stay_web_agent":      "Stay Web",
+                    "experience_web_agent":"Experience Web",
+                    "manager_web_agent":   "Manager Web",
+                }
+                while not _stop_monitor.wait(0.3):
+                    active = get_active_dispatch_agents()
+                    if active:
+                        labels = [_AGENT_LABELS.get(a, a) for a in active]
+                        try:
+                            status.update(
+                                f"[tool.call]Dispatching agents: {' · '.join(labels)}[/tool.call]"
+                            )
+                        except Exception:
+                            pass
+
+            monitor_thread = threading.Thread(target=_agent_monitor, daemon=True)
+
             with console.status("[tool.call]Starting...[/tool.call]", spinner="dots") as status:
+                monitor_thread.start()
                 for event in graph.stream(
                     input_payload,
                     config,
@@ -366,6 +422,8 @@ def run() -> None:
                     node_timings[node_name] = node_timings.get(node_name, 0.0) + (
                         time.perf_counter() - node_start_time
                     )
+                _stop_monitor.set()
+                monitor_thread.join(timeout=1)
 
         try:
             _stream_graph({"messages": [("user", user_input)], "is_admin": is_admin})
@@ -373,9 +431,10 @@ def run() -> None:
             # Handle plan-approval interrupt produced by hitl_approval_node.
             while pending_interrupt is not None:
                 critique = pending_interrupt.get("critique", {})
+                over_budget = pending_interrupt.get("over_budget", False)
                 pending_interrupt = None
 
-                user_response = _prompt_plan_approval(critique)
+                user_response = _prompt_plan_approval(critique, over_budget=over_budget)
 
                 if user_response["decision"] == "cancelled":
                     console.print("\n[dim]Trip planning cancelled. Safe travels![/dim]\n")

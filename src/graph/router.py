@@ -104,9 +104,15 @@ def route_after_critic(state: AgentState) -> str:
     route back to master_planner so the graph auto-replans with the
     critic's suggestions injected into the prompt.
 
+    Over-budget trips skip replanning entirely — the user must change
+    their budget or parameters via HITL; replanning cannot fix it.
+
     Once the plan passes OR the attempt cap is reached, hand control
     to the human via hitl_approval so they can approve, edit, or cancel.
     """
+    if state.get("over_budget"):
+        return "hitl_approval"
+
     critique = state.get("critique_result") or {}
     attempts = state.get("critic_attempts") or 0
 

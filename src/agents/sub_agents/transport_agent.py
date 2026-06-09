@@ -76,11 +76,17 @@ class TransportAgent(BaseSubAgent):
         )
 
         # ── Try live SerpAPI prices first ─────────────────────────────────────
-        live = await asyncio.to_thread(
-            _fetch_live_flights_sync,
-            context.origin_airport.upper(),
-            dest_iata,
-        )
+        try:
+            live = await asyncio.to_thread(
+                _fetch_live_flights_sync,
+                context.origin_airport.upper(),
+                dest_iata,
+            )
+        except Exception as exc:
+            logger.warning(
+                "TransportAgent: SerpAPI threw unexpectedly. error=%s falling_back_to_db", exc
+            )
+            live = []
 
         if live:
             # Store live flights under a separate key → routed to Section 2 (Web Data)

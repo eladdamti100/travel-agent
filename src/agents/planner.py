@@ -299,6 +299,30 @@ async def _run_master_planner_async(state: AgentState) -> dict:
     updates["planner_scheduler_result"] = scheduler_result.model_dump()
     updates["planner_status"] = final_dependency_result.status.value
 
+    # ── Budget gate: skip plan generation if cheapest options exceed budget ────
+    _over_budget = _check_budget_exceeded(merged_context, cost_result)
+    updates["over_budget"] = _over_budget
+    if _over_budget:
+        _budget_msg = _build_over_budget_message(merged_context, cost_result)
+        logger.info(
+            "Master planner: over-budget detected. budget=%.2f",
+            merged_context.total_budget or 0,
+        )
+        updates["planner_status"] = PlannerStatus.READY.value
+        updates["messages"] = [AIMessage(content=_budget_msg)]
+        updates["used_web_source"] = False
+        updates["final_plan"] = {}
+        updates["tool_call_count"] = state.get("tool_call_count", 0) + len(task_results)
+        updates["awaiting_user_clarification"] = False
+        updates["pending_trip_context"] = {}
+        updates["pending_missing_fields"] = []
+        updates["pending_hitl_question"] = ""
+        updates["pending_planner_task_results"] = {}
+        updates["force_replan"] = False
+        updates["hitl_feedback"] = ""
+        updates["hitl_decision"] = ""
+        return updates
+
     final_answer, final_plan = await generate_final_plan(
         context=merged_context,
         dependency_result=final_dependency_result,
@@ -426,3 +450,66 @@ _DEFAULT_HITL_QUESTION = (
     "I can plan this trip, but I need the origin airport, origin country, "
     "destination city, trip duration, and total budget first."
 )
+
+
+def _check_budget_exceeded(context: TripContext, cost_result: Optional[str]) -> bool:
+    """Returns True when the cheapest estimated trip cost exceeds the user's budget."""
+    if not context.total_budget or not cost_result:
+        return False
+    try:
+        import json as _j
+        cost = _j.loads(cost_result)
+        total_str = (
+            cost.get("total_estimate", "")
+            or cost.get("total_estimated", "")
+            or cost.get("total", "")
+        )
+        if not total_str:
+            return False
+        total_val = float(str(total_str).lstrip("$").replace(",", ""))
+        return total_val > context.total_budget
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+def _build_over_budget_message(context: TripContext, cost_result: Optional[str]) -> str:
+    """Builds a clear over-budget message shown instead of the full plan."""
+    budget_str = (
+        f"${context.total_budget:,.0f} {context.currency or 'USD'}"
+        if context.total_budget else "your stated budget"
+    )
+    total_str = "—"
+    flight_str = ""
+    hotel_str = ""
+    if cost_result:
+        try:
+            import json as _j
+            cost = _j.loads(cost_result)
+            total_str = (
+                cost.get("total_estimate", "")
+                or cost.get("total_estimated", "")
+                or cost.get("total", "")
+                or "—"
+            )
+            flight_str = cost.get("flight", "")
+            hotel_str = cost.get("hotel", "")
+        except (ValueError, TypeError):
+            pass
+
+    breakdown_lines = ""
+    if flight_str:
+        breakdown_lines += f"\n- Flight: {flight_str}"
+    if hotel_str:
+        breakdown_lines += f"\n- Hotel: {hotel_str}"
+    if breakdown_lines:
+        breakdown_lines = f"\n\n**Cost breakdown:**{breakdown_lines}"
+
+    return (
+        f"## Budget Alert — Cheapest Options Exceed Your Budget\n\n"
+        f"The estimated minimum cost for this trip is **{total_str}**, "
+        f"which exceeds your budget of **{budget_str}**.{breakdown_lines}\n\n"
+        f"To continue, please:\n"
+        f"- **[E] Edit** — increase your budget, shorten the trip, or choose a closer destination\n"
+        f"- **[C] Cancel** — discard and start a new search\n\n"
+        f"_Note: [A] Approve is not available for over-budget trips._"
+    )

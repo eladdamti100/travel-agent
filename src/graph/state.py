@@ -108,6 +108,7 @@ class AgentState(TypedDict):
     critique_result: CritiqueResultDict
     hitl_feedback: str
     hitl_edit_attempts: int
+    over_budget: bool  # True when cheapest trip cost exceeds user's stated budget
 
     used_web_source: bool
 
