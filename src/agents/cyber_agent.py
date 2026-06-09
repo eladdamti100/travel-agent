@@ -87,6 +87,17 @@ def _get_malicious_content_patterns() -> List[Pattern]:
 # _presidio_available = True  → engines ready
 # _presidio_available = False → unavailable (spaCy model not installed)
 
+# Only redact genuine sensitive credentials. Explicitly exclude NER-backed
+# entities (PERSON, LOCATION, ORGANIZATION, DATE_TIME) so that airline names,
+# hotel names, city names, and travel dates flow through to the final plan.
+_PRESIDIO_SENSITIVE_ENTITIES = [
+    "CREDIT_CARD",
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "IBAN_CODE",
+    "CRYPTO",
+]
+
 _presidio_lock = threading.Lock()
 _presidio_analyzer: Optional[Any] = None
 _presidio_anonymizer: Optional[Any] = None
@@ -352,12 +363,15 @@ class CyberAgent:
 
     async def redact_sensitive_data(self, text: str) -> str:
         """
-        Returns *text* with PII masked (emails, phones, credit cards, names, etc.)
-        using Microsoft Presidio — fully local, no API key required.
+        Returns *text* with sensitive credentials masked using Microsoft Presidio
+        — fully local, no API key required.
 
-        Fallback: original text unmodified when Presidio is unavailable (e.g. the
-        spaCy model has not been downloaded yet).  Never crashes the planner.
+        Only redacts: CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER, IBAN_CODE, CRYPTO.
+        NER-backed entities (PERSON, LOCATION, ORGANIZATION, DATE_TIME) are
+        intentionally excluded so airline names, hotel names, city names, and
+        travel dates flow through unmodified to the final plan.
 
+        Fallback: original text unmodified when Presidio is unavailable.
         To enable: python -m spacy download en_core_web_sm
         """
         if not text:
@@ -372,6 +386,7 @@ class CyberAgent:
                 analyzer.analyze,
                 text=text[:10_000],
                 language="en",
+                entities=_PRESIDIO_SENSITIVE_ENTITIES,
             )
             if not results:
                 return text

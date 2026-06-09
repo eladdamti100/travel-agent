@@ -5,6 +5,7 @@ Extracted from planner.py to keep the orchestration module focused.
 """
 
 import asyncio
+import re
 from typing import Dict, Optional
 
 from src.models.planner import PlannerTaskType
@@ -105,9 +106,24 @@ async def calculate_cost_if_possible(
         )
         return None
 
-    if flight_price is None:
-        logger.info("Cost calculation: no flight data — using 0 as flight cost placeholder.")
-        flight_price = 0.0
+    if not flight_price:
+        # DB returned no flight price; try to extract an estimate from the Tier 2
+        # web agent's transport_live_research text (e.g. "$450" or "$1,200").
+        web_transport = task_results.get("transport_live_research", "")
+        if web_transport:
+            price_match = re.search(r'\$\s*(\d[\d,]*(?:\.\d+)?)', web_transport)
+            if price_match:
+                try:
+                    flight_price = float(price_match.group(1).replace(",", ""))
+                    logger.info(
+                        "Cost calculation: extracted flight price from web data. price=%.2f",
+                        flight_price,
+                    )
+                except ValueError:
+                    pass
+        if not flight_price:
+            logger.info("Cost calculation: no flight data — using 0 as flight cost placeholder.")
+            flight_price = 0.0
 
     logger.info(
         "Calculating trip cost. flight_price=%s hotel_price=%s duration_days=%s",
