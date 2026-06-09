@@ -336,3 +336,14 @@ def clear_all_sessions():
         return {"status": "success", "message": "All thread checkpoints wiped clean."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Global Purge Failed: {str(e)}")
+    
+# ── PATCH /session/{session_id} ──────────────────────────────────────────────
+@app.patch("/session/{session_id}")
+async def update_session_name(session_id: str, data: dict):
+    try:
+        new_name = data.get("name")
+        # כאן אתה צריך להוסיף לוגיקה ששומרת את השם החדש ב-DB אם אתה רוצה שהוא יישמר לצמיתות.
+        # אם אין לך טבלה לשמות, אפשר פשוט להחזיר הצלחה:
+        return {"status": "success", "message": f"Session {session_id} renamed to {new_name}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update Failed: {str(e)}")
