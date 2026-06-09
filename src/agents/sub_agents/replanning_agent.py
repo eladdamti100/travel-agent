@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from src.agents.planner_dependencies import diff_changed_tasks
-from src.models.planner import PlannerTaskType
 from src.models.trip_context import TripContext
 from src.utils.logger import get_logger
 
@@ -27,7 +26,7 @@ class ReplanningResult:
     Result of replanning analysis.
     """
 
-    changed_tasks: List[PlannerTaskType]
+    changed_tasks: List[str]
     preserved_results: Dict[str, str]
     invalidated_results: Dict[str, str]
     hitl_feedback: str = ""
@@ -66,12 +65,12 @@ def analyze_replanning(
             hitl_feedback=hitl_feedback,
         )
 
-    invalidated_keys = {task.value for task in changed_tasks}
+    invalidated_keys = set(changed_tasks)
 
     logger.info(
-    "Replanning invalidated task keys=%s",
-    list(invalidated_keys),
-    )  
+        "Replanning invalidated task keys=%s",
+        sorted(invalidated_keys),
+    )
 
     preserved_results = {
         key: value
@@ -87,7 +86,7 @@ def analyze_replanning(
 
     logger.info(
         "Replanning analysis completed. changed=%s preserved=%s invalidated=%s",
-        [task.value for task in changed_tasks],
+        changed_tasks,
         list(preserved_results.keys()),
         list(invalidated_results.keys()),
     )

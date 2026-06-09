@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from pydantic import field_validator, model_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     ticketmaster_api_key: Optional[str] = None
     exchangerate_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
+
+    lakera_api_key: Optional[str] = None
+    google_safe_browsing_key: Optional[str] = None
 
     # ── Observability (LangSmith) ─────────────────────────────────────────────
     # Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable tracing.

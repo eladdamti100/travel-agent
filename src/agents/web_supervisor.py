@@ -1,17 +1,24 @@
 """
-Web Supervisor — router between the Master Planner and the four web/data
-sub-agents (TransportAgent, StayAgent, ExperienceAgent, WebAgent).
+Web Supervisor — router between the Master Planner and the sub-agent teams.
 
-Replaces the inline dispatch that used to live directly inside
-run_sub_agents_async (planner.py): selects the sub-agents capable of producing
-the requested tasks via the task registry, has the Cyber Agent vet traffic at
-the network boundary (sanitize outbound context fields, inspect inbound
-results, track per-service health), runs the selected agents concurrently, and
-merges their independent raw_results into a single dict — exactly the shape
-the planner already expects.
+Security flow (Zero-Trust boundary):
+
+  OUTBOUND  →  CyberAgent.check_prompt_injection (Lakera / regex fallback)
+                   ↓ [block if flagged]
+               CyberAgent.sanitize_outbound (regex strip — always runs)
+                   ↓
+  DISPATCH  →  All selected sub-agents in parallel (asyncio.gather)
+                   ↓
+  INBOUND   →  Merge raw_results
+               CyberAgent.check_urls (Google Safe Browsing) → replace malicious
+               CyberAgent.redact_sensitive_data (Presidio local PII redaction)
+               CyberAgent.inspect_inbound (regex malicious-content scan)
+                   ↓
+              Return Dict[str, str] to Master Planner
 """
 
 import asyncio
+import re
 from typing import Dict, Optional, Set
 
 from src.agents.cyber_agent import CyberAgent
@@ -21,8 +28,7 @@ from src.utils.logger import get_logger
 
 logger = get_logger("web_supervisor")
 
-# TripContext fields that flow as free text into outbound web/tool calls —
-# vetted by the Cyber Agent before any sub-agent runs.
+# TripContext free-text fields vetted by the Cyber Agent before any sub-agent runs.
 _OUTBOUND_CONTEXT_FIELDS = (
     "destination_city",
     "destination_country",
@@ -30,13 +36,16 @@ _OUTBOUND_CONTEXT_FIELDS = (
     "origin_airport",
 )
 
+# Minimal URL regex: http(s):// followed by ≥10 non-whitespace chars.
+_URL_RE = re.compile(r"https?://[^\s\"'<>]{10,}")
+
 
 class WebSupervisor:
-    """Routes Master Planner tasks to the four web/data sub-agents in real time."""
+    """Routes Master Planner tasks to the sub-agent teams via a Zero-Trust boundary."""
 
     agent_name = "web_supervisor"
 
-    def __init__(self, cyber_agent: Optional[CyberAgent] = None):
+    def __init__(self, cyber_agent: Optional[CyberAgent] = None) -> None:
         self._cyber = cyber_agent or CyberAgent()
 
     async def dispatch(
@@ -48,9 +57,19 @@ class WebSupervisor:
     ) -> Dict[str, str]:
         """
         Selects, vets, and runs the relevant sub-agents in parallel; returns
-        their merged raw_results dict (same shape run_sub_agents_async returned).
+        their merged raw_results dict (same shape the planner already expects).
+
+        Security steps
+        --------------
+        1. Outbound async injection check (Lakera Guard / regex fallback)
+           — hard-blocks dispatch if any TripContext field is flagged.
+        2. Outbound regex sanitization (always runs, strips residual injections).
+        3. Parallel sub-agent dispatch.
+        4. Inbound URL check (Google Safe Browsing) — replaces malicious links.
+        5. Inbound PII redaction (Presidio — local, no API key required).
+        6. Inbound regex malicious-content scan (always runs).
         """
-        covered = set(existing_results or {})
+        covered: Set[str] = set(existing_results or {})
 
         candidates = (
             get_agents_for_tasks(allowed_tasks) if allowed_tasks is not None
@@ -63,7 +82,7 @@ class WebSupervisor:
 
         logger.info(
             "WebSupervisor routing. selected_agents=%s allowed_tasks=%s covered=%s",
-            [getattr(agent, "agent_name", agent.__class__.__name__) for agent in agents],
+            [getattr(a, "agent_name", a.__class__.__name__) for a in agents],
             sorted(allowed_tasks) if allowed_tasks is not None else None,
             sorted(covered),
         )
@@ -74,8 +93,36 @@ class WebSupervisor:
             logger.info("WebSupervisor skipped all sub-agents — required results already covered.")
             return merged_raw_results
 
+        # ── Step 1: Outbound async injection check ────────────────────────────
+        for field_name in _OUTBOUND_CONTEXT_FIELDS:
+            value: str = getattr(context, field_name, None) or ""
+            if not value:
+                continue
+            try:
+                flagged = await self._cyber.check_prompt_injection(value)
+            except Exception as exc:
+                logger.error(
+                    "WebSupervisor: injection check threw. field=%s error=%s using=allow",
+                    field_name, exc,
+                )
+                flagged = False
+
+            if flagged:
+                logger.error(
+                    "WebSupervisor: outbound injection detected. field=%s action=block",
+                    field_name,
+                )
+                return {
+                    "security_alert": (
+                        f"Planning blocked: outbound context field '{field_name}' "
+                        "was flagged for prompt injection. Please revise your request."
+                    )
+                }
+
+        # ── Step 2: Outbound regex sanitization (sync, always runs) ──────────
         vetted_context = self._sanitize_context(context)
 
+        # ── Step 3: Parallel sub-agent dispatch ───────────────────────────────
         results = await asyncio.gather(
             *[agent.run(context=vetted_context) for agent in agents],
             return_exceptions=True,
@@ -99,13 +146,53 @@ class WebSupervisor:
             )
             merged_raw_results.update(result.raw_results)
 
+        # ── Step 4: Inbound URL check (Google Safe Browsing) ─────────────────
+        all_urls: list[str] = []
+        for value in merged_raw_results.values():
+            if isinstance(value, str):
+                all_urls.extend(_URL_RE.findall(value))
+
+        if all_urls:
+            unique_urls = list(set(all_urls))
+            try:
+                malicious = await self._cyber.check_urls(unique_urls)
+            except Exception as exc:
+                logger.error(
+                    "WebSupervisor: URL check threw. error=%s skipping=url_block", exc
+                )
+                malicious = []
+
+            if malicious:
+                malicious_set = set(malicious)
+                for key in list(merged_raw_results.keys()):
+                    for bad_url in malicious_set:
+                        merged_raw_results[key] = merged_raw_results[key].replace(
+                            bad_url, "[BLOCKED MALICIOUS URL]"
+                        )
+                logger.warning(
+                    "WebSupervisor: malicious URLs blocked. count=%d", len(malicious_set)
+                )
+
+        # ── Step 5: Inbound PII redaction (Presidio — local) ─────────────────
+        for key in list(merged_raw_results.keys()):
+            try:
+                merged_raw_results[key] = await self._cyber.redact_sensitive_data(
+                    merged_raw_results[key]
+                )
+            except Exception as exc:
+                logger.error(
+                    "WebSupervisor: PII redaction threw. key=%s error=%s skipping=redact",
+                    key, exc,
+                )
+
+        # ── Step 6: Inbound regex malicious-content scan (always runs) ───────
         return self._cyber.inspect_inbound(merged_raw_results)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _sanitize_context(self, context: TripContext) -> TripContext:
-        """Runs outbound free-text fields through the Cyber Agent before dispatch."""
-        updates = {}
+        """Runs outbound free-text fields through the regex Cyber Agent sanitizer."""
+        updates: Dict[str, str] = {}
         for field_name in _OUTBOUND_CONTEXT_FIELDS:
             value = getattr(context, field_name, None)
             if isinstance(value, str) and value:

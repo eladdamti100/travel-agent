@@ -293,11 +293,16 @@ async def fetch_country_metadata(country_name: str) -> str:
         })
 
 
-# ── web_research_tavily ───────────────────────────────────────────────────────
+# ── Tavily search — shared logic + four domain-specific @tool wrappers ────────
 
-@tool
-async def web_research_tavily(query: str) -> str:
-    """Execute a live Tavily web search and return ranked results."""
+_TAVILY_QUERY_MAX = 200
+
+
+async def _tavily_search(query: str) -> str:
+    """
+    Core Tavily search logic shared by all four Tavily-based tools.
+    Returns a formatted multi-result string or a safe fallback message.
+    """
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key or api_key.startswith("your_"):
         return "Search Engine: live search unavailable — TAVILY_API_KEY not configured."
@@ -312,8 +317,56 @@ async def web_research_tavily(query: str) -> str:
             f"Source: {r.get('url')}\nContent: {r.get('content')}" for r in results
         )
     except Exception as exc:
-        logger.error("web_research_tavily. status=exception error=%s", exc)
+        logger.error("_tavily_search. status=exception error=%s", exc)
         return "Search Engine: request failed, falling back to offline data."
+
+
+@tool
+async def web_research_tavily(query: str) -> str:
+    """Execute a live Tavily web search and return ranked results."""
+    return await _tavily_search(query[:_TAVILY_QUERY_MAX])
+
+
+@tool
+async def tavily_transport_search(query: str) -> str:
+    """
+    Search for live transport options, flight prices, and visa/entry requirements.
+
+    Prepends a transport-domain prefix to focus results on flights, trains,
+    and official entry requirement sources.
+
+    Args:
+        query: Destination or trip description to research.
+    """
+    focused = f"travel transport flights visa {query}"[:_TAVILY_QUERY_MAX]
+    return await _tavily_search(focused)
+
+
+@tool
+async def tavily_reviews_search(query: str) -> str:
+    """
+    Search for hotel reviews, live accommodation pricing, and stay recommendations.
+
+    Prepends an accommodation-domain prefix to filter results toward hotel
+    review aggregators and booking platforms.
+
+    Args:
+        query: Destination or hotel name to research.
+    """
+    focused = f"hotel reviews accommodation pricing {query}"[:_TAVILY_QUERY_MAX]
+    return await _tavily_search(focused)
+
+
+@tool
+async def tavily_general_research(query: str) -> str:
+    """
+    Execute a general travel research query for cultural tips, local events,
+    traveler alerts, and destination overviews.
+
+    Args:
+        query: Any free-text travel research question.
+    """
+    return await _tavily_search(query[:_TAVILY_QUERY_MAX])
 
 
 # ── fetch_live_flights (Amadeus API) ─────────────────────────────────────────
