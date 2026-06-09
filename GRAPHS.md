@@ -7,123 +7,108 @@
 
 ## 1. System Topology (LangGraph Architecture)
 
-*Full routing pipeline — safety guardrails, intent dispatch, HITL checkpoint, and the WebSupervisor/CyberAgent Zero-Trust security boundary around the seven-sub-agent hierarchical async planning core.*
+*Full routing pipeline showing safety guardrails, intent dispatch, and the WebSupervisor / CyberAgent Zero-Trust boundary managing both DB-backed and Web-backed autonomous agent teams.*
 
 ```mermaid
 graph TD
-    classDef startEnd fill:#A2C2E8,stroke:#333,stroke-width:2px;
-    classDef process fill:#F0F4F8,stroke:#4A6B82,stroke-width:2px;
-    classDef router fill:#FFEAA7,stroke:#D6A2E8,stroke-width:2px;
-    classDef cache fill:#D4EDDA,stroke:#28A745,stroke-width:2px;
-    classDef async fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px;
-    classDef hitl fill:#FFF3CD,stroke:#FFC107,stroke-width:2px;
-    classDef security fill:#FCE4EC,stroke:#E91E63,stroke-width:2px;
+    classDef startEnd   fill:#A2C2E8,stroke:#333,stroke-width:2px
+    classDef process    fill:#F0F4F8,stroke:#4A6B82,stroke-width:2px
+    classDef router     fill:#FFEAA7,stroke:#D6A2E8,stroke-width:2px
+    classDef cache      fill:#D4EDDA,stroke:#28A745,stroke-width:2px
+    classDef async      fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px
+    classDef hitl       fill:#FFF3CD,stroke:#FFC107,stroke-width:2px
+    classDef security   fill:#FCE4EC,stroke:#E91E63,stroke-width:2px
 
     START((START)):::startEnd
 
-    EXTRACT[extract_metadata\nresets 20 per-turn fields]:::process
-    VALIDATOR[validator\n3-stage: regex → vector → LLM]:::process
+    EXTRACT["extract_metadata\nresets 20 per-turn fields"]:::process
+    VALIDATOR["validator\n3-stage: regex → vector → LLM"]:::process
     VALID_ROUTE{validation_status?}:::router
 
-    HITL_RESUME[resume_hitl_context\nmerges clarification reply into pending TripContext]:::hitl
-    ORCH[master_orchestrator\nclassifies intent]:::process
+    HITL_RESUME["resume_hitl_context\nmerges clarification reply"]:::hitl
+    ORCH["master_orchestrator\nclassifies intent"]:::process
     ORCH_ROUTE{orchestrator_route?}:::router
 
-    PREFS[preferences_memory]:::process
-    RESEARCHER[researcher\nReAct agent]:::async
+    PREFS["preferences_memory"]:::process
+    RESEARCHER["researcher\nReAct agent · isolated CyberAgent"]:::async
 
-    CACHE_CHECK[cache_check\nembedding similarity lookup]:::cache
+    CACHE_CHECK["cache_check\nembedding cosine similarity ≥ 0.85"]:::cache
     CACHE_ROUTE{cache_status?}:::router
 
-    PLANNER[master_planner\nwave scheduler]:::process
+    PLANNER["master_planner\nwave scheduler"]:::process
     PLANNER_ROUTE{planner_status?}:::router
 
-    SUPERVISOR[WebSupervisor\nroutes tasks, owns CyberAgent]:::security
-    CYBER[CyberAgent\nsanitize outbound · inspect inbound · circuit breaker]:::security
+    SUPERVISOR["WebSupervisor\nRoutes tasks · owns CyberAgent"]:::security
+    CYBER["CyberAgent\n6-step Zero-Trust pipeline"]:::security
 
-    TRANSPORT[TransportAgent]:::async
-    STAY[StayAgent]:::async
-    EXPERIENCE[ExperienceAgent]:::async
-    TWEB[TransportWebAgent]:::async
-    SWEB[StayWebAgent]:::async
-    EWEB[ExperienceWebAgent]:::async
-    MWEB[ManagerWebAgent]:::async
+    subgraph TIER1 ["Tier 1 · DB-backed Agents  (SQLite, deterministic)"]
+        T_AGENT["TransportAgent\nfetch_flights · check_visa"]:::async
+        S_AGENT["StayAgent\nfetch_hotels"]:::async
+        E_AGENT["ExperienceAgent\nfetch_activities · fetch_restaurants\nfetch_weather · events_finder\nlocal_transport_guide · airport_transfer_info"]:::async
+    end
 
-    CRITIC[critic\ndeterministic budget + completeness gate]:::process
-    CRITIC_ROUTE{passed AND\nattempts < cap?}:::router
+    subgraph TIER2 ["Tier 2 · Hierarchical Web Agents  (LLM ReAct loops)"]
+        TW_AGENT["TransportWebAgent\ngeocode_location\ntransport_live_research"]:::async
+        SW_AGENT["StayWebAgent\nstay_live_research"]:::async
+        EW_AGENT["ExperienceWebAgent\nfetch_live_events · fetch_breweries\nexperience_web_research"]:::async
+        MW_AGENT["ManagerWebAgent\nlive_currency_conversion\nfetch_country_metadata\nweb_research_tavily"]:::async
+    end
 
-    HITL_APPROVAL[hitl_approval\nLangGraph interrupt — user approves/edits/cancels]:::hitl
+    CRITIC["critic\ndeterministic budget + completeness gate"]:::process
+    CRITIC_ROUTE{"passed AND\nattempts < cap?"}:::router
+
+    HITL_APPROVAL["hitl_approval\nUser: approve / edit / cancel"]:::hitl
     HITL_ROUTE{hitl_decision?}:::router
 
-    CACHE_STORE[cache_store\npersist to semantic_cache.db]:::cache
-    SUMMARIZER[summarizer\ncompacts history when > 10 messages]:::async
+    CACHE_STORE["cache_store\nbackground ThreadPoolExecutor write"]:::cache
+    SUMMARIZER["summarizer\ncompacts history > 10 msgs"]:::async
 
     END((END)):::startEnd
 
-    START --> EXTRACT
-    EXTRACT --> VALIDATOR
-    VALIDATOR --> VALID_ROUTE
+    START --> EXTRACT --> VALIDATOR --> VALID_ROUTE
+    VALID_ROUTE -- "blocked" --> END
+    VALID_ROUTE -- "HITL resume" --> HITL_RESUME --> PLANNER
+    VALID_ROUTE -- "approved" --> ORCH --> ORCH_ROUTE
 
-    VALID_ROUTE -- blocked --> END
-    VALID_ROUTE -- HITL resume\nawaitng_user_clarification=True --> HITL_RESUME
-    VALID_ROUTE -- approved --> ORCH
+    ORCH_ROUTE -- "preferences_memory" --> PREFS --> SUMMARIZER --> END
+    ORCH_ROUTE -- "research" --> RESEARCHER --> END
+    ORCH_ROUTE -- "cache_check" --> CACHE_CHECK --> CACHE_ROUTE
 
-    HITL_RESUME --> PLANNER
+    CACHE_ROUTE -- "hit" --> END
+    CACHE_ROUTE -- "miss" --> PLANNER --> PLANNER_ROUTE
 
-    ORCH --> ORCH_ROUTE
-    ORCH_ROUTE -- preferences_memory --> PREFS
-    ORCH_ROUTE -- research --> RESEARCHER
-    ORCH_ROUTE -- cache_check --> CACHE_CHECK
+    PLANNER_ROUTE -- "missing_required_info" --> END
+    PLANNER_ROUTE -- "ready / partial_ready" --> SUPERVISOR
 
-    PREFS --> SUMMARIZER
-    RESEARCHER --> END
-
-    CACHE_CHECK --> CACHE_ROUTE
-    CACHE_ROUTE -- hit --> END
-    CACHE_ROUTE -- miss --> PLANNER
-
-    PLANNER --> PLANNER_ROUTE
-    PLANNER_ROUTE -- missing_required_info\nHITL question in messages --> END
-    PLANNER_ROUTE -- ready / partial_ready --> CRITIC
-
-    PLANNER --> SUPERVISOR
     SUPERVISOR --> CYBER
-    CYBER -- sanitize outbound context\nfields TripContext --> SUPERVISOR
-    SUPERVISOR --> TRANSPORT & STAY & EXPERIENCE & TWEB & SWEB & EWEB & MWEB
-    TRANSPORT & STAY & EXPERIENCE & TWEB & SWEB & EWEB & MWEB --> SUPERVISOR
-    SUPERVISOR -- inspect inbound\nresults CyberAgent --> PLANNER
+    CYBER -- "1. Lakera v2 injection check\n2. regex sanitize outbound" --> TIER1 & TIER2
+    TIER1 & TIER2 -- "raw results" --> CYBER
+    CYBER -- "4. Safe Browsing URL scan\n5. Presidio PII redact\n6. regex inspect inbound" --> PLANNER
 
-    CRITIC --> CRITIC_ROUTE
-    CRITIC_ROUTE -- failed AND\nattempts < MAX_CRITIC_ATTEMPTS --> PLANNER
-    CRITIC_ROUTE -- passed OR\ncap reached --> HITL_APPROVAL
+    PLANNER --> CRITIC --> CRITIC_ROUTE
+    CRITIC_ROUTE -- "failed: replan" --> PLANNER
+    CRITIC_ROUTE -- "passed" --> HITL_APPROVAL --> HITL_ROUTE
 
-    HITL_APPROVAL --> HITL_ROUTE
-    HITL_ROUTE -- approved --> CACHE_STORE
-    HITL_ROUTE -- edit --> PLANNER
-    HITL_ROUTE -- cancelled --> END
-
-    CACHE_STORE --> SUMMARIZER
-    SUMMARIZER --> END
+    HITL_ROUTE -- "approved" --> CACHE_STORE --> SUMMARIZER --> END
+    HITL_ROUTE -- "edit" --> PLANNER
+    HITL_ROUTE -- "cancelled" --> END
 ```
-
-> **Reviewer note**: The `reviewer` agent (admin mode plan critique) is **not a graph node**. It is invoked asynchronously from `main.py` after the plan is displayed, outside the LangGraph lifecycle.
 
 ---
 
 ## 2. Async Task Dependency DAG (Master Planner Scheduling)
 
-*Wave 1 tasks execute concurrently via `asyncio.gather` inside `WebSupervisor.dispatch()`. Wave 2 tasks execute only after their declared input dependencies have resolved.*
+*Every tool is mapped to its owning agent. The CyberAgent boundary shows exactly where outbound sanitization and inbound inspection occur in the Wave 1 pipeline.*
 
 ```mermaid
 graph TD
-    classDef contextStyle fill:#EDE7F6,stroke:#7B1FA2,stroke-width:1px;
-    classDef sqliteTask fill:#E8F5E9,stroke:#4CAF50,stroke-width:2px;
-    classDef webTask fill:#FCE4EC,stroke:#E91E63,stroke-width:2px;
-    classDef calcTask fill:#FFF3E0,stroke:#FFB74D,stroke-width:2px;
-    classDef finalStyle fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px;
-    classDef securityStyle fill:#FCE4EC,stroke:#E91E63,stroke-width:1px,stroke-dasharray:4;
+    classDef contextStyle  fill:#EDE7F6,stroke:#7B1FA2,stroke-width:1px
+    classDef securityStyle fill:#FCE4EC,stroke:#E91E63,stroke-width:1px,stroke-dasharray:4
+    classDef dbTool        fill:#E8F5E9,stroke:#4CAF50,stroke-width:2px
+    classDef webTool       fill:#FCE4EC,stroke:#E91E63,stroke-width:2px
+    classDef calcTask      fill:#FFF3E0,stroke:#FFB74D,stroke-width:2px
 
-    subgraph TC [TripContext Inputs]
+    subgraph TC ["TripContext Inputs"]
         OA[origin_airport]:::contextStyle
         OC[origin_country]:::contextStyle
         DC[destination_city]:::contextStyle
@@ -132,377 +117,169 @@ graph TD
         TM[travel_month]:::contextStyle
     end
 
-    subgraph SEC [WebSupervisor + CyberAgent Security Boundary]
-        CYBER_OUT[CyberAgent.sanitize_outbound\nstrips injection from TripContext fields]:::securityStyle
-        CYBER_IN[CyberAgent.inspect_inbound\nredacts malicious content in results]:::securityStyle
+    subgraph SEC ["WebSupervisor · CyberAgent Security Boundary"]
+        C_OUT["Sanitize Outbound\nStep 1 · Lakera Guard v2 async injection check\nStep 2 · regex strip always runs"]:::securityStyle
+        C_IN["Inspect Inbound\nStep 4 · Google Safe Browsing URL scan\nStep 5 · Presidio PII redaction LOCAL asyncio.to_thread\nStep 6 · regex malicious-content scan always runs"]:::securityStyle
     end
 
-    subgraph W1S [Wave 1 · SQLite Sub-Agents]
-        FF[fetch_flights]:::sqliteTask
-        CV[check_visa]:::sqliteTask
-        FH[fetch_hotels]:::sqliteTask
-        FA[fetch_activities]:::sqliteTask
-        FR[fetch_restaurants]:::sqliteTask
-        FW[fetch_weather]:::sqliteTask
-        EF[events_finder]:::sqliteTask
-        LT[local_transport_guide]:::sqliteTask
-        AT[airport_transfer_info]:::sqliteTask
+    subgraph W1_DB ["Wave 1 · Tier 1 DB Agents  (asyncio.gather)"]
+        subgraph TA ["TransportAgent  agent_name=transport_agent"]
+            FF[fetch_flights\ndb_tools.fetch_flights]:::dbTool
+            CV[check_visa\ndb_tools.get_visa_requirement]:::dbTool
+        end
+        subgraph SA ["StayAgent  agent_name=stay_agent"]
+            FH[fetch_hotels\ndb_tools.fetch_hotels]:::dbTool
+        end
+        subgraph EA ["ExperienceAgent  agent_name=experience_agent"]
+            FA[fetch_activities]:::dbTool
+            FR[fetch_restaurants]:::dbTool
+            FW[fetch_weather]:::dbTool
+            EV[events_finder]:::dbTool
+            LT[local_transport_guide]:::dbTool
+            AT[airport_transfer_info]:::dbTool
+        end
     end
 
-    subgraph W1TW [Wave 1 · TransportWebAgent]
-        GL[geocode_location]:::webTask
-        TLR[transport_live_research]:::webTask
+    subgraph W1_WEB ["Wave 1 · Tier 2 Hierarchical Web Agents  (asyncio.gather)"]
+        subgraph TWA ["TransportWebAgent  agent_name=transport_web_agent  ReAct loop"]
+            GL[geocode_location\nOpenCage API]:::webTool
+            TLR[transport_live_research\ntavily_transport_search]:::webTool
+        end
+        subgraph SWA ["StayWebAgent  agent_name=stay_web_agent  ReAct loop"]
+            SLR[stay_live_research\ntavily_reviews_search]:::webTool
+        end
+        subgraph EWA ["ExperienceWebAgent  agent_name=experience_web_agent  ReAct loop"]
+            LE[fetch_live_events\nTicketmaster API]:::webTool
+            FB[fetch_breweries\nOpen Brewery DB]:::webTool
+            EWR[experience_web_research]:::webTool
+        end
+        subgraph MWA ["ManagerWebAgent  agent_name=manager_web_agent  direct async"]
+            LC[live_currency_conversion\nExchangeRate-API]:::webTool
+            CM[fetch_country_metadata\nRestCountries API]:::webTool
+            WT[web_research_tavily\ntavily_general_research]:::webTool
+        end
     end
 
-    subgraph W1SW [Wave 1 · StayWebAgent]
-        SLR[stay_live_research]:::webTask
+    subgraph W2 ["Wave 2 · Dependent Calculations  (after flights + hotels complete)"]
+        CTC[calculate_trip_cost\ncalc_tools]:::calcTask
     end
 
-    subgraph W1EW [Wave 1 · ExperienceWebAgent]
-        LE[fetch_live_events]:::webTask
-        FB[fetch_breweries]:::webTask
-        EWR[experience_web_research]:::webTask
-    end
+    TC --> C_OUT
 
-    subgraph W1MW [Wave 1 · ManagerWebAgent]
-        LC[live_currency_conversion]:::webTask
-        CM[fetch_country_metadata]:::webTask
-        WT[web_research_tavily]:::webTask
-    end
-
-    subgraph W2 [Wave 2 · Dependent Calculations]
-        CTC[calculate_trip_cost]:::calcTask
-    end
-
-    TC --> CYBER_OUT
-    CYBER_OUT --> W1S
-    CYBER_OUT --> W1TW
-    CYBER_OUT --> W1SW
-    CYBER_OUT --> W1EW
-    CYBER_OUT --> W1MW
+    C_OUT --> W1_DB
+    C_OUT --> W1_WEB
 
     OA & DC --> FF
     OC & DC --> CV
     DC & DD --> FH
-    DC --> FA
-    DC --> FR
-    DC & TM --> FW
-    DC & TM --> EF
-    DC --> LT
-    DC --> AT
+    DC --> FA & FR & LT & AT
+    DC & TM --> FW & EV
 
-    DC --> GL
-    DC --> TLR
-    DC & DD --> SLR
+    DC --> GL & TLR & SLR & FB & EWR & CM & WT
     DC & TM --> LE
-    DC --> FB
-    DC --> EWR
     OC --> LC
-    DC --> CM
-    DC --> WT
 
-    W1S --> CYBER_IN
-    W1TW --> CYBER_IN
-    W1SW --> CYBER_IN
-    W1EW --> CYBER_IN
-    W1MW --> CYBER_IN
+    W1_DB  --> C_IN
+    W1_WEB --> C_IN
 
-    CYBER_IN --> W2
-
+    C_IN --> W2
     FF & FH & FA & TB --> CTC
-
-    SYNTH[Synthesize Structured Trip Plan\nplan_formatter → plan_generator → FinalPlan]:::finalStyle
-    CTC & CV & GL & CM & LC --> SYNTH
 ```
 
 ---
 
-## 3. Wave Scheduling Breakdown
+## 3. WebSupervisor · CyberAgent 6-Step Zero-Trust Pipeline
 
-*`planner_scheduler.py` converts the dependency DAG into ordered execution waves. The planner iterates until all tasks are either complete or blocked by persistent missing inputs.*
+```
+OUTBOUND ──► Step 1 │ Async Lakera Guard v2 injection check (per TripContext field)
+                    │   Hard-blocks dispatch if flagged.
+                    │   Fallback: compiled regex (always available, no key needed).
+                    │
+             Step 2 │ Synchronous regex sanitization — always runs.
+                    │   Strips residual injection phrases even after Step 1 clears.
+                    │
+DISPATCH ──► Step 3 │ asyncio.gather — all 7 sub-agents run in parallel.
+                    │   (3 DB agents + 4 Web agents)
+                    │
+INBOUND  ──► Step 4 │ Google Safe Browsing v4 URL scan.
+                    │   Replaces malicious links with [BLOCKED MALICIOUS URL].
+                    │   Fail-open: empty list returned when key absent (no false blocks).
+                    │
+             Step 5 │ Microsoft Presidio PII redaction — fully LOCAL, no API key.
+                    │   Runs via asyncio.to_thread (non-blocking).
+                    │   Requires: python -m spacy download en_core_web_sm
+                    │   Redacts: PERSON, EMAIL, PHONE, CREDIT_CARD, LOCATION, ORG, etc.
+                    │   Note: also redacts named entities such as airline names.
+                    │   Passthrough when spaCy model not installed.
+                    │
+             Step 6 │ Regex malicious-content scan — always runs.
+                    │   Redacts: <script>, eval(), os.system(), DROP TABLE, etc.
+                    │
+            Return Dict[str, str] to master_planner
+```
 
-### Wave Classification
+---
 
-| Wave | Trigger | Task Count | Executed By |
+## 4. Wave Scheduling Breakdown
+
+| Wave | Trigger | Executed By | Agents / Tasks |
 |---|---|---|---|
-| **Wave 1** | All required TripContext fields present | 15+ (9 SQLite + 6 PlannerTaskType web + 3 free-form web research) | `WebSupervisor.dispatch()` → `asyncio.gather` across 7 sub-agents |
-| **Wave 2** | `FETCH_FLIGHTS`, `FETCH_HOTELS`, `FETCH_ACTIVITIES` all complete | 1 (`CALCULATE_TRIP_COST`) | `asyncio.gather` (single task) |
-
-### Wave 1 Execution Layout
-
-All Wave 1 tasks are dispatched simultaneously. Each sub-agent runs its assigned tasks independently and returns a `PlannerToolResults` object. `WebSupervisor` merges all seven after `asyncio.gather` resolves, then passes the merged dict through the full Zero-Trust inbound pipeline (URL check → Presidio PII redaction → regex inspection).
-
-```text
-WebSupervisor.dispatch()
-  Step 1: CyberAgent.check_prompt_injection(TripContext fields)  ← Lakera v2 / regex fallback
-  Step 2: CyberAgent.sanitize_outbound(TripContext fields)       ← regex strip, always runs
-  Step 3: asyncio.gather(
-      TransportAgent.run()       →  fetch_flights, check_visa
-      StayAgent.run()            →  fetch_hotels
-      ExperienceAgent.run()      →  fetch_activities, fetch_restaurants,
-                                     local_transport_guide, fetch_weather,
-                                     events_finder, airport_transfer_info
-      TransportWebAgent.run()    →  geocode_location, transport_live_research
-      StayWebAgent.run()         →  stay_live_research
-      ExperienceWebAgent.run()   →  fetch_live_events, fetch_breweries,
-                                     experience_web_research
-      ManagerWebAgent.run()      →  live_currency_conversion, fetch_country_metadata,
-                                     web_research_tavily
-  )
-  Step 4: CyberAgent.check_urls(merged URLs)                     ← Google Safe Browsing / fail-open
-  Step 5: CyberAgent.redact_sensitive_data(each result)          ← Presidio local PII redaction
-  Step 6: CyberAgent.inspect_inbound(merged_raw_results)         ← regex malicious-content scan
-  → merged Dict[str, str]
-```
-
-Each web agent task enforces a 4-second hard timeout. On timeout or API failure the wave continues uninterrupted — the failed tool returns a structured fallback payload, and `WebSupervisor` treats it as a partial result. The `CyberAgent` circuit breaker opens after 3 consecutive failures per service and remains open for a 120-second cooldown.
-
-### Wave 2 Execution Layout
-
-After the Wave 1 merge, the dependency resolver re-evaluates all remaining tasks. `CALCULATE_TRIP_COST` is now unblocked because its three primary inputs have resolved:
-
-```text
-asyncio.gather(
-    calculate_trip_cost(
-        flight_cost   ← from FETCH_FLIGHTS result
-        hotel_cost    ← from FETCH_HOTELS result × duration_days
-        activity_cost ← from FETCH_ACTIVITIES result
-        total_budget  ← from TripContext.total_budget
-    )
-)
-```
-
-### PlannerTaskType Registry — All 16 Tasks
-
-| Task | Wave | Sub-Agent | Data Source |
-|---|---|---|---|
-| `FETCH_FLIGHTS` | 1 | `TransportAgent` | SQLite `flights` table |
-| `CHECK_VISA` | 1 | `TransportAgent` | SQLite `visa_requirements` table |
-| `FETCH_HOTELS` | 1 | `StayAgent` | SQLite `hotels` table |
-| `FETCH_ACTIVITIES` | 1 | `ExperienceAgent` | SQLite `activities` table |
-| `FETCH_RESTAURANTS` | 1 | `ExperienceAgent` | SQLite `restaurants` table |
-| `FETCH_WEATHER` | 1 | `ExperienceAgent` | SQLite `weather` table |
-| `EVENTS_FINDER` | 1 | `ExperienceAgent` | SQLite `events` table |
-| `LOCAL_TRANSPORT_GUIDE` | 1 | `ExperienceAgent` | SQLite `transport` table |
-| `AIRPORT_TRANSFER_INFO` | 1 | `ExperienceAgent` | SQLite `transport` table |
-| `GEOCODE_LOCATION` | 1 | `TransportWebAgent` | OpenCage API |
-| `FETCH_LIVE_EVENTS` | 1 | `ExperienceWebAgent` | Ticketmaster API |
-| `LIVE_CURRENCY_CONVERSION` | 1 | `ManagerWebAgent` | ExchangeRate-API |
-| `FETCH_BREWERIES` | 1 | `ExperienceWebAgent` | Open Brewery DB |
-| `FETCH_COUNTRY_METADATA` | 1 | `ManagerWebAgent` | RestCountries API |
-| `WEB_RESEARCH_TAVILY` | 1 | `ManagerWebAgent` | Tavily AI Search |
-| `CALCULATE_TRIP_COST` | 2 | calc tools | Derived from Wave 1 results |
-
-> **Note**: Three additional result keys are produced by the hierarchical web tier but are **not** `PlannerTaskType` enum members: `transport_live_research` (TransportWebAgent), `stay_live_research` (StayWebAgent), and `experience_web_research` (ExperienceWebAgent). These are free-form Tavily research keys injected directly into `planner_task_results`. `diff_changed_tasks` returns them as plain strings alongside enum `.value` strings.
-
-> **Invariant**: every `PlannerTaskType` member must have a corresponding entry in `_TASK_REQUIREMENTS` in `planner_dependencies.py`. The dependency checker iterates all enum members at runtime; a missing entry raises `KeyError`. The dict uses `.get(task_type, ())` as a defensive fallback.
+| **Wave 1** | All required `TripContext` fields present | `WebSupervisor.dispatch()` → `asyncio.gather` | All 7 sub-agents in parallel: `TransportAgent`, `StayAgent`, `ExperienceAgent`, `TransportWebAgent`, `StayWebAgent`, `ExperienceWebAgent`, `ManagerWebAgent` |
+| **Wave 2** | `fetch_flights` + `fetch_hotels` + `fetch_activities` completed | `asyncio.gather` (single task) | `calculate_trip_cost` via `calc_tools` |
+| **Web fallback** | Any DB section returned empty after Wave 1 | `fill_missing_with_web()` in `plan_enricher.py` | Targeted Tavily searches per empty section |
+| **Replanning (cached)** | `force_replan=True` + previous `trip_context` present | `analyze_replanning()` then `WebSupervisor.dispatch(allowed_tasks=...)` | Only invalidated tasks re-run; preserved results merged immediately |
 
 ---
 
-## 4. Conditional Edge Topology
+## 5. Replanner Task Invalidation Matrix (`diff_changed_tasks`)
 
-*All routing decisions are implemented as pure functions in `src/graph/router.py`. Each function receives the current `AgentState` snapshot and returns the string name of the next node.*
+When a user edits a trip parameter, `diff_changed_tasks` computes the exact intersection of Tier 1 (DB) and Tier 2 (Web) tasks that must be re-run, preserving all others.
 
-### Edge: `validator` → next node
+| Changed Field | Invalidated — re-run | Preserved — reused from cache |
+|---|---|---|
+| `origin_airport` | `fetch_flights`, `check_visa`, `calculate_trip_cost` *(cascade)*, **`transport_live_research`** *(Tier 2 web key)* | `fetch_hotels`, `fetch_activities`, `fetch_restaurants`, `fetch_weather`, `events_finder`, `local_transport_guide`, `airport_transfer_info`, `stay_live_research`, `experience_web_research`, all Manager keys |
+| `total_budget` | `calculate_trip_cost`, `live_currency_conversion` | `fetch_flights`, `fetch_hotels`, all experience tools, all web research keys |
+| `destination_city` | **Full replan** — every `PlannerTaskType` value + `transport_live_research`, `stay_live_research`, `experience_web_research` | — |
+| No change | ∅ (empty) | Everything |
 
-| Condition | Next Node |
-|---|---|
-| `validation_status != "approved"` | `END` (rejection message already in `messages`) |
-| `validation_status == "approved"` AND `awaiting_user_clarification == True` | `resume_hitl_context` |
-| `validation_status == "approved"` (default) | `master_orchestrator` |
-
-### Edge: `master_orchestrator` → next node
-
-| Condition | Next Node |
-|---|---|
-| `orchestrator_route == "preferences_memory"` | `preferences_memory` |
-| `orchestrator_route == "research"` | `researcher` |
-| `orchestrator_route == "cache_check"` (default / unknown) | `cache_check` |
-
-### Edge: `cache_check` → next node
-
-| Condition | Next Node |
-|---|---|
-| `cache_status == "hit"` | `END` (cached answer already in `messages`) |
-| `cache_status == "miss"` (default) | `master_planner` |
-
-> `force_replan=True` is honored inside the `cache_checker` itself — it returns `cache_status = "miss"` even when a high-similarity entry is found. The router only ever reads `cache_status`.
-
-### Edge: `master_planner` → next node
-
-| Condition | Next Node |
-|---|---|
-| `planner_status == "missing_required_info"` | `END` (HITL question emitted into `messages`; `awaiting_user_clarification` set to `True`) |
-| `planner_status == "ready"` or `"partial_ready"` | `critic` |
-| `planner_status == "timeout"` | `END` (timeout message emitted into `messages`) |
-
-### Edge: `critic` → next node
-
-| Condition | Next Node |
-|---|---|
-| `critique_result.passed == False` AND `critic_attempts < MAX_CRITIC_ATTEMPTS` | `master_planner` (auto-replan with critic suggestions injected into prompt) |
-| `critique_result.passed == True` OR `critic_attempts >= MAX_CRITIC_ATTEMPTS` | `hitl_approval` |
-
-### Edge: `hitl_approval` → next node
-
-| Condition | Next Node |
-|---|---|
-| `hitl_decision == "approved"` | `cache_store` |
-| `hitl_decision == "edit"` AND `hitl_edit_attempts <= MAX_HITL_EDIT_ATTEMPTS` | `master_planner` |
-| `hitl_decision == "edit"` AND `hitl_edit_attempts > MAX_HITL_EDIT_ATTEMPTS` | `END` (cap message already emitted by `hitl_approval_node`) |
-| `hitl_decision == "cancelled"` | `END` |
-
-### Edge: `cache_store` → next node
-
-| Condition | Next Node |
-|---|---|
-| Always | `summarizer` |
-
-### Edge: `preferences_memory` → next node
-
-| Condition | Next Node |
-|---|---|
-| Always | `summarizer` |
-
-### Edge: `summarizer` → next node
-
-| Condition | Next Node |
-|---|---|
-| Always | `END` |
-
-> Admin-mode reviewer is called from `main.py` before returning to the REPL — it is not a graph edge.
+> `transport_live_research`, `stay_live_research`, and `experience_web_research` are free-form Tier 2 result keys — not `PlannerTaskType` enum members. They are tracked explicitly via `_WEB_AGENT_EXTRA_KEYS` in `planner_dependencies.py`.
 
 ---
 
-## 5. State Flow Between Key Nodes
+## 6. Semantic Cache Decision Flow
 
-*Explicit read/write mapping for all 12 nodes. A node should only write fields listed here.*
-
-```text
-extract_metadata
-    reads  → messages (last message for city/budget/modification detection)
-    writes → current_city, total_budget, tool_call_count, force_replan,
-             critic_attempts, hitl_decision, hitl_feedback, hitl_edit_attempts,
-             orchestrator_route, orchestrator_reason,
-             cache_status, cache_answer, cache_matched_query, cache_similarity_score,
-             planner_status, planner_task_results, planner_structured_results,
-             planner_dependency_graph, planner_scheduler_result,
-             context_enrichment_status, used_web_source, final_plan
-
-validator
-    reads  → messages (last message content), awaiting_user_clarification
-    writes → validation_status, messages (rejection AIMessage on block)
-
-resume_hitl_context
-    reads  → pending_trip_context, messages (for deterministic re-extraction)
-    writes → trip_context, awaiting_user_clarification (→ False)
-
-master_orchestrator
-    reads  → messages, validation_status, conversation_summary
-    writes → orchestrator_route, orchestrator_reason
-
-preferences_memory
-    reads  → messages
-    writes → preferred_airline, food_preference, num_travelers, travel_preferences,
-             messages (preference update AIMessage)
-
-researcher
-    reads  → messages, conversation_summary
-    writes → messages (answer AIMessage)
-
-cache_check
-    reads  → messages, trip_context, force_replan
-    writes → cache_status, cache_similarity_score, cache_matched_query, cache_answer,
-             planning_query, messages (cached answer AIMessage on hit)
-
-master_planner
-    reads  → messages, cache_status, force_replan,
-             preferred_airline, food_preference, num_travelers, travel_preferences,
-             awaiting_user_clarification, pending_trip_context,
-             pending_planner_task_results, pending_missing_fields,
-             trip_context, critic_attempts, critique_result, hitl_feedback
-    writes → trip_context, context_enrichment_status, planner_status,
-             planner_task_results, planner_structured_results,
-             planner_dependency_graph, planner_scheduler_result,
-             planning_mode, used_web_source, final_plan,
-             awaiting_user_clarification, pending_trip_context,
-             pending_missing_fields, pending_hitl_question,
-             pending_planner_task_results,
-             messages (plan AIMessage or HITL question AIMessage)
-
-critic
-    reads  → messages (plan text in last AIMessage), trip_context,
-             planner_structured_results, planner_task_results
-    writes → critic_attempts, critique_result
-
-hitl_approval
-    reads  → critique_result, hitl_edit_attempts
-    writes → hitl_decision, hitl_feedback, force_replan, hitl_edit_attempts,
-             messages (cap-exceeded AIMessage when edit limit hit)
-
-cache_store
-    reads  → messages, trip_context, planner_task_results, used_web_source
-    writes → (no AgentState fields — side-effect only: persists to semantic_cache.db)
-
-summarizer
-    reads  → messages, is_admin
-    writes → conversation_summary
+```
+User message
+    │
+    ▼
+extract_trip_context_deterministic()
+    │  Cache key: {destination_city, duration_days, total_budget,
+    │              origin_airport, origin_country, num_travelers, currency}
+    ▼
+force_replan = True? ──YES──► cache_status = "miss"  (always bypass)
+    │ NO
+    ▼
+find_cached_answer(threshold=0.85)
+    │
+    ├─ Layer 1: SQLite pre-filter  — destination exact match + budget ±5%
+    ├─ Layer 2: Python hard filter — duration bucket
+    └─ Layer 3: Cosine similarity  — best match score vs threshold
+                    │
+                  ≥ 0.85? ──YES──► HIT  → AIMessage served instantly → END
+                    │ NO
+                    ▼
+                  MISS → master_planner → … → critic → hitl_approval
+                                                            │ approved
+                                                            ▼
+                                                    cache_store_node
+                                                        └─ _executor.submit()
+                                                              │ (background thread)
+                                                              ▼
+                                                    compress_answer()
+                                                    store_cache_entry()  → SQLite
+                                                    (returns to user immediately ↑)
 ```
 
----
-
-## 6. CyberAgent Security Model
-
-*The `CyberAgent` operates at the network boundary between the planner and all external APIs. It has three independent subsystems.*
-
-### Outbound Sanitization
-
-Before `WebSupervisor` dispatches any sub-agent, it calls `CyberAgent.sanitize_outbound()` on the four free-text `TripContext` fields that flow into external tool calls:
-
-| Field | Risk |
-|---|---|
-| `destination_city` | Prompt injection via crafted city names |
-| `destination_country` | Same |
-| `origin_country` | Same |
-| `origin_airport` | Same |
-
-Matches are redacted (replaced with a space) and logged at WARNING. The sanitized `TripContext` is passed to sub-agents; the original is never modified.
-
-### Inbound Inspection
-
-After all sub-agents return, `WebSupervisor` calls `CyberAgent.inspect_inbound()` on the merged `raw_results` dict before the planner trusts the data. Patterns detected:
-
-| Category | Examples |
-|---|---|
-| Script injection | `<script>`, `<iframe>`, `javascript:`, `onerror=` |
-| Code execution | `eval()`, `exec()`, `os.system()`, `subprocess.` |
-| Shell commands | `; rm -rf`, `curl http`, `wget http` |
-| SQL injection | `UNION SELECT`, `DROP TABLE` |
-| Server-side | `<?php` |
-
-Matches are redacted in-place as `[redacted]` and logged at WARNING.
-
-### Circuit Breaker
-
-Per-service failure tracking with automatic cooldown:
-
-| Parameter | Value |
-|---|---|
-| Failure threshold | 3 consecutive failures → circuit opens |
-| Cooldown period | 120 seconds |
-| Recovery | First success after cooldown resets counter |
-| Effect | `is_degraded(service)` returns `True`; callers skip live calls and use static fallback data |
-
-Circuit state is module-level (shared across all `CyberAgent` instances in a process), protected by a `threading.Lock`.
-
-### Optional Async External Security APIs
-
-`CyberAgent` exposes three async methods that call external APIs when configured. All are fail-safe: missing keys or network errors fall back to a local strategy (never crash the planner).
-
-| Method | External Service | Env Key | Fallback |
-|---|---|---|---|
-| `check_prompt_injection(text)` | Lakera Guard v2 — `POST /v2/guard` with `{"messages": [{"role": "user", "content": text}]}` | `LAKERA_API_KEY` | Compiled injection regex (always available) |
-| `check_urls(urls)` | Google Safe Browsing v4 — `POST threatMatches:find` | `GOOGLE_SAFE_BROWSING_KEY` | Empty list (fail-open — never block legitimate content) |
-| `redact_sensitive_data(text)` | Microsoft Presidio (local spaCy model) — no API key | *(none — local)* | Original text unmodified when spaCy model not installed |
-
-`check_prompt_injection` and `check_urls` are called from `WebSupervisor.dispatch()` (steps 1 and 4) and from `researcher.py` around the ReAct loop. `redact_sensitive_data` is called on every merged result string before the regex inspection pass (step 5).
+> **Threshold is inclusive at 0.85.** Score `0.85` = HIT. Score `0.84` = MISS.
+> `run_cache_store` guards on `state["trip_context"]["destination_city"]` — plans for
+> unsupported or unknown destinations are never written to the cache.
