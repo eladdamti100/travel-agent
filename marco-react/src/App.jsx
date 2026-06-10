@@ -879,18 +879,13 @@ export default function App() {
 
               {/* User badge */}
               {currentUser?.type === 'google' ? (
-                <div style={{ display:'flex', alignItems:'center', gap:8, padding:'4px 10px', borderRadius:20, background: dark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)', border:`1px solid ${t.border}` }}>
+                <div title={currentUser.name || currentUser.email} style={{ width:32, height:32, borderRadius:'50%', overflow:'hidden', border:`2px solid ${t.accent}`, flexShrink:0, cursor:'default' }}>
                   {currentUser.picture
-                    ? <img src={currentUser.picture} alt="" style={{ width:24, height:24, borderRadius:'50%', objectFit:'cover' }} />
-                    : <div style={{ width:24, height:24, borderRadius:'50%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'#fff' }}>{currentUser.name?.[0]?.toUpperCase()}</div>
+                    ? <img src={currentUser.picture} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                    : <div style={{ width:'100%', height:'100%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:'#fff' }}>{currentUser.name?.[0]?.toUpperCase() || 'U'}</div>
                   }
-                  <span style={{ fontSize:12, fontWeight:600, color:t.text, maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.name}</span>
                 </div>
-              ) : (
-                <div style={{ padding:'4px 12px', borderRadius:20, background: dark?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.04)', border:`1px solid ${t.border}`, fontSize:12, color:t.muted, fontWeight:500 }}>
-                  Guest
-                </div>
-              )}
+              ) : null}
             </div>
 
             {/* Scrollable Content Right */}
