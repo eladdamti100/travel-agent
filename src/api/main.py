@@ -23,6 +23,17 @@ except Exception as _graph_err:
 
 app = FastAPI(title="Marco Travel Agent API")
 
+@app.on_event("startup")
+async def _warm_models():
+    import threading
+    def _load():
+        try:
+            from src.services.semantic_cache import warm_embedding_model
+            warm_embedding_model()
+        except Exception:
+            pass
+    threading.Thread(target=_load, daemon=True).start()
+
 # ── Health check (required by Railway) ───────────────────────────────────────
 @app.get("/")
 def health():
