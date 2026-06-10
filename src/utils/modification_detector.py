@@ -55,7 +55,7 @@ def detect_modification_context(user_message: str) -> bool:
     # Examples: "change airport", "update budget", "switch hotel"
     for verb in ["change", "update", "modify", "replace", "switch"]:
         for param in TRIP_PARAMETERS:
-            pattern = rf"\b{verb}\s+.*\b{param}\b"
+            pattern = rf"\b{verb}\s+.*\b{param}s?\b"
             if re.search(pattern, lower_msg):
                 return True
 

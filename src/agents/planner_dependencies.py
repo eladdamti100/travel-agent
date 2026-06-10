@@ -309,6 +309,11 @@ def diff_changed_tasks(
         directly_invalidated.add(PlannerTaskType.CALCULATE_TRIP_COST)
         directly_invalidated.add(PlannerTaskType.LIVE_CURRENCY_CONVERSION)
 
+    # ── Case 4: hotel_preference changed → recalc cost with new tier ─────
+    if (getattr(old_context, "hotel_preference", None)
+            != getattr(new_context, "hotel_preference", None)):
+        directly_invalidated.add(PlannerTaskType.CALCULATE_TRIP_COST)
+
     if not directly_invalidated and not extra_keys:
         return []
 

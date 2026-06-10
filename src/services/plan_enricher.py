@@ -116,9 +116,9 @@ async def calculate_cost_if_possible(
             except (ValueError, TypeError):
                 pass
 
-    hotel_price = extract_lowest_price_from_json(
+    hotel_price = _select_hotel_price(
         task_results.get(PlannerTaskType.FETCH_HOTELS.value, ""),
-        price_key="price_per_night",
+        context.hotel_preference,
     )
 
     if hotel_price is None:
@@ -163,3 +163,53 @@ async def calculate_cost_if_possible(
             "duration_days": context.duration_days,
         },
     )
+
+
+def _select_hotel_price(raw_json: str, hotel_preference: Optional[str]) -> Optional[float]:
+    """
+    Picks a price_per_night from FETCH_HOTELS results, honoring hotel_preference.
+
+    "5-star"/"luxury" preferences pick the highest-star hotel available;
+    everything else (including no preference) keeps the previous default
+    of the cheapest hotel.
+    """
+    import json as _j
+
+    try:
+        data = _j.loads(raw_json)
+    except (_j.JSONDecodeError, TypeError):
+        return None
+
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return None
+
+    hotels = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        price = item.get("price_per_night")
+        if price is None:
+            continue
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            continue
+        try:
+            stars = float(item["stars"]) if item.get("stars") not in (None, "") else None
+        except (TypeError, ValueError):
+            stars = None
+        hotels.append((price, stars))
+
+    if not hotels:
+        return None
+
+    pref = (hotel_preference or "").lower()
+    if "5-star" in pref or "five star" in pref or "luxury" in pref:
+        starred = [(price, stars) for price, stars in hotels if stars is not None]
+        if starred:
+            max_stars = max(stars for _, stars in starred)
+            return max(price for price, stars in starred if stars == max_stars)
+
+    return min(price for price, _ in hotels)

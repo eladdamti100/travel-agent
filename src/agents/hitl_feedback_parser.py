@@ -89,7 +89,10 @@ def _apply_destination_override(context: TripContext, fb_lower: str) -> TripCont
     for city in _COUNTRY_BY_CITY:
         city_l = city.lower()
         for kw in dest_keywords:
-            if re.search(rf"\b{re.escape(kw)}\b.{{0,20}}\b{re.escape(city_l)}\b", fb_lower):
+            # The gap between the keyword and the city must not contain "from",
+            # otherwise "fly to Berlin from Paris" would match "to ... Paris"
+            # and incorrectly treat the origin city as the destination.
+            if re.search(rf"\b{re.escape(kw)}\b(?:(?!\bfrom\b).){{0,20}}\b{re.escape(city_l)}\b", fb_lower):
                 dest_country = _COUNTRY_BY_CITY.get(city)
                 logger.info("HITL edit: destination override -> %s", city)
                 return _validated_copy(
