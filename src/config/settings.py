@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     enrichment_timeout_seconds: float = 10.0
     planner_timeout_seconds: float = 90.0
 
+    # ── Demo mode — set DEMO_MODE=true in .env for fast, reliable presentations ─
+    # Skips slow live web agents; all results come from the local DB (instant).
+    demo_mode: bool = False
+
     # ── DB paths (resolved at import time) ───────────────────────────────────
     cache_dir: Path = Path.home() / ".cache" / "travel-agent"
 

@@ -426,7 +426,21 @@ def run() -> None:
                 monitor_thread.join(timeout=1)
 
         try:
-            _stream_graph({"messages": [("user", user_input)], "is_admin": is_admin})
+            _stream_graph({
+                "messages": [("user", user_input)],
+                "is_admin": is_admin,
+                # Reset trip context on every new top-level message so stale
+                # checkpoint state from a previous trip never contaminates the
+                # fresh request.
+                "trip_context": None,
+                "total_budget": None,
+                "critic_attempts": 0,
+                "force_replan": False,
+                "hitl_feedback": "",
+                "hitl_decision": "",
+                "planner_task_results": {},
+                "over_budget": False,
+            })
 
             # Handle plan-approval interrupt produced by hitl_approval_node.
             while pending_interrupt is not None:
