@@ -113,7 +113,7 @@ def run_validator(state: AgentState) -> dict:
         return {"validation_status": "approved"}
 
     last_content = getattr(messages[-1], "content", "")
-    is_hitl = bool(state.get("awaiting_user_clarification"))
+    is_hitl = bool(state.get("awaiting_user_clarification") or state.get("force_replan"))
 
     result = validate_message(last_content, is_hitl=is_hitl)
 
