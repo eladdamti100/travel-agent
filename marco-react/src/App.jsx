@@ -986,9 +986,11 @@ export default function App() {
 
                       {!showUpdateInput ? (
                         <div style={{ display: 'flex', gap: '12px' }}>
-                          <button className="btn btn-green" onClick={() => handleHitl('approve')} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading}>
-                            Approve
-                          </button>
+                          {!agentState?.over_budget && (
+                            <button className="btn btn-green" onClick={() => handleHitl('approve')} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading}>
+                              Approve
+                            </button>
+                          )}
                           <button className="btn btn-amber" onClick={() => setShowUpdateInput(true)} style={{ flex: 1, padding: '12px' }} disabled={nodeState.isLoading}>
                             Update
                           </button>
