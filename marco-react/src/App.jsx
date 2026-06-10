@@ -195,6 +195,8 @@ export default function App() {
   const [criticData, setCriticData]           = useState(null);
   const [menuOpen, setMenuOpen]               = useState(false);
   const [sidebarOpen, setSidebarOpen]         = useState(true);
+  const [userMenuOpen, setUserMenuOpen]       = useState(false);
+  const userMenuRef                           = useRef(null);
   const [theme, setTheme]                     = useState('light');
   const [animationsOn, setAnimationsOn]       = useState(true);
   const [logsOpen, setLogsOpen]               = useState(false);
@@ -226,6 +228,7 @@ export default function App() {
     }
   }, [activeSession, currentUser]);
   useEffect(() => { const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
+  useEffect(() => { const h = e => { if (userMenuRef.current && !userMenuRef.current.contains(e.target)) setUserMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, nodeState.active]);
 
   // ── Live log SSE connection ──────────────────────────────────────────────
@@ -879,11 +882,30 @@ export default function App() {
 
               {/* User badge */}
               {currentUser?.type === 'google' ? (
-                <div title={currentUser.name || currentUser.email} style={{ width:32, height:32, borderRadius:'50%', overflow:'hidden', border:`2px solid ${t.accent}`, flexShrink:0, cursor:'default' }}>
-                  {currentUser.picture
-                    ? <img src={currentUser.picture} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
-                    : <div style={{ width:'100%', height:'100%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:'#fff' }}>{currentUser.name?.[0]?.toUpperCase() || 'U'}</div>
-                  }
+                <div ref={userMenuRef} style={{ position:'relative' }}>
+                  <div onClick={() => setUserMenuOpen(o => !o)} style={{ width:32, height:32, borderRadius:'50%', overflow:'hidden', border:`2px solid ${t.accent}`, flexShrink:0, cursor:'pointer' }}>
+                    {currentUser.picture
+                      ? <img src={currentUser.picture} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                      : <div style={{ width:'100%', height:'100%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:'#fff' }}>{currentUser.name?.[0]?.toUpperCase() || 'U'}</div>
+                    }
+                  </div>
+                  {userMenuOpen && (
+                    <div style={{ position:'absolute', top:40, right:0, minWidth:180, background: dark?'#1e2533':'#ffffff', border:`1px solid ${t.border}`, borderRadius:10, boxShadow:'0 8px 24px rgba(0,0,0,0.15)', zIndex:1000, overflow:'hidden' }}>
+                      <div style={{ padding:'12px 16px', borderBottom:`1px solid ${t.border}` }}>
+                        <div style={{ fontSize:13, fontWeight:600, color:t.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.name}</div>
+                        <div style={{ fontSize:11, color:t.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.email}</div>
+                      </div>
+                      <button onClick={() => {
+                        setUserMenuOpen(false);
+                        setCurrentUser(null);
+                        setShowSplash(true);
+                        setMessages([]);
+                        setSessions([]);
+                      }} style={{ width:'100%', padding:'10px 16px', background:'transparent', border:'none', cursor:'pointer', textAlign:'left', fontSize:13, fontWeight:500, color:'#ef4444', fontFamily:"'Outfit', sans-serif" }}>
+                        Sign out
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : null}
             </div>
