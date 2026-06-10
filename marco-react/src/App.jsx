@@ -906,7 +906,16 @@ export default function App() {
                     </div>
                   )}
                 </div>
-              ) : null}
+              ) : (
+                <button onClick={() => {
+                  setShowSplash(true);
+                  setCurrentUser(null);
+                  setMessages([]);
+                  setSessions([]);
+                }} title="Back to home" style={{ width:32, height:32, borderRadius:'50%', background: dark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.06)', border:`1px solid ${t.border}`, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontSize:14, color:t.muted }}>
+                  ←
+                </button>
+              )}
             </div>
 
             {/* Scrollable Content Right */}
