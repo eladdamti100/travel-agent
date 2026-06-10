@@ -75,9 +75,16 @@ function SplashScreen({ onEnter }) {
 
   useEffect(() => { const t = setTimeout(() => setVisible(true), 60); return () => clearTimeout(t); }, []);
 
-  const handleEnter = (method) => {
+  const handleGoogleSuccess = (credentialResponse) => {
+    // Decode the JWT to get user info (sub, name, email, picture)
+    const payload = JSON.parse(atob(credentialResponse.credential.split('.')[1]));
     setLeaving(true);
-    setTimeout(() => onEnter(method), 700);
+    setTimeout(() => onEnter({ type: 'google', sub: payload.sub, name: payload.name, email: payload.email, picture: payload.picture }), 700);
+  };
+
+  const handleGuest = () => {
+    setLeaving(true);
+    setTimeout(() => onEnter({ type: 'guest' }), 700);
   };
 
   return (
@@ -113,7 +120,7 @@ function SplashScreen({ onEnter }) {
           {/* Google SSO */}
           <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
             <GoogleLogin
-              onSuccess={() => handleEnter('google')}
+              onSuccess={handleGoogleSuccess}
               onError={() => console.error('Google login failed')}
               theme="filled_black"
               size="large"
@@ -132,7 +139,7 @@ function SplashScreen({ onEnter }) {
 
           {/* Guest */}
           <button
-            onClick={() => handleEnter('guest')}
+            onClick={handleGuest}
             onMouseEnter={() => setGuestHover(true)}
             onMouseLeave={() => setGuestHover(false)}
             style={{
@@ -172,6 +179,7 @@ function nodeReducer(state, action) {
 
 export default function App() {
   const [showSplash, setShowSplash]           = useState(true);
+  const [currentUser, setCurrentUser]         = useState(null); // { type, sub, name, email, picture } or { type: 'guest' }
   const [activeSession, setActiveSession]     = useState(() => localStorage.getItem('activeSession') || crypto.randomUUID());
   const [sessions, setSessions]               = useState(() => { try { const saved = localStorage.getItem('allSessions'); return saved ? JSON.parse(saved) : []; } catch { return []; } });
   const [messages, setMessages]               = useState([]);
@@ -212,7 +220,11 @@ export default function App() {
   const menuRef   = useRef(null);
   const dark = theme === 'dark';
 
-  useEffect(() => { try { localStorage.setItem('activeSession', activeSession); } catch {} }, [activeSession]);
+  useEffect(() => {
+    if (currentUser?.type === 'google') {
+      try { localStorage.setItem(`activeSession_${currentUser.sub}`, activeSession); } catch {}
+    }
+  }, [activeSession, currentUser]);
   useEffect(() => { const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, nodeState.active]);
 
@@ -296,11 +308,14 @@ export default function App() {
     return (exists || isCacheHit) ? 'Completed' : 'Pending';
   };
 
+  const sessionStorageKey = currentUser?.type === 'google' ? `allSessions_${currentUser.sub}` : null;
+  const sessionNamesKey   = currentUser?.type === 'google' ? `sessionNames_${currentUser.sub}` : null;
+
   const handleNewPlan = () => {
     const newId = crypto.randomUUID();
     setSessions(prev => {
       const updated = [...new Set([...prev, newId])];
-      try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
+      if (sessionStorageKey) try { localStorage.setItem(sessionStorageKey, JSON.stringify(updated)); } catch {}
       return updated;
     });
     setActiveSession(newId);
@@ -314,7 +329,7 @@ export default function App() {
     await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' });
     setSessions(prev => {
       const updated = prev.filter(s => s !== sid);
-      try { localStorage.setItem('allSessions', JSON.stringify(updated)); } catch {}
+      if (sessionStorageKey) try { localStorage.setItem(sessionStorageKey, JSON.stringify(updated)); } catch {}
       return updated;
     });
     if (sid === activeSession) handleNewPlan();
@@ -326,7 +341,7 @@ export default function App() {
     setEditingSession(null);
     if (!editValue.trim()) return;
     const finalName = editValue.trim();
-    setSessionNames(prev => { const updated = { ...prev, [sid]: finalName }; try { localStorage.setItem('sessionNames', JSON.stringify(updated)); } catch (err) {} return updated; });
+    setSessionNames(prev => { const updated = { ...prev, [sid]: finalName }; if (sessionNamesKey) try { localStorage.setItem(sessionNamesKey, JSON.stringify(updated)); } catch {} return updated; });
     try { await fetch(`${BASE_URL}/session/${sid}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: finalName }) }); } catch (err) {}
   };
 
@@ -336,9 +351,8 @@ export default function App() {
       try { await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' }); } catch {}
     }
     setSessions([]);
-    localStorage.removeItem('allSessions');
-    localStorage.removeItem('sessionNames');
-    localStorage.removeItem('resolvedSessions');
+    if (sessionStorageKey) localStorage.removeItem(sessionStorageKey);
+    if (sessionNamesKey) localStorage.removeItem(sessionNamesKey);
     setMenuOpen(false); 
     handleNewPlan();
   };
@@ -504,7 +518,25 @@ export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
     <>
-      {showSplash && <SplashScreen onEnter={() => setShowSplash(false)} />}
+      {showSplash && <SplashScreen onEnter={(user) => {
+        setCurrentUser(user);
+        if (user.type === 'google') {
+          // Restore or create a session namespaced to this Google user
+          const storageKey = `activeSession_${user.sub}`;
+          const savedSession = localStorage.getItem(storageKey);
+          const session = savedSession || `${user.sub}_${crypto.randomUUID()}`;
+          if (!savedSession) localStorage.setItem(storageKey, session);
+          setActiveSession(session);
+          // Restore their session list
+          const savedSessions = localStorage.getItem(`allSessions_${user.sub}`);
+          if (savedSessions) setSessions(JSON.parse(savedSessions));
+        } else {
+          // Guest: fresh random session, no persistence
+          setActiveSession(crypto.randomUUID());
+          setSessions([]);
+        }
+        setShowSplash(false);
+      }} />}
 
       <div style={{ display:'flex', height:'100vh', fontFamily:"'Outfit', sans-serif", color:t.text, overflow:'hidden', position:'relative' }}>
         <style>{`
@@ -844,6 +876,21 @@ export default function App() {
                 <button className="btn" onClick={() => setTheme('light')} style={{ padding:'4px 10px', fontSize:11, fontWeight:600, borderRadius:6, background: !dark ? t.accent : 'transparent', color: !dark ? '#ffffff' : t.muted }}>L</button>
                 <button className="btn" onClick={() => setTheme('dark')} style={{ padding:'4px 10px', fontSize:11, fontWeight:600, borderRadius:6, background: dark ? t.accent : 'transparent', color: dark ? '#111622' : t.muted }}>D</button>
               </div>
+
+              {/* User badge */}
+              {currentUser?.type === 'google' ? (
+                <div style={{ display:'flex', alignItems:'center', gap:8, padding:'4px 10px', borderRadius:20, background: dark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)', border:`1px solid ${t.border}` }}>
+                  {currentUser.picture
+                    ? <img src={currentUser.picture} alt="" style={{ width:24, height:24, borderRadius:'50%', objectFit:'cover' }} />
+                    : <div style={{ width:24, height:24, borderRadius:'50%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'#fff' }}>{currentUser.name?.[0]?.toUpperCase()}</div>
+                  }
+                  <span style={{ fontSize:12, fontWeight:600, color:t.text, maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.name}</span>
+                </div>
+              ) : (
+                <div style={{ padding:'4px 12px', borderRadius:20, background: dark?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.04)', border:`1px solid ${t.border}`, fontSize:12, color:t.muted, fontWeight:500 }}>
+                  Guest
+                </div>
+              )}
             </div>
 
             {/* Scrollable Content Right */}
