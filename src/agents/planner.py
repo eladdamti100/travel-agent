@@ -190,6 +190,7 @@ async def _run_master_planner_async(state: AgentState) -> dict:
                 old_context=old_context,
                 modified_context=deterministic_context,
             )
+            planning_mode = "replanning"
             logger.info(
                 "force_replan=True with no persisted trip_context; "
                 "recovered context from message history."

@@ -195,27 +195,34 @@ def master_planner_node(state: AgentState) -> dict:
     """
     import concurrent.futures as _cf
     timeout = settings.planner_timeout_seconds
-    with _cf.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(run_master_planner, state)
-        try:
-            return future.result(timeout=timeout)
-        except _cf.TimeoutError:
-            logger.error(
-                "master_planner_node. status=timeout timeout_seconds=%.0f", timeout
-            )
-            future.cancel()
-            return {
-                "planner_status": "timeout",
-                "messages": [
-                    AIMessage(
-                        content=(
-                            "The planner took too long to respond. "
-                            "Please try again with a simpler request, "
-                            "or check that your API keys are configured correctly."
-                        )
+    # Do not use ThreadPoolExecutor as a context manager here: __exit__ calls
+    # shutdown(wait=True), which blocks until the worker thread finishes even
+    # after future.result() has already raised TimeoutError - defeating the
+    # whole point of the wall-clock timeout below.
+    pool = _cf.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(run_master_planner, state)
+    try:
+        result = future.result(timeout=timeout)
+        pool.shutdown(wait=False)
+        return result
+    except _cf.TimeoutError:
+        logger.error(
+            "master_planner_node. status=timeout timeout_seconds=%.0f", timeout
+        )
+        future.cancel()
+        pool.shutdown(wait=False)
+        return {
+            "planner_status": "timeout",
+            "messages": [
+                AIMessage(
+                    content=(
+                        "The planner took too long to respond. "
+                        "Please try again with a simpler request, "
+                        "or check that your API keys are configured correctly."
                     )
-                ],
-            }
+                )
+            ],
+        }
 
 
 # ── Node 9: Critic ───────────────────────────────────────────────────────────

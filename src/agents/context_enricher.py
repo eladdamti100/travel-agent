@@ -594,7 +594,7 @@ def _extract_hotel_preference(text: str) -> Optional[str]:
     """
     Extracts simple hotel preferences.
     """
-    if "5-star" in text or "five star" in text:
+    if re.search(r"5[\s-]?star", text) or re.search(r"five[\s-]?star", text) or "luxury" in text:
         return "Prefers 5-star hotels"
 
     if "cheap hotel" in text or "budget hotel" in text:
