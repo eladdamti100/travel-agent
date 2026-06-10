@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useReducer, useMemo } from 'react';
 
-const BASE_URL = "http://127.0.0.1:8000";
+const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // --- SVG Icons ---
 const Icons = {
@@ -64,26 +64,110 @@ const NODE_LABELS = {
   summarizer:          { icon: '📝', label: 'Summarizing' },
 };
 
+// Google logo SVG
+const GoogleLogo = () => (
+  <svg width="20" height="20" viewBox="0 0 48 48">
+    <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.9z"/>
+    <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 16 19 12 24 12c3.1 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"/>
+    <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.1l-6.2-5.2C29.3 35.5 26.8 36 24 36c-5.2 0-9.6-3.3-11.3-8H6.1C9.4 35.7 16.3 44 24 44z"/>
+    <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.6l6.2 5.2C41.3 35.2 44 30 44 24c0-1.3-.1-2.7-.4-3.9z"/>
+  </svg>
+);
+
 function SplashScreen({ onEnter }) {
-  const [visible, setVisible] = useState(false);
-  const [leaving, setLeaving] = useState(false);
+  const [visible, setVisible]   = useState(false);
+  const [leaving, setLeaving]   = useState(false);
+  const [googleHover, setGoogleHover] = useState(false);
+  const [guestHover, setGuestHover]   = useState(false);
+
   useEffect(() => { const t = setTimeout(() => setVisible(true), 60); return () => clearTimeout(t); }, []);
-  const handleEnter = () => { setLeaving(true); setTimeout(() => onEnter(), 700); };
+
+  const handleEnter = (method) => {
+    setLeaving(true);
+    setTimeout(() => onEnter(method), 700);
+  };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #0a0f1e 0%, #111827 40%, #1a2540 70%, #0d1424 100%)', transition: 'opacity 0.7s ease, transform 0.7s ease', opacity: leaving ? 0 : visible ? 1 : 0, transform: leaving ? 'scale(1.04)' : 'scale(1)', overflow: 'hidden' }}>
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'linear-gradient(135deg, #0a0f1e 0%, #111827 40%, #1a2540 70%, #0d1424 100%)',
+      transition: 'opacity 0.7s ease, transform 0.7s ease',
+      opacity: leaving ? 0 : visible ? 1 : 0,
+      transform: leaving ? 'scale(1.04)' : 'scale(1)',
+      overflow: 'hidden',
+    }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
-        .splash-btn { font-family:'Outfit', sans-serif; font-size:15px; font-weight:700; letter-spacing:0.06em; padding:16px 48px; background:linear-gradient(135deg, #0284c7 0%, #38bdf8 100%); color:#fff; border:none; border-radius:50px; cursor:pointer; transition:all 0.2s ease; box-shadow:0 8px 30px rgba(56,189,248,0.35); }
-        .splash-btn:hover { filter: brightness(1.12); transform: translateY(-2px) scale(1.02); }
       `}</style>
-      <div style={{ position:'relative', zIndex:2, textAlign:'center', display:'flex', flexDirection:'column', alignItems:'center', fontFamily:"'Outfit', sans-serif" }}>
-        <div style={{ fontSize:80, marginBottom:4, lineHeight:1, filter:'drop-shadow(0 6px 24px rgba(56,189,248,0.3))' }}>🌍</div>
-        <div style={{ marginTop:20, marginBottom:8 }}>
-          <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.25em', color:'rgba(56,189,248,0.7)' }}>LUXURY AI TRAVEL CONCIERGE</div>
-          <h1 style={{ fontSize:52, fontWeight:800, letterSpacing:'-0.04em', background:'linear-gradient(135deg, #f0f9ff 0%, #38bdf8 50%, #818cf8 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>marco</h1>
+
+      {/* Subtle background glow */}
+      <div style={{ position:'absolute', width:600, height:600, borderRadius:'50%', background:'radial-gradient(circle, rgba(56,189,248,0.07) 0%, transparent 70%)', top:'50%', left:'50%', transform:'translate(-50%,-50%)', pointerEvents:'none' }} />
+
+      <div style={{ position:'relative', zIndex:2, textAlign:'center', display:'flex', flexDirection:'column', alignItems:'center', fontFamily:"'Outfit', sans-serif", width: 360 }}>
+
+        {/* Logo */}
+        <div style={{ fontSize:72, lineHeight:1, filter:'drop-shadow(0 6px 28px rgba(56,189,248,0.35))', marginBottom:8 }}>🌍</div>
+
+        {/* Brand */}
+        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.28em', color:'rgba(56,189,248,0.65)', marginBottom:4 }}>LUXURY AI TRAVEL CONCIERGE</div>
+        <h1 style={{ margin:'0 0 4px', fontSize:52, fontWeight:800, letterSpacing:'-0.04em', background:'linear-gradient(135deg, #f0f9ff 0%, #38bdf8 50%, #818cf8 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>marco</h1>
+        <p style={{ margin:'0 0 36px', fontSize:13, color:'rgba(148,163,184,0.7)', fontWeight:400 }}>Your AI-powered travel companion</p>
+
+        {/* Auth buttons */}
+        <div style={{ width:'100%', display:'flex', flexDirection:'column', gap:12 }}>
+
+          {/* Google SSO */}
+          <button
+            onClick={() => handleEnter('google')}
+            onMouseEnter={() => setGoogleHover(true)}
+            onMouseLeave={() => setGoogleHover(false)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+              width: '100%', padding: '13px 24px',
+              background: googleHover ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.08)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 12, cursor: 'pointer', fontFamily:"'Outfit', sans-serif",
+              fontSize: 15, fontWeight: 600, color: '#f1f5f9',
+              transition: 'all 0.2s ease',
+              transform: googleHover ? 'translateY(-1px)' : 'none',
+              boxShadow: googleHover ? '0 8px 24px rgba(0,0,0,0.3)' : 'none',
+            }}
+          >
+            <GoogleLogo />
+            Continue with Google
+          </button>
+
+          {/* Divider */}
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <div style={{ flex:1, height:1, background:'rgba(255,255,255,0.08)' }} />
+            <span style={{ fontSize:12, color:'rgba(148,163,184,0.5)', fontFamily:"'Outfit', sans-serif" }}>or</span>
+            <div style={{ flex:1, height:1, background:'rgba(255,255,255,0.08)' }} />
+          </div>
+
+          {/* Guest */}
+          <button
+            onClick={() => handleEnter('guest')}
+            onMouseEnter={() => setGuestHover(true)}
+            onMouseLeave={() => setGuestHover(false)}
+            style={{
+              width: '100%', padding: '13px 24px',
+              background: guestHover ? 'linear-gradient(135deg, #0369a1, #38bdf8)' : 'linear-gradient(135deg, #0284c7, #0ea5e9)',
+              border: 'none', borderRadius: 12, cursor: 'pointer',
+              fontFamily:"'Outfit', sans-serif", fontSize: 15, fontWeight: 700,
+              letterSpacing: '0.04em', color: '#fff',
+              transition: 'all 0.2s ease',
+              transform: guestHover ? 'translateY(-1px)' : 'none',
+              boxShadow: guestHover ? '0 8px 28px rgba(56,189,248,0.45)' : '0 4px 16px rgba(56,189,248,0.25)',
+            }}
+          >
+            Continue as Guest
+          </button>
         </div>
-        <button className="splash-btn" onClick={handleEnter}>START CHATTING</button>
+
+        <p style={{ marginTop:20, fontSize:11, color:'rgba(100,116,139,0.6)', fontFamily:"'Outfit', sans-serif", lineHeight:1.6 }}>
+          By continuing you agree to our Terms of Service
+        </p>
       </div>
     </div>
   );
@@ -120,6 +204,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen]         = useState(true);
   const [theme, setTheme]                     = useState('light');
   const [animationsOn, setAnimationsOn]       = useState(true);
+  const [logsOpen, setLogsOpen]               = useState(false);
+  const [logLines, setLogLines]               = useState([]);
+  const logsEndRef                            = useRef(null);
+  const logEsRef                              = useRef(null);
   const [hasStartedChat, setHasStartedChat]   = useState(false);
   const [agentState, setAgentState]           = useState({});
   const [activeCard, setActiveCard]           = useState(null);
@@ -142,6 +230,26 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem('activeSession', activeSession); } catch {} }, [activeSession]);
   useEffect(() => { const h = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, nodeState.active]);
+
+  // ── Live log SSE connection ──────────────────────────────────────────────
+  useEffect(() => {
+    const es = new EventSource(`${BASE_URL}/logs/stream`);
+    logEsRef.current = es;
+    es.onmessage = (e) => {
+      try {
+        const line = JSON.parse(e.data);
+        setLogLines(prev => {
+          const next = [...prev, line];
+          return next.length > 500 ? next.slice(-500) : next;
+        });
+      } catch {}
+    };
+    return () => es.close();
+  }, []);
+
+  useEffect(() => {
+    if (logsOpen) logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logLines, logsOpen]);
 
   useEffect(() => {
     if (activeSession) {
@@ -742,6 +850,10 @@ export default function App() {
               {/* Theme & Animation Toggles */}
               <div style={{ display:'flex', gap:2, background:dark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.04)', borderRadius:8, padding:3 }}>
                 <button className="btn" onClick={() => setAnimationsOn(!animationsOn)} title="Toggle Animations" style={{ padding:'4px 8px', fontSize:12, borderRadius:6, background: animationsOn ? t.accent : 'transparent', color: animationsOn ? '#ffffff' : t.muted }}>✈️</button>
+                <button className="btn" onClick={() => setLogsOpen(o => !o)} title="Toggle Backend Logs" style={{ padding:'4px 8px', fontSize:12, borderRadius:6, background: logsOpen ? '#0f172a' : 'transparent', color: logsOpen ? '#38bdf8' : t.muted, position:'relative' }}>
+                  🖥
+                  {logLines.length > 0 && <span style={{ position:'absolute', top:1, right:1, width:6, height:6, borderRadius:'50%', background:'#38bdf8', display:'block' }} />}
+                </button>
                 <div style={{ width: 1, background: t.border, margin: '2px 4px' }} />
                 <button className="btn" onClick={() => setTheme('light')} style={{ padding:'4px 10px', fontSize:11, fontWeight:600, borderRadius:6, background: !dark ? t.accent : 'transparent', color: !dark ? '#ffffff' : t.muted }}>L</button>
                 <button className="btn" onClick={() => setTheme('dark')} style={{ padding:'4px 10px', fontSize:11, fontWeight:600, borderRadius:6, background: dark ? t.accent : 'transparent', color: dark ? '#111622' : t.muted }}>D</button>
@@ -1195,6 +1307,64 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* ── Log Overlay ────────────────────────────────────────────────── */}
+      {logsOpen && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 900,
+          background: 'rgba(10,15,30,0.92)',
+          backdropFilter: 'blur(6px)',
+          display: 'flex', flexDirection: 'column',
+          padding: '24px 32px',
+        }}>
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <span style={{ color: '#38bdf8', fontFamily: 'monospace', fontWeight: 700, fontSize: 15, letterSpacing: '0.08em' }}>
+              🖥 BACKEND LOGS
+            </span>
+            <span style={{ color: '#475569', fontFamily: 'monospace', fontSize: 12 }}>{logLines.length} lines</span>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => setLogLines([])}
+              style={{ background: 'transparent', border: '1px solid #334155', color: '#64748b', borderRadius: 6, padding: '3px 12px', cursor: 'pointer', fontSize: 12, fontFamily: 'monospace' }}
+            >clear</button>
+            <button
+              onClick={() => setLogsOpen(false)}
+              style={{ background: '#334155', border: 'none', color: '#e2e8f0', borderRadius: 6, padding: '3px 14px', cursor: 'pointer', fontSize: 13, fontFamily: 'monospace' }}
+            >✕ close</button>
+          </div>
+
+          {/* Log lines */}
+          <div style={{
+            flex: 1, overflowY: 'auto',
+            background: '#070c18',
+            borderRadius: 12,
+            border: '1px solid #1e293b',
+            padding: '12px 16px',
+            fontFamily: 'monospace', fontSize: 12,
+          }}>
+            {logLines.length === 0 && (
+              <div style={{ color: '#475569', padding: 8 }}>Waiting for backend activity...</div>
+            )}
+            {logLines.map((line, i) => {
+              const lvl = (line.level || '').toUpperCase();
+              const color = lvl === 'ERROR' ? '#f87171'
+                : lvl === 'WARNING'  ? '#fbbf24'
+                : lvl === 'DEBUG'    ? '#6b7280'
+                : '#7dd3fc';
+              return (
+                <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 3, lineHeight: '1.6' }}>
+                  <span style={{ color: '#334155', flexShrink: 0, minWidth: 64 }}>{line.time}</span>
+                  <span style={{ color, flexShrink: 0, minWidth: 60, fontWeight: 600 }}>{lvl}</span>
+                  <span style={{ color: '#818cf8', flexShrink: 0, minWidth: 140 }}>{line.name}</span>
+                  <span style={{ color: '#cbd5e1', wordBreak: 'break-all' }}>{line.message}</span>
+                </div>
+              );
+            })}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
+      )}
     </>
   );
 }

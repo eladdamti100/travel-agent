@@ -1,5 +1,7 @@
 import json
+import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +13,20 @@ from pydantic import BaseModel
 
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
-from src.graph.workflow import graph as travel_graph
+
+try:
+    from src.graph.workflow import graph as travel_graph
+except Exception as _graph_err:
+    import logging as _logging
+    _logging.getLogger("startup").error("Graph failed to load: %s", _graph_err)
+    travel_graph = None
 
 app = FastAPI(title="Marco Travel Agent API")
+
+# ── Health check (required by Railway) ───────────────────────────────────────
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "marco-travel-agent"}
 
 # ── CORS Middleware ───────────────────────────────────────────────────────────
 app.add_middleware(
@@ -79,10 +92,22 @@ def _get_cache_matched_query(state) -> str:
 def chat(request: ChatRequest):
     import logging
     logger = logging.getLogger(__name__)
-    
+    if travel_graph is None:
+        raise HTTPException(status_code=503, detail="Graph not loaded — check server logs for startup errors.")
+
     config = {"configurable": {"thread_id": request.session_id}}
-    input_state = {"messages": [("user", request.message)]}
-    
+    input_state = {
+        "messages": [("user", request.message)],
+        "trip_context": None,
+        "total_budget": None,
+        "critic_attempts": 0,
+        "force_replan": False,
+        "hitl_feedback": "",
+        "hitl_decision": "",
+        "planner_task_results": {},
+        "over_budget": False,
+    }
+
     logger.info(f"CHAT_REQUEST: session={request.session_id} msg={request.message[:50]}")
 
     try:
@@ -119,7 +144,17 @@ def chat(request: ChatRequest):
 @app.get("/chat/stream/{session_id}")
 def chat_stream(session_id: str, message: str):
     config = {"configurable": {"thread_id": session_id}}
-    input_state = {"messages": [("user", message)]}
+    input_state = {
+        "messages": [("user", message)],
+        "trip_context": None,
+        "total_budget": None,
+        "critic_attempts": 0,
+        "force_replan": False,
+        "hitl_feedback": "",
+        "hitl_decision": "",
+        "planner_task_results": {},
+        "over_budget": False,
+    }
 
     def event_generator():
         try:
@@ -337,6 +372,56 @@ def clear_all_sessions():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Global Purge Failed: {str(e)}")
     
+# ── GET /logs/stream — SSE live log tail ─────────────────────────────────────
+_LOG_FILE = Path(__file__).parent.parent.parent / "logs" / "travel_agent.log"
+
+@app.get("/logs/stream")
+def stream_logs():
+    """
+    Server-Sent Events endpoint that tails travel_agent.log in real time.
+    Each event is a JSON object: { level, name, message, time }
+    """
+    def _tail():
+        _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LOG_FILE.touch(exist_ok=True)
+
+        with open(_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+            # Send last 50 lines as history first
+            lines = f.readlines()
+            for line in lines[-50:]:
+                parsed = _parse_log_line(line)
+                if parsed:
+                    yield f"data: {json.dumps(parsed)}\n\n"
+
+            # Then tail for new lines
+            while True:
+                line = f.readline()
+                if line:
+                    parsed = _parse_log_line(line)
+                    if parsed:
+                        yield f"data: {json.dumps(parsed)}\n\n"
+                else:
+                    yield ": keep-alive\n\n"
+                    time.sleep(0.3)
+
+    return StreamingResponse(
+        _tail(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _parse_log_line(line: str) -> dict | None:
+    """Parse a log line into structured JSON. Format: HH:MM:SS | LEVEL | name | message"""
+    line = line.rstrip()
+    if not line:
+        return None
+    parts = line.split(" | ", 3)
+    if len(parts) == 4:
+        return {"time": parts[0], "level": parts[1].strip(), "name": parts[2].strip(), "message": parts[3]}
+    return {"time": "", "level": "INFO", "name": "log", "message": line}
+
+
 # ── PATCH /session/{session_id} ──────────────────────────────────────────────
 @app.patch("/session/{session_id}")
 async def update_session_name(session_id: str, data: dict):

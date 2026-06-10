@@ -1,3 +1,7 @@
+# Web API Server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
 # Core CLI UI & Logging
 rich>=13.0.0
 
@@ -7,6 +11,7 @@ langchain-core>=0.3.0
 langchain-google-genai>=2.0.0
 langchain-groq>=0.2.0
 langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=1.0.0
 
 # Community Ecosystem (Required for Tavily Search integration)
 langchain-community>=0.3.0
