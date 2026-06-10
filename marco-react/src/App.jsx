@@ -310,7 +310,7 @@ export default function App() {
 
   const handleSend = e => {
     if (e) e.preventDefault();
-    if (!prompt.trim() || nodeState.isLoading || graphPaused) return;
+    if (!prompt.trim() || nodeState.isLoading) return;
     executeChat(prompt.trim());
   };
 
@@ -351,9 +351,12 @@ export default function App() {
     }
 
     dispatchNode({ type: 'SET_HITL' });
-    setShowUpdateInput(false); 
+    setShowUpdateInput(false);
+    // hitl_approval_node expects decision values "approved"|"edit"|"cancelled",
+    // not the UI's "approve"/"reject"/"cancel" action names.
+    const decisionMap = { approve: 'approved', reject: 'edit', cancel: 'cancelled' };
     try {
-      const res = await fetch(`${BASE_URL}/session/${activeSession}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, feedback }) });
+      const res = await fetch(`${BASE_URL}/session/${activeSession}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: decisionMap[action] || action, feedback }) });
       const data = await res.json();
       if (data.reply) setMessages(prev => [...prev, { role: 'assistant', content: data.reply }]);
       setHitlPending(data.hitl || false); setFeedback('');
@@ -707,8 +710,8 @@ export default function App() {
             <div style={{ padding: '16px 24px', borderTop: `1px solid ${t.border}`, background: t.surfaceHi }}>
               <form onSubmit={handleSend}>
                 <div className="input-wrap" style={{ borderRadius: '24px', padding: '8px 12px 8px 18px' }}>
-                  <input className="input-field" type="text" value={prompt} onChange={e => setPrompt(e.target.value)} disabled={nodeState.isLoading || graphPaused} placeholder="Describe your dream destination..." />
-                  <button type="submit" className="btn btn-primary" disabled={nodeState.isLoading || graphPaused || !prompt.trim()} style={{ padding:'10px', borderRadius: '50%' }}>
+                  <input className="input-field" type="text" value={prompt} onChange={e => setPrompt(e.target.value)} disabled={nodeState.isLoading} placeholder="Describe your dream destination..." />
+                  <button type="submit" className="btn btn-primary" disabled={nodeState.isLoading || !prompt.trim()} style={{ padding:'10px', borderRadius: '50%' }}>
                     {nodeState.isLoading ? <Spinner /> : <Icons.Send size={18} />}
                   </button>
                 </div>

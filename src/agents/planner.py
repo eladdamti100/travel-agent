@@ -26,6 +26,7 @@ from langchain_core.messages import AIMessage
 from src.agents.context_enricher import (
     enrich_trip_context_async,
     extract_trip_context_deterministic,
+    extract_trip_context_from_history,
     merge_modified_trip_context,
     merge_trip_context,
 )
@@ -174,9 +175,29 @@ async def _run_master_planner_async(state: AgentState) -> dict:
         logger.info("Planner reuse ratio during replanning: %.2f", reuse_ratio)
 
     elif state.get("force_replan"):
-        logger.info(
-            "force_replan=True but no previous trip_context was found; running full planning flow."
+        # No persisted trip_context (e.g. checkpoint didn't survive a HITL
+        # interrupt). Recover prior trip details from earlier user messages
+        # so a follow-up edit like "now my budget is 600 dollars" doesn't
+        # re-ask for fields the user already provided.
+        old_context = extract_trip_context_from_history(state)
+        has_history_context = any(
+            value not in (None, "", [])
+            for field_name, value in old_context.model_dump().items()
+            if field_name not in ("extraction_source", "slm_enriched")
         )
+        if has_history_context:
+            deterministic_context = merge_modified_trip_context(
+                old_context=old_context,
+                modified_context=deterministic_context,
+            )
+            logger.info(
+                "force_replan=True with no persisted trip_context; "
+                "recovered context from message history."
+            )
+        else:
+            logger.info(
+                "force_replan=True but no previous trip_context was found; running full planning flow."
+            )
 
     # P1-4.3 / P1-2.3: Start enrichment AFTER replanning (so it sees the final
     # deterministic_context) and run it concurrently with the first sub-agent wave.

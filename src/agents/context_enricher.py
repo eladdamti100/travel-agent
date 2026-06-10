@@ -59,7 +59,49 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
     This function does not call an LLM.
     """
     latest_message = _get_latest_user_message(state)
-    text = latest_message.lower()
+    context = _build_context_from_text(latest_message, state)
+
+    logger.info("Deterministic TripContext extracted: %s", context.model_dump())
+    return context
+
+
+def extract_trip_context_from_history(state: AgentState) -> TripContext:
+    """
+    Builds a TripContext from earlier user messages (excluding the latest).
+
+    Used as a fallback during replanning turns when no trip_context survived
+    in state but the user is editing a trip described in an earlier message
+    (e.g. "Now my budget is 600 dollars" after a full planning request).
+    """
+    human_messages = [
+        m.content if isinstance(m.content, str) else str(m.content)
+        for m in state.get("messages", [])
+        if isinstance(m, HumanMessage)
+    ]
+    if len(human_messages) <= 1:
+        return TripContext(extraction_source="deterministic", slm_enriched=False)
+
+    # Fold messages in chronological order so a later edit (e.g. "now my
+    # budget is 1500 dollars") overrides an earlier one (e.g. "Budget: 5000")
+    # instead of a single combined-text regex pass picking up the first
+    # (oldest) match for each field.
+    context = _build_context_from_text(human_messages[0], state)
+    for message_text in human_messages[1:-1]:
+        message_context = _build_context_from_text(message_text, state)
+        context = merge_modified_trip_context(
+            old_context=context, modified_context=message_context
+        )
+
+    context = context.model_copy(
+        update={"extraction_source": "deterministic", "slm_enriched": False}
+    )
+
+    logger.info("Historical TripContext extracted: %s", context.model_dump())
+    return context
+
+
+def _build_context_from_text(message_text: str, state: AgentState) -> TripContext:
+    text = message_text.lower()
 
     destination_city = _extract_destination_city(text) or state.get("current_city")
     destination_country = (
@@ -72,14 +114,14 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
     travel_start_date = _extract_travel_start_date(text)
     travel_end_date = _compute_travel_end_date(travel_start_date, duration_days)
 
-    context = TripContext(
-        origin_airport=_extract_origin_airport(latest_message),
+    return TripContext(
+        origin_airport=_extract_origin_airport(message_text),
         origin_country=_extract_origin_country(text),
         destination_city=destination_city,
         destination_country=destination_country,
         duration_days=duration_days,
         total_budget=_extract_total_budget(text) or state.get("total_budget"),
-        currency=_extract_currency(latest_message) or state.get("currency"),
+        currency=_extract_currency(message_text) or state.get("currency"),
         travel_month=_extract_travel_month(text),
         num_travelers=_extract_num_travelers(text) or state.get("num_travelers"),
         preferred_airline=state.get("preferred_airline"),
@@ -94,9 +136,6 @@ def extract_trip_context_deterministic(state: AgentState) -> TripContext:
         extraction_source="deterministic",
         slm_enriched=False,
     )
-
-    logger.info("Deterministic TripContext extracted: %s", context.model_dump())
-    return context
 
 
 
@@ -489,7 +528,7 @@ def _extract_total_budget(text: str) -> Optional[float]:
         r"(\d[\d,]*(?:\.\d+)?)\s*\$",
         r"[€£₪¥](\d[\d,]*(?:\.\d+)?)",
         r"(\d[\d,]*(?:\.\d+)?)\s*[€£₪¥]",
-        r"\b(?:budget|under|up to|max|maximum)(?:\s+is)?\s+[\$€£₪¥]?(\d[\d,]*(?:\.\d+)?)\b",
+        r"\b(?:budget|under|up to|max|maximum)(?:\s+is)?\s*:?\s*[\$€£₪¥]?(\d[\d,]*(?:\.\d+)?)\b",
         r"\b(\d[\d,]*(?:\.\d+)?)\s*(?:usd|eur|gbp|ils|jpy|aud|cad|dollars?|euros?|pounds?|shekels?|yen)\b",
     ]
 

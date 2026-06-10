@@ -68,9 +68,9 @@ class Settings(BaseSettings):
     # ── Graph / planner limits ────────────────────────────────────────────────
     max_tool_calls: int = 8
     max_critic_attempts: int = 2
-    max_hitl_edit_attempts: int = 3
+    max_hitl_edit_attempts: int = 5
     enrichment_timeout_seconds: float = 10.0
-    planner_timeout_seconds: float = 90.0
+    planner_timeout_seconds: float = 150.0
 
     # ── Demo mode — set DEMO_MODE=true in .env for fast, reliable presentations ─
     # Skips slow live web agents; all results come from the local DB (instant).
