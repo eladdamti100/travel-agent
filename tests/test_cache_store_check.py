@@ -232,3 +232,60 @@ class TestBackgroundThread:
             run_cache_store(state)
 
         assert captured.get("source") == "db"
+
+
+# ── 4. Origin hard filter ─────────────────────────────────────────────────────
+
+class TestOriginHardFilter:
+    """origin_airport mismatch must reject a cached entry regardless of similarity."""
+
+    def test_different_origin_is_rejected(self):
+        """TLV→Tokyo plan must not be served to a JFK→Tokyo query."""
+        from src.services.trip_vector import check_hard_filters
+
+        query_ctx  = {"origin_airport": "JFK", "destination_city": "Tokyo", "duration_days": 5}
+        cached_ctx = {"origin_airport": "TLV", "destination_city": "Tokyo", "duration_days": 5}
+
+        passes, reason = check_hard_filters(query_ctx, cached_ctx)
+        assert not passes, "Different origins must be rejected by check_hard_filters"
+        assert "TLV" in reason and "JFK" in reason
+
+    def test_same_origin_is_accepted(self):
+        """TLV→Tokyo plan should be served to another TLV→Tokyo query."""
+        from src.services.trip_vector import check_hard_filters
+
+        query_ctx  = {"origin_airport": "TLV", "destination_city": "Tokyo", "duration_days": 5}
+        cached_ctx = {"origin_airport": "TLV", "destination_city": "Tokyo", "duration_days": 5}
+
+        passes, _ = check_hard_filters(query_ctx, cached_ctx)
+        assert passes
+
+    def test_missing_query_origin_allows_hit(self):
+        """If the query has no origin, don't block — origin is unknown, not mismatched."""
+        from src.services.trip_vector import check_hard_filters
+
+        query_ctx  = {"destination_city": "Tokyo", "duration_days": 5}
+        cached_ctx = {"origin_airport": "TLV", "destination_city": "Tokyo", "duration_days": 5}
+
+        passes, _ = check_hard_filters(query_ctx, cached_ctx)
+        assert passes
+
+    def test_missing_cached_origin_allows_hit(self):
+        """If the cached entry has no origin, don't block — old entries lack this field."""
+        from src.services.trip_vector import check_hard_filters
+
+        query_ctx  = {"origin_airport": "TLV", "destination_city": "Tokyo", "duration_days": 5}
+        cached_ctx = {"destination_city": "Tokyo", "duration_days": 5}
+
+        passes, _ = check_hard_filters(query_ctx, cached_ctx)
+        assert passes
+
+    def test_origin_case_insensitive(self):
+        """'tlv' and 'TLV' must be treated as the same origin."""
+        from src.services.trip_vector import check_hard_filters
+
+        query_ctx  = {"origin_airport": "tlv", "destination_city": "Tokyo"}
+        cached_ctx = {"origin_airport": "TLV", "destination_city": "Tokyo"}
+
+        passes, _ = check_hard_filters(query_ctx, cached_ctx)
+        assert passes

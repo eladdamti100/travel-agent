@@ -332,4 +332,9 @@ def check_hard_filters(
             f"max allowed ({DURATION_MAX_BUCKET_DIFF})."
         )
 
+    q_origin = (query_context.get("origin_airport") or "").strip().upper()
+    c_origin = (cached_context.get("origin_airport") or "").strip().upper()
+    if q_origin and c_origin and q_origin != c_origin:
+        return False, f"Origin mismatch: {q_origin} vs {c_origin}."
+
     return True, "Compatible."

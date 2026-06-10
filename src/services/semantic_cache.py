@@ -365,10 +365,11 @@ def _load_embedding_index(
     """
     Loads id, query, and embedding_json for candidate rows in a route.
 
-    When trip_context is provided, two WHERE clauses are pushed into SQLite
+    When trip_context is provided, WHERE clauses are pushed into SQLite
     before any Python runs (pre-filtering):
       - destination_city exact match
       - total_budget within ±5%
+      - origin_airport exact match (when present on both sides)
 
     Rows without trip_context_json always pass through so free-text entries
     remain reachable via semantic fallback.
@@ -406,6 +407,15 @@ def _load_embedding_index(
             except (TypeError, ValueError):
                 pass
 
+        origin = (trip_context.get("origin_airport") or "").strip().upper()
+        if origin:
+            conditions.append(
+                "(trip_context_json IS NULL"
+                " OR json_extract(trip_context_json, '$.origin_airport') IS NULL"
+                " OR UPPER(json_extract(trip_context_json, '$.origin_airport')) = ?)"
+            )
+            params.append(origin)
+
     where = " AND ".join(conditions)
 
     with sqlite3.connect(_CACHE_DB_PATH) as conn:
@@ -426,11 +436,12 @@ def _load_embedding_index(
         ).fetchall()
 
     logger.info(
-        "Pre-filter loaded %d candidate rows. route=%s destination=%s budget=%s",
+        "Pre-filter loaded %d candidate rows. route=%s destination=%s budget=%s origin=%s",
         len(rows),
         route,
         trip_context.get("destination_city") if trip_context else None,
         trip_context.get("total_budget") if trip_context else None,
+        trip_context.get("origin_airport") if trip_context else None,
     )
 
     return [dict(row) for row in rows]

@@ -75,6 +75,7 @@ def _load_rows(dest_filter: str | None, limit: int | None) -> list[dict]:
         sql = """
             SELECT id, route, source, ttl_days, valid_until, created_at,
                    json_extract(trip_context_json, '$.destination_city') AS destination,
+                   json_extract(trip_context_json, '$.origin_airport')   AS origin,
                    json_extract(trip_context_json, '$.total_budget')     AS budget,
                    json_extract(trip_context_json, '$.travel_start_date') AS start_date,
                    substr(query, 1, 72)                                  AS query_short,
@@ -128,6 +129,7 @@ def _build_table(rows: list[dict], stats: dict) -> "Table":
     )
     table.add_column("ID",      style="dim",        width=5,  justify="right")
     table.add_column("Source",  width=5)
+    table.add_column("Origin",  width=6)
     table.add_column("Dest",    width=10)
     table.add_column("Budget",  width=8,  justify="right")
     table.add_column("Start",   width=12)
@@ -146,6 +148,7 @@ def _build_table(rows: list[dict], stats: dict) -> "Table":
         table.add_row(
             str(r["id"]),
             Text(r.get("source", "?"), style=src_color),
+            (r.get("origin") or "—").upper(),
             dest,
             budget,
             r.get("start_date") or "—",
@@ -162,16 +165,18 @@ def _print_plain(rows: list[dict], stats: dict) -> None:
     print(f"Cache: {_DB}")
     print(f"Total: {stats.get('total',0)}  web: {stats.get('web',0)}  db: {stats.get('db',0)}  expired: {stats.get('expired',0)}")
     print("-" * 100)
-    fmt = "{:<5} {:<5} {:<12} {:<8} {:<12} {:<4} {:<24} {}"
-    print(fmt.format("ID", "Src", "Dest", "Budget", "Start", "TTL", "Status", "Query"))
-    print("-" * 100)
+    fmt = "{:<5} {:<5} {:<6} {:<12} {:<8} {:<12} {:<4} {:<24} {}"
+    print(fmt.format("ID", "Src", "Origin", "Dest", "Budget", "Start", "TTL", "Status", "Query"))
+    print("-" * 110)
     for r in rows:
         label, _ = _expiry_status(r)
         dest = (r.get("destination") or "—").title()
         budget = f"${int(r['budget'])}" if r.get("budget") else "—"
+        origin = (r.get("origin") or "—").upper()
         print(fmt.format(
             r["id"],
             r.get("source", "?"),
+            origin,
             dest[:12],
             budget,
             r.get("start_date") or "—",
