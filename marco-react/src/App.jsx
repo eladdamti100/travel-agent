@@ -329,7 +329,7 @@ export default function App() {
 
   const handleDelete = async (sid, e) => {
     e.stopPropagation();
-    await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' });
+    try { await fetch(`${BASE_URL}/session/${sid}`, { method: 'DELETE' }); } catch {}
     setSessions(prev => {
       const updated = prev.filter(s => s !== sid);
       if (sessionStorageKey) try { localStorage.setItem(sessionStorageKey, JSON.stringify(updated)); } catch {}
