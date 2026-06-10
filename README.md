@@ -132,6 +132,27 @@ Marco: Plan approved! Saving to cache in the background.
 ```
 
 ---
+### 5. Running the Application (Full Stack)
+
+Marco uses a dual-stack setup: a FastAPI backend for the AI logic and a React/Vite frontend for the modern UI. You will need to run both concurrently in separate terminal windows.
+
+#### Terminal 1: Start the Backend (API)
+Open a terminal in the root of the project (`travel-agent/`) and start the FastAPI server:
+
+```bash
+python -m uvicorn src.api.main:app --reload
+```
+*The backend will start running at `http://127.0.0.1:8000`.*
+
+#### Terminal 2: Start the Frontend (UI)
+Open a **new** terminal, navigate into the React directory, and start the Vite development server:
+
+```bash
+cd marco-react
+npm run dev
+```
+*The frontend will start running (usually at `http://localhost:5173`). Open this link in your browser to start chatting with Marco!*
+
 
 ## Admin Mode
 
