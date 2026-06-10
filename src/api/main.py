@@ -13,9 +13,20 @@ from pydantic import BaseModel
 
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
-from src.graph.workflow import graph as travel_graph
+
+try:
+    from src.graph.workflow import graph as travel_graph
+except Exception as _graph_err:
+    import logging as _logging
+    _logging.getLogger("startup").error("Graph failed to load: %s", _graph_err)
+    travel_graph = None
 
 app = FastAPI(title="Marco Travel Agent API")
+
+# ── Health check (required by Railway) ───────────────────────────────────────
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "marco-travel-agent"}
 
 # ── CORS Middleware ───────────────────────────────────────────────────────────
 app.add_middleware(
@@ -81,7 +92,9 @@ def _get_cache_matched_query(state) -> str:
 def chat(request: ChatRequest):
     import logging
     logger = logging.getLogger(__name__)
-    
+    if travel_graph is None:
+        raise HTTPException(status_code=503, detail="Graph not loaded — check server logs for startup errors.")
+
     config = {"configurable": {"thread_id": request.session_id}}
     input_state = {
         "messages": [("user", request.message)],
