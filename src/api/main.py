@@ -3,7 +3,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -422,7 +422,7 @@ def stream_logs():
     )
 
 
-def _parse_log_line(line: str) -> dict | None:
+def _parse_log_line(line: str) -> Optional[dict]:
     """Parse a log line into structured JSON. Format: HH:MM:SS | LEVEL | name | message"""
     line = line.rstrip()
     if not line:

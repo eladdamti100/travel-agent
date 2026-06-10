@@ -152,12 +152,14 @@ def resume_hitl_context_node(state: AgentState) -> dict:
         return {
             "trip_context": TripContext(**merged).model_dump(),
             "awaiting_user_clarification": False,
+            "cache_status": "miss",
         }
     except Exception as exc:
         logger.error("resume_hitl_context. merge_failed=%s falling_back_to_pending", exc)
         return {
             "trip_context": pending_context,
             "awaiting_user_clarification": False,
+            "cache_status": "miss",
         }
 
 
