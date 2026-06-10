@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useReducer, useMemo } from 'react';
+import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google';
+
+const GOOGLE_CLIENT_ID = "388288217908-4vq5iopigfi4nd0h0lvu4o3c3ksstp6m.apps.googleusercontent.com";
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -64,21 +67,11 @@ const NODE_LABELS = {
   summarizer:          { icon: '📝', label: 'Summarizing' },
 };
 
-// Google logo SVG
-const GoogleLogo = () => (
-  <svg width="20" height="20" viewBox="0 0 48 48">
-    <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.9z"/>
-    <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 16 19 12 24 12c3.1 0 5.8 1.1 7.9 3l5.7-5.7C34.5 6.5 29.5 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"/>
-    <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.1l-6.2-5.2C29.3 35.5 26.8 36 24 36c-5.2 0-9.6-3.3-11.3-8H6.1C9.4 35.7 16.3 44 24 44z"/>
-    <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.6l6.2 5.2C41.3 35.2 44 30 44 24c0-1.3-.1-2.7-.4-3.9z"/>
-  </svg>
-);
 
 function SplashScreen({ onEnter }) {
-  const [visible, setVisible]   = useState(false);
-  const [leaving, setLeaving]   = useState(false);
-  const [googleHover, setGoogleHover] = useState(false);
-  const [guestHover, setGuestHover]   = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [guestHover, setGuestHover] = useState(false);
 
   useEffect(() => { const t = setTimeout(() => setVisible(true), 60); return () => clearTimeout(t); }, []);
 
@@ -118,25 +111,17 @@ function SplashScreen({ onEnter }) {
         <div style={{ width:'100%', display:'flex', flexDirection:'column', gap:12 }}>
 
           {/* Google SSO */}
-          <button
-            onClick={() => handleEnter('google')}
-            onMouseEnter={() => setGoogleHover(true)}
-            onMouseLeave={() => setGoogleHover(false)}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-              width: '100%', padding: '13px 24px',
-              background: googleHover ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.08)',
-              border: '1px solid rgba(255,255,255,0.15)',
-              borderRadius: 12, cursor: 'pointer', fontFamily:"'Outfit', sans-serif",
-              fontSize: 15, fontWeight: 600, color: '#f1f5f9',
-              transition: 'all 0.2s ease',
-              transform: googleHover ? 'translateY(-1px)' : 'none',
-              boxShadow: googleHover ? '0 8px 24px rgba(0,0,0,0.3)' : 'none',
-            }}
-          >
-            <GoogleLogo />
-            Continue with Google
-          </button>
+          <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+            <GoogleLogin
+              onSuccess={() => handleEnter('google')}
+              onError={() => console.error('Google login failed')}
+              theme="filled_black"
+              size="large"
+              text="continue_with"
+              shape="rectangular"
+              width="360"
+            />
+          </div>
 
           {/* Divider */}
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -517,6 +502,7 @@ export default function App() {
   );
 
   return (
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
     <>
       {showSplash && <SplashScreen onEnter={() => setShowSplash(false)} />}
 
@@ -1366,5 +1352,6 @@ export default function App() {
         </div>
       )}
     </>
+    </GoogleOAuthProvider>
   );
 }
