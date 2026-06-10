@@ -886,14 +886,13 @@ export default function App() {
                   <div onClick={() => setUserMenuOpen(o => !o)} style={{ width:32, height:32, borderRadius:'50%', overflow:'hidden', border:`2px solid ${t.accent}`, flexShrink:0, cursor:'pointer' }}>
                     {currentUser.picture
                       ? <img src={currentUser.picture} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
-                      : <div style={{ width:'100%', height:'100%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:'#fff' }}>{currentUser.name?.[0]?.toUpperCase() || 'U'}</div>
+                      : <div style={{ width:'100%', height:'100%', background:t.accent, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:'#fff' }}>{currentUser.email?.[0]?.toUpperCase() || 'U'}</div>
                     }
                   </div>
                   {userMenuOpen && (
                     <div style={{ position:'absolute', top:40, right:0, minWidth:180, background: dark?'#1e2533':'#ffffff', border:`1px solid ${t.border}`, borderRadius:10, boxShadow:'0 8px 24px rgba(0,0,0,0.15)', zIndex:1000, overflow:'hidden' }}>
                       <div style={{ padding:'12px 16px', borderBottom:`1px solid ${t.border}` }}>
-                        <div style={{ fontSize:13, fontWeight:600, color:t.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.name}</div>
-                        <div style={{ fontSize:11, color:t.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.email}</div>
+                        <div style={{ fontSize:12, color:t.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{currentUser.email}</div>
                       </div>
                       <button onClick={() => {
                         setUserMenuOpen(false);
