@@ -146,6 +146,7 @@ class WebSupervisor:
             allowed_tasks=allowed_tasks,
             cyber_agent=self._cyber,      # enables per-agent record_outcome in DB tier
         )
+
         web_coro = self._dispatch_web_agents(
             context=vetted_context,
             existing_results=existing_results,

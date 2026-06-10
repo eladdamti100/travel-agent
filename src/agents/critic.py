@@ -246,11 +246,10 @@ def critique_plan(state: Dict[str, Any]) -> CritiqueResult:
     structured = state.get("planner_structured_results") or {}
     raw_results = state.get("planner_task_results") or {}
 
-    budget = (
-        state.get("total_budget")
-        or trip_ctx.get("total_budget")
-    )
-    if budget:
+    budget = state.get("total_budget")
+    if budget is None:
+        budget = trip_ctx.get("total_budget")
+    if budget is not None:
         budget = float(budget)
 
     duration_days = trip_ctx.get("duration_days")

@@ -95,9 +95,8 @@ class TestTavilyAsyncFix:
     """web_research_tavily must not block the event loop."""
 
     def test_uses_asyncio_to_thread(self):
-        from src.tools.web_api_tools import web_research_tavily
-        # async @tool wraps the underlying coroutine function in .coroutine
-        src = inspect.getsource(web_research_tavily.coroutine)
+        from src.tools.web_api_tools import _tavily_search
+        src = inspect.getsource(_tavily_search)
         assert "asyncio.to_thread" in src, (
             "web_research_tavily must call asyncio.to_thread to avoid blocking the event loop"
         )

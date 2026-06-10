@@ -458,7 +458,7 @@ _DEFAULT_HITL_QUESTION = (
 
 def _check_budget_exceeded(context: TripContext, cost_result: Optional[str]) -> bool:
     """Returns True when the cheapest estimated trip cost exceeds the user's budget."""
-    if not context.total_budget or not cost_result:
+    if context.total_budget is None or not cost_result:
         return False
     try:
         import json as _j
